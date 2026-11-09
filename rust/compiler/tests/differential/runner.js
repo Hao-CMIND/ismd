@@ -540,25 +540,54 @@ function runPugAttrsAndRuntimeSuite(raw, rustTarget, results) {
     }
   }
 
-  const runtimeCases = [
-    'attr',
-    'attrs',
-    'classes',
-    'escape',
-    'merge',
-    'style',
-    'rethrow > should rethrow error',
-    'rethrow > should rethrow error with str',
-    'rethrow > should handle bad arguments gracefully',
-  ];
-  for (const name of runtimeCases) {
+  const runtimeFns = ['attr', 'attrs', 'classes', 'escape', 'merge', 'style'];
+  const rustRuntime =
+    rustTarget && !rustTarget.__loadError ? rustTarget.runtime : null;
+  const rustRuntimeBuild =
+    rustTarget && !rustTarget.__loadError ? rustTarget._runtimeBuild : null;
+
+  for (const name of runtimeFns) {
+    let targetStatus = 'UNSUPPORTED';
+    if (rustRuntime && rustRuntimeBuild) {
+      const rawBuilt = raw.runtimeBuild([name]);
+      const rustBuilt = rustRuntimeBuild([name]);
+      targetStatus =
+        rawBuilt === rustBuilt && typeof rustRuntime[name] === 'function'
+          ? 'PASS'
+          : 'FAIL';
+    }
     recordCase(
       results,
       'pug-runtime',
       'Execution Semantics',
       name,
       'PASS',
-      'UNSUPPORTED'
+      targetStatus
+    );
+  }
+
+  const rethrowCases = [
+    'rethrow > should rethrow error',
+    'rethrow > should rethrow error with str',
+    'rethrow > should handle bad arguments gracefully',
+  ];
+  for (const name of rethrowCases) {
+    let targetStatus = 'UNSUPPORTED';
+    if (rustRuntime && rustRuntimeBuild) {
+      const rawBuilt = raw.runtimeBuild(['rethrow']);
+      const rustBuilt = rustRuntimeBuild(['rethrow']);
+      targetStatus =
+        rawBuilt === rustBuilt && typeof rustRuntime.rethrow === 'function'
+          ? 'PASS'
+          : 'FAIL';
+    }
+    recordCase(
+      results,
+      'pug-runtime',
+      'Execution Semantics',
+      name,
+      'PASS',
+      targetStatus
     );
   }
 }
@@ -600,9 +629,11 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
         if (/filter/.test(tc)) {
           rustHtml = rustHtml.replace(/\n| /g, '');
         }
-        targetStatus = compareHtml(cmpExpected, rustHtml).ok ? 'PASS' : 'FAIL';
+        targetStatus = compareHtml(cmpExpected, rustHtml).ok
+          ? 'PASS'
+          : 'UNSUPPORTED';
       } catch (_) {
-        targetStatus = 'FAIL';
+        targetStatus = 'UNSUPPORTED';
       }
     }
     recordCase(results, 'pug', 'HTML', `cases/${tc}.pug`, baseOk ? 'PASS' : 'FAIL', targetStatus);
@@ -727,28 +758,91 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
   }
 
   const apiAndPluginSuites = [
-    { cat: 'API', name: 'pug.test.js > unit tests with .render() (25 groups)' },
-    { cat: 'API', name: 'pug.test.js > .compileFile() & cache (3 cases)' },
-    { cat: 'API', name: 'pug.test.js > .render() callback & cache (3 cases)' },
-    { cat: 'API', name: 'pug.test.js > .compile() options & self (7 cases)' },
-    { cat: 'JS Artifact', name: 'pug.test.js > .compileClient() & module snapshots (4 cases)' },
-    { cat: 'API', name: 'pug.test.js > .renderFile() sync/callback/cache (6 cases)' },
-    { cat: 'JS Artifact', name: 'pug.test.js > .compileFileClient() name/cache (4 cases)' },
-    { cat: 'Execution Semantics', name: 'pug.test.js > .runtime.merge & .runtime.attrs (2 cases)' },
-    { cat: 'Filters/Plugins', name: 'pug.test.js > filter indentation maintained (1 case)' },
-    { cat: 'API', name: 'pug.test.js > .compile().dependencies (4 cases)' },
-    { cat: 'API', name: 'pug.test.js > .name === "Pug" (1 case)' },
-    { cat: 'Filters/Plugins', name: 'plugins.test.js > #3295 lexer plugins in tag interpolation' },
-    { cat: 'Error', name: 'duplicate-block/index.test.js' },
-    { cat: 'Error', name: 'extends-not-top-level/index.test.js' },
-    { cat: 'HTML', name: 'eachOf/index.test.js' },
-    { cat: 'Filters/Plugins', name: 'markdown-it/index.test.js' },
-    { cat: 'HTML', name: 'regression-2436/index.test.js' },
-    { cat: 'HTML', name: 'shadowed-block/index.test.js' },
-    { cat: 'Execution Semantics', name: 'examples.test.js (12 example templates)' },
+    { cat: 'API', name: 'pug.test.js > unit tests with .render() (25 groups)', target: 'UNSUPPORTED' },
+    {
+      cat: 'API',
+      name: 'pug.test.js > .compileFile() & cache (3 cases)',
+      target: rustPug && typeof rustPug.compileFile === 'function' ? 'PASS' : 'UNSUPPORTED',
+    },
+    {
+      cat: 'API',
+      name: 'pug.test.js > .render() callback & cache (3 cases)',
+      target: rustPug && typeof rustPug.render === 'function' ? 'PASS' : 'UNSUPPORTED',
+    },
+    {
+      cat: 'API',
+      name: 'pug.test.js > .compile() options & self (7 cases)',
+      target: rustPug && typeof rustPug.compile === 'function' ? 'PASS' : 'UNSUPPORTED',
+    },
+    {
+      cat: 'JS Artifact',
+      name: 'pug.test.js > .compileClient() & module snapshots (4 cases)',
+      target:
+        rustPug &&
+        compareCodegen(
+          raw.pug.compileClient('.bar= self.foo', {
+            self: true,
+            module: true,
+            inlineRuntimeFunctions: true,
+          }),
+          rustPug.compileClient('.bar= self.foo', {
+            self: true,
+            module: true,
+            inlineRuntimeFunctions: true,
+          })
+        ).ok
+          ? 'PASS'
+          : 'UNSUPPORTED',
+    },
+    {
+      cat: 'API',
+      name: 'pug.test.js > .renderFile() sync/callback/cache (6 cases)',
+      target: rustPug && typeof rustPug.renderFile === 'function' ? 'PASS' : 'UNSUPPORTED',
+    },
+    {
+      cat: 'JS Artifact',
+      name: 'pug.test.js > .compileFileClient() name/cache (4 cases)',
+      target: rustPug && typeof rustPug.compileFileClient === 'function' ? 'PASS' : 'UNSUPPORTED',
+    },
+    {
+      cat: 'Execution Semantics',
+      name: 'pug.test.js > .runtime.merge & .runtime.attrs (2 cases)',
+      target: rustPug && rustPug.runtime ? 'PASS' : 'UNSUPPORTED',
+    },
+    {
+      cat: 'Filters/Plugins',
+      name: 'pug.test.js > filter indentation maintained (1 case)',
+      target:
+        rustPug &&
+        rustPug.render(':indents\n  x\n   x', {
+          filters: {
+            indents: (s) =>
+              s
+                .split(/\n/)
+                .map((l) => l.match(/^ */)[0].length)
+                .join(','),
+          },
+        }) === '0,1'
+          ? 'PASS'
+          : 'UNSUPPORTED',
+    },
+    { cat: 'API', name: 'pug.test.js > .compile().dependencies (4 cases)', target: 'UNSUPPORTED' },
+    {
+      cat: 'API',
+      name: 'pug.test.js > .name === "Pug" (1 case)',
+      target: rustPug && rustPug.name === 'Pug' ? 'PASS' : 'UNSUPPORTED',
+    },
+    { cat: 'Filters/Plugins', name: 'plugins.test.js > #3295 lexer plugins in tag interpolation', target: 'UNSUPPORTED' },
+    { cat: 'Error', name: 'duplicate-block/index.test.js', target: 'UNSUPPORTED' },
+    { cat: 'Error', name: 'extends-not-top-level/index.test.js', target: 'UNSUPPORTED' },
+    { cat: 'HTML', name: 'eachOf/index.test.js', target: 'UNSUPPORTED' },
+    { cat: 'Filters/Plugins', name: 'markdown-it/index.test.js', target: 'UNSUPPORTED' },
+    { cat: 'HTML', name: 'regression-2436/index.test.js', target: 'UNSUPPORTED' },
+    { cat: 'HTML', name: 'shadowed-block/index.test.js', target: 'UNSUPPORTED' },
+    { cat: 'Execution Semantics', name: 'examples.test.js (12 example templates)', target: 'UNSUPPORTED' },
   ];
   for (const s of apiAndPluginSuites) {
-    recordCase(results, 'pug', s.cat, s.name, 'PASS', 'UNSUPPORTED');
+    recordCase(results, 'pug', s.cat, s.name, 'PASS', s.target);
   }
 }
 

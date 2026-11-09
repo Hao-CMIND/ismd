@@ -1,0 +1,7 @@
+/target/
+/node_modules/
+*.node
+*.dll
+*.pdb
+*.exp
+*.lib

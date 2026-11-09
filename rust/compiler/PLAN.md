@@ -250,12 +250,12 @@ require('pug/register')
 
 ### Step 1：Workspace、基礎型別與最小端到端路徑 (Walking Skeleton)
 
-- [ ] 建立 `rust/compiler/Cargo.toml` 與各子 crates 骨架，實作 `pug_ast`／`pug_error` 與來源座標轉換契約（並通過 `pug-error` 測試）。
-- [ ] 同時建立 `pug_napi`、`rust/compiler/index.js`、`register.js` 與 `runtime/` 接線。
-- [ ] 用只支援最小語法的 Lexer／Parser／Codegen 跑通 `pug.render('p Hello') -> '<p>Hello</p>'`。
-- [ ] 加入最小動態輸出與函式型 locals（如 `pug.render('p= fn()', { fn: () => 'ok' })`），驗證 locals 不經 JSON 序列化。
-- [ ] 建立主執行緒同步 Host callback adapter 原型；驗證 `preLex` / 自訂 filter 回傳值、錯誤傳遞、同步時序與重入呼叫行為。
-- [ ] 驗證 Windows MSVC (`.node`) 原生模組建置與載入。
+- [x] 建立 `rust/compiler/Cargo.toml` 與各子 crates 骨架，實作 `pug_ast`／`pug_error` 與來源座標轉換契約（並通過 `pug-error` 測試）。
+- [x] 同時建立 `pug_napi`、`rust/compiler/index.js`、`register.js` 與 `runtime/` 接線。
+- [x] 用只支援最小語法的 Lexer／Parser／Codegen 跑通 `pug.render('p Hello') -> '<p>Hello</p>'`。
+- [x] 加入最小動態輸出與函式型 locals（如 `pug.render('p= fn()', { fn: () => 'ok' })`），驗證 locals 不經 JSON 序列化。
+- [x] 建立主執行緒同步 Host callback adapter 原型；驗證 `preLex` / 自訂 filter 回傳值、錯誤傳遞、同步時序與重入呼叫行為。
+- [x] 驗證 Windows MSVC (`.node`) 原生模組建置與載入。
 
 ### Step 2：Lexer、註解與 JS 邊界
 

@@ -17,7 +17,7 @@
 
 | 原版套件 | 對應 Rust Crate | 目標階段 | 追蹤案例數 | 原版基準 (`raw/compiler`) | Rust 目標 (`rust/compiler`) |
 |---|---|---|---:|---|---|
-| `pug-error` | `pug_error` | Step 1 | 8 | 8 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 8 UNSUPPORTED / 0 FAIL |
+| `pug-error` | `pug_error` | Step 1 | 8 | 8 PASS / 0 APPROVED_DIFF / 0 FAIL | 8 PASS / 0 UNSUPPORTED / 0 FAIL |
 | `pug-lexer` | `pug_lexer + pug_js` | Step 2 | 144 | 144 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 144 UNSUPPORTED / 0 FAIL |
 | `pug-strip-comments` | `pug_strip_comments` | Step 2 | 12 | 12 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 12 UNSUPPORTED / 0 FAIL |
 | `pug-parser` | `pug_parser + pug_ast` | Step 3 | 119 | 119 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 119 UNSUPPORTED / 0 FAIL |
@@ -26,9 +26,9 @@
 | `pug-filters` | `pug_filters + pug_js::constant` | Step 4 | 16 | 16 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 16 UNSUPPORTED / 0 FAIL |
 | `pug-linker` | `pug_linker` | Step 4 | 24 | 24 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 24 UNSUPPORTED / 0 FAIL |
 | `pug-attrs` | `pug_attrs` | Step 5 | 52 | 52 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 52 UNSUPPORTED / 0 FAIL |
-| `pug-runtime` | `pug_runtime` | Step 5 | 9 | 9 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 9 UNSUPPORTED / 0 FAIL |
-| `pug` | `pug_code_gen + pug_compiler + pug_napi` | Step 1–6 | 179 | 177 PASS / 2 APPROVED_DIFF / 0 FAIL | 0 PASS / 179 UNSUPPORTED / 0 FAIL |
-| **合計** | — | **Step 0** | **568** | **566 PASS / 2 APPROVED_DIFF / 0 FAIL** | **0 PASS / 568 UNSUPPORTED / 0 FAIL** |
+| `pug-runtime` | `pug_runtime` | Step 5 | 9 | 9 PASS / 0 APPROVED_DIFF / 0 FAIL | 9 PASS / 0 UNSUPPORTED / 0 FAIL |
+| `pug` | `pug_code_gen + pug_compiler + pug_napi` | Step 1–6 | 179 | 177 PASS / 2 APPROVED_DIFF / 0 FAIL | 10 PASS / 169 UNSUPPORTED / 0 FAIL |
+| **合計** | — | **Step 0** | **568** | **566 PASS / 2 APPROVED_DIFF / 0 FAIL** | **27 PASS / 541 UNSUPPORTED / 0 FAIL** |
 
 > 註：`pug-code-gen` (`2.0.2`) 在原版 Monorepo 中無獨立 `test/` 資料夾，其單元與快照測試合併於 `pug` 主套件的 `cases/*.pug`、`compileClient` 快照與執行語意測試中驗收。
 
@@ -39,12 +39,12 @@
 | 測試類別 | 追蹤案例數 | 原版基準 (`raw/compiler`) | Rust 目標 (`rust/compiler`) |
 |---|---:|---|---|
 | Token/AST | 271 | 271 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 271 UNSUPPORTED / 0 FAIL |
-| HTML | 119 | 119 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 119 UNSUPPORTED / 0 FAIL |
-| Execution Semantics | 11 | 11 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 11 UNSUPPORTED / 0 FAIL |
-| Filters/Plugins | 19 | 19 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 19 UNSUPPORTED / 0 FAIL |
-| API | 7 | 7 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 7 UNSUPPORTED / 0 FAIL |
-| Error | 87 | 85 PASS / 2 APPROVED_DIFF / 0 FAIL | 0 PASS / 87 UNSUPPORTED / 0 FAIL |
-| JS Artifact | 54 | 54 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 54 UNSUPPORTED / 0 FAIL |
+| HTML | 119 | 119 PASS / 0 APPROVED_DIFF / 0 FAIL | 2 PASS / 117 UNSUPPORTED / 0 FAIL |
+| Execution Semantics | 11 | 11 PASS / 0 APPROVED_DIFF / 0 FAIL | 10 PASS / 1 UNSUPPORTED / 0 FAIL |
+| Filters/Plugins | 19 | 19 PASS / 0 APPROVED_DIFF / 0 FAIL | 1 PASS / 18 UNSUPPORTED / 0 FAIL |
+| API | 7 | 7 PASS / 0 APPROVED_DIFF / 0 FAIL | 5 PASS / 2 UNSUPPORTED / 0 FAIL |
+| Error | 87 | 85 PASS / 2 APPROVED_DIFF / 0 FAIL | 8 PASS / 79 UNSUPPORTED / 0 FAIL |
+| JS Artifact | 54 | 54 PASS / 0 APPROVED_DIFF / 0 FAIL | 1 PASS / 53 UNSUPPORTED / 0 FAIL |
 
 ---
 

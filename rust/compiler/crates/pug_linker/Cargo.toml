@@ -1,0 +1,11 @@
+[package]
+name = "pug_linker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pug_ast.workspace = true
+pug_error.workspace = true
+pug_walk.workspace = true

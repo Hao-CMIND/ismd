@@ -1,0 +1,27 @@
+{
+  "name": "pug-rust-compiler",
+  "version": "2.0.4-rust.0",
+  "description": "Rust + Oxc implementation of the Pug template compiler, compatible with pug@2.0.4",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "napi": {
+    "name": "pug-napi",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-pc-windows-msvc"
+      ]
+    }
+  },
+  "scripts": {
+    "test:diff": "node tests/differential/runner.js",
+    "test:diff:baseline": "node tests/differential/runner.js --verify-baseline",
+    "test:serializers": "node tests/differential/serializers.test.js",
+    "compat:baseline": "node tests/differential/generate-baseline.js"
+  }
+}

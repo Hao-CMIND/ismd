@@ -1,0 +1,768 @@
+{
+  "schemaVersion": 1,
+  "baselineRoot": "../../raw/compiler",
+  "monorepoName": "pug-monorepo",
+  "lockedToolchain": {
+    "rust": {
+      "channel": "1.99.1",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+      "target": "x86_64-pc-windows-msvc"
+    },
+    "crates": {
+      "oxc": "0.157.0",
+      "napi": "3.16.1",
+      "napi-derive": "3.7.0",
+      "napi-build": "2.6.0"
+    },
+    "node": {
+      "version": "v22.23.3",
+      "engines": ">=20.0.0",
+      "yarn": "1.22.22",
+      "platform": "win32",
+      "arch": "x64"
+    }
+  },
+  "rootFiles": {
+    "package.json": {
+      "sha256": "19fd9d81fa550be108da505783c1db3fe0b9dca1c36053550296fcded8f388ef",
+      "size": 1100
+    },
+    "yarn.lock": {
+      "sha256": "ba0f3032e799d76fd49febdb55a920d4800f4aa680f4240ef345293793eb15fd",
+      "size": 183745
+    },
+    "tsconfig.json": {
+      "sha256": "4c3c17b0576916648981c9964e392292f0f6640429e798fcf4951e7fd6b0ae00",
+      "size": 326
+    },
+    "scripts/prebuild.js": {
+      "sha256": "48b1f80db1d4ae0055c67f8c3771ccfb0aa0e3019575ad08c77650e515d61475",
+      "size": 3837
+    },
+    "scripts/filename-serializer.js": {
+      "sha256": "fdbe8667f98a76c6102c8b80ed872c8aa0550639c6ce2d06b6f649e45d11073a",
+      "size": 949
+    },
+    "scripts/prettier-javascript-serializer.js": {
+      "sha256": "549863b5d15270785f66b63e7ec0cefb0b1feed87767ded0a0cd747da99f99aa",
+      "size": 493
+    },
+    "scripts/buffer-serializer.js": {
+      "sha256": "cbf010fac1d64d34fed547efe6c6aceac1fac0197df7693d975aa494c0459c08",
+      "size": 436
+    }
+  },
+  "resolvedDependencies": {
+    "character-parser": "4.0.0",
+    "is-expression": "4.0.0",
+    "constantinople": "4.0.1",
+    "with": "7.0.0",
+    "doctypes": "1.1.0",
+    "void-elements": "3.1.0",
+    "js-stringify": "1.0.2",
+    "token-stream": "1.0.0",
+    "jstransformer": "1.0.0",
+    "resolve": "1.17.0",
+    "object-assign": "4.1.1",
+    "uglify-js": "2.8.29",
+    "prettier": "1.19.1",
+    "jest": "26.0.1",
+    "typescript": "4.5.4",
+    "acorn": "7.2.0",
+    "acorn-walk": "7.1.1",
+    "@babel/parser": "7.9.6",
+    "@babel/types": "7.9.6",
+    "babel-walk": "3.0.0-canary-5",
+    "line-json": "2.0.0"
+  },
+  "packages": {
+    "pug": {
+      "version": "2.0.4",
+      "path": "packages/pug",
+      "main": "lib",
+      "dependencies": {
+        "pug-code-gen": "^2.0.2",
+        "pug-filters": "^3.1.1",
+        "pug-lexer": "^4.1.0",
+        "pug-linker": "^3.0.6",
+        "pug-load": "^2.0.12",
+        "pug-parser": "^5.0.1",
+        "pug-runtime": "^2.0.5",
+        "pug-strip-comments": "^1.0.4"
+      },
+      "devDependencies": {
+        "jstransformer-cdata": "^1.0.0",
+        "jstransformer-coffee-script": "^1.0.0",
+        "jstransformer-less": "^2.1.0",
+        "jstransformer-markdown-it": "^2.0.0",
+        "jstransformer-stylus": "^1.0.0",
+        "jstransformer-uglify-js": "^1.1.1",
+        "jstransformer-verbatim": "^1.0.0",
+        "mkdirp": "^0.5.1",
+        "rimraf": "^3.0.2",
+        "uglify-js": "github:mishoo/UglifyJS2#1c15d0db456ce32f1b9b507aad97e5ee5c8285f7"
+      },
+      "files": {
+        "History.md": {
+          "sha256": "e08d27e6667a304607b8b4f2145d9a093bd70f6da3be9237ce5ccd58cd698a29",
+          "size": 37213
+        },
+        "lib/index.js": {
+          "sha256": "64c658975d3c51363f2692e4770c0f801066b429183afa6159873c1703a1ae66",
+          "size": 12912
+        },
+        "LICENSE": {
+          "sha256": "2fe0235fa666d2901b0d3d0b733ebeea794e8da2d9d54bcc98af2b58e1a1262c",
+          "size": 1103
+        },
+        "package.json": {
+          "sha256": "ec76ba0ce8367812fb7fe54ffbda46c731ae1d6710f6a77d22f31930fcc512a1",
+          "size": 1577
+        },
+        "README.md": {
+          "sha256": "22df62d447ac1783acf5fa019820c29a64bf992f051fa6094f6ca445a49c9a21",
+          "size": 6478
+        },
+        "register.js": {
+          "sha256": "6c03d6f75824f921ee6a8cf8a45f3f8c9642dc907c686d2263ca615777224a41",
+          "size": 465
+        },
+        "support/benchmark.js": {
+          "sha256": "5bbda404bad52a521da446b1f7cc6a3a099461927fa1a65f7433c2422de76fa0",
+          "size": 2201
+        },
+        "test/__snapshots__/pug.test.js.snap": {
+          "sha256": "88dec616f60b2e8aabfae3fc45d8154f7c98bc4aabdfe0b27863f12c9c7f279f",
+          "size": 3015
+        },
+        "test/duplicate-block/__snapshots__/index.test.js.snap": {
+          "sha256": "22003254d56cb4b5d14b915b9bd941b50a91c6a9e445634b98755fa672605257",
+          "size": 241
+        },
+        "test/duplicate-block/index.test.js": {
+          "sha256": "a40c3720d711b008ac46f496281b85d94da4aea2b3975d9d6c2a61f18058eeed",
+          "size": 346
+        },
+        "test/eachOf/__snapshots__/index.test.js.snap": {
+          "sha256": "2659a7fa605e486ce9fa1a3ae4707b5374248089c2dccb56b7724fa8a93a5932",
+          "size": 222
+        },
+        "test/eachOf/index.test.js": {
+          "sha256": "da8929ee1006ad92b398a579193b08add79ef15e7a41d942fe22f28b6e8d1871",
+          "size": 1699
+        },
+        "test/error.reporting.test.js": {
+          "sha256": "a2ac461c0984de43e1cb4831a2e07589ab1596d9472c6cb35683641a197bebbf",
+          "size": 9699
+        },
+        "test/examples.test.js": {
+          "sha256": "e34c8d08a20bbf0927fbb44dd816a1fafdc465eb2d39224782a7457df123bdea",
+          "size": 582
+        },
+        "test/extends-not-top-level/index.test.js": {
+          "sha256": "ddd7c89d65424636c1a06572c54b6a6e77542120aaa83501ccd81da6ab31fb79",
+          "size": 621
+        },
+        "test/markdown-it/index.test.js": {
+          "sha256": "8cddd9e1c0631c3c1ed6c94e1f60299228bf95399410bfa942ba25589bc91023",
+          "size": 361
+        },
+        "test/plugins.test.js": {
+          "sha256": "e8ab281dde559231b30cd0abc7f4e4160162991f641076274cd014017771c92c",
+          "size": 532
+        },
+        "test/pug.test.js": {
+          "sha256": "e203612c74bdc7a768f3d0aa2cbb482f2fe24a4af3f756d9f4cf3120235f0a43",
+          "size": 45383
+        },
+        "test/regression-2436/__snapshots__/index.test.js.snap": {
+          "sha256": "5d0d3ed89ed0588805996b8459a5947b9ea4ad472349ccf62359a50969992190",
+          "size": 365
+        },
+        "test/regression-2436/index.test.js": {
+          "sha256": "d13307a09056f2ba4c5d3c539a761bd1e6d5ce9d7a71490be6fa5356fc08d0ad",
+          "size": 440
+        },
+        "test/run-es2015.test.js": {
+          "sha256": "198acda5367e12aa4624a003692b395ffe2f40b382b53416e8305f65e99e0fba",
+          "size": 584
+        },
+        "test/run-syntax-errors.test.js": {
+          "sha256": "36539927b0e42ebf10945d1050c5ce4b885c7f55ed31135c75bfb0e170153cb1",
+          "size": 1330
+        },
+        "test/run-utils.js": {
+          "sha256": "56db7c78b11fb02896188ba0bd9e7a8aba3f27d0e5a7707f287767dab3e08ee0",
+          "size": 3807
+        },
+        "test/run.test.js": {
+          "sha256": "02f97a6a5f23a5dc863ec53211681f3bc6117c4d2cdf1fd97d476fb2aaf315d3",
+          "size": 526
+        },
+        "test/shadowed-block/__snapshots__/index.test.js.snap": {
+          "sha256": "35713b1172ac357dc9784c36a569b630bc91d9e5b149cd61837c231b58136ff3",
+          "size": 243
+        },
+        "test/shadowed-block/index.test.js": {
+          "sha256": "c351a59fea0c536cc3b17964b0011680610968f45fdfbc27fa6c9b8796c59c06",
+          "size": 345
+        }
+      }
+    },
+    "pug-attrs": {
+      "version": "2.0.4",
+      "path": "packages/pug-attrs",
+      "main": "index.js",
+      "dependencies": {
+        "constantinople": "^4.0.1",
+        "js-stringify": "^1.0.2",
+        "pug-runtime": "^2.0.5"
+      },
+      "devDependencies": {},
+      "files": {
+        "index.js": {
+          "sha256": "19cfd511b3d4c05946a090567b764ef4c18e0acf933d99bebcabfd8bfa7f35bd",
+          "size": 4117
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "e2d92f7a7d123bfb03cda27d6408779ac479cdb5324ff42c69bef0bc25dfc80a",
+          "size": 446
+        },
+        "README.md": {
+          "sha256": "0a2cbd05253c88296dfd5a2cf5bae803c67b8bc977880512a874a746249fdcac",
+          "size": 2295
+        },
+        "test/index.test.js": {
+          "sha256": "af390c92f94c03e560d98c6e8dea8c9412c83876b5967c144f161145658307fe",
+          "size": 8201
+        }
+      }
+    },
+    "pug-code-gen": {
+      "version": "2.0.2",
+      "path": "packages/pug-code-gen",
+      "main": "index.js",
+      "dependencies": {
+        "constantinople": "^4.0.1",
+        "doctypes": "^1.1.0",
+        "js-stringify": "^1.0.2",
+        "pug-attrs": "^2.0.4",
+        "pug-error": "^1.3.3",
+        "pug-runtime": "^2.0.5",
+        "void-elements": "^3.1.0",
+        "with": "^7.0.0"
+      },
+      "devDependencies": {},
+      "files": {
+        "HISTORY.md": {
+          "sha256": "5318a6a8663b215e183fcf0cf5d6d143eaea1f6108cae47f072ff287ee1a8049",
+          "size": 200
+        },
+        "index.js": {
+          "sha256": "4a6d633d42f360fb0a28767e6c9c8b0c04a924ca7022f47947cad127ae1c9020",
+          "size": 25236
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "c61543f43db44d5a02f4d288e6614e3467a5079766eeb2eaac2d0509d7767acd",
+          "size": 639
+        },
+        "README.md": {
+          "sha256": "548286f06cf48055d7e5e0bd295e92f39fc00f943220162031013aa7bfa9aa05",
+          "size": 2092
+        }
+      }
+    },
+    "pug-error": {
+      "version": "1.3.3",
+      "path": "packages/pug-error",
+      "main": "./lib/index.js",
+      "dependencies": {},
+      "devDependencies": {},
+      "files": {
+        "lib/index.d.ts": {
+          "sha256": "5fc43002c9ff28ef0be5064384449310005973cd2c30bdae65533e4756e47ee7",
+          "size": 170
+        },
+        "lib/index.js": {
+          "sha256": "6c60b00c089c5bcda1b3d77466e759650bcbb5766a8ece908b46e6645ec99c78",
+          "size": 1877
+        },
+        "lib/index.js.map": {
+          "sha256": "cc213545ddbb6ec5280832fb6476a0b3a0ad320c5ed649e0324ac0cc44cd78d9",
+          "size": 2142
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "0f550a259161e8c1492e316bd317e8e348e41340012d3bc0170487f32e300d91",
+          "size": 384
+        },
+        "README.md": {
+          "sha256": "6dfe0817576db474d35f1675a7f15bf9331e3c020cae2b90466f3e16820b9c73",
+          "size": 1756
+        },
+        "src/index.ts": {
+          "sha256": "54bf1add73651b7392172bd0dedd9a227f2008cb5d0c851b661ecfae9fc0069d",
+          "size": 1640
+        },
+        "test/index.test.js": {
+          "sha256": "424cb1adb2b521f5c2db295b704f3d087e360c699421fe75afc5b464f0280b3d",
+          "size": 3903
+        },
+        "tsconfig.json": {
+          "sha256": "4fd43e374b18403b3ccb8c0e62dde4ffdd449f4490494e1d17e5780ffb91727a",
+          "size": 205
+        }
+      }
+    },
+    "pug-filters": {
+      "version": "3.1.1",
+      "path": "packages/pug-filters",
+      "main": "index.js",
+      "dependencies": {
+        "constantinople": "^4.0.1",
+        "jstransformer": "1.0.0",
+        "pug-error": "^1.3.3",
+        "pug-walk": "^1.1.8",
+        "resolve": "^1.15.1"
+      },
+      "devDependencies": {
+        "jstransformer-cdata": "^1.0.0",
+        "jstransformer-coffee-script": "^1.1.1",
+        "jstransformer-less": "^2.3.0",
+        "jstransformer-markdown-it": "^2.0.0",
+        "jstransformer-stylus": "^1.5.0",
+        "jstransformer-uglify-js": "^1.2.0",
+        "pug-lexer": "^4.1.0",
+        "pug-load": "^2.0.12",
+        "pug-parser": "^5.0.1"
+      },
+      "files": {
+        "CHANGELOG.md": {
+          "sha256": "4b1f811e37aeca7dc5835d7cb42d1dd54a8443e6bc5ebf181b7a222f0efc6062",
+          "size": 498
+        },
+        "index.js": {
+          "sha256": "1484ccd5d4bf2f43d282cd1384e6705217f587fd525cf526c8aa8efb61f3855e",
+          "size": 121
+        },
+        "lib/handle-filters.js": {
+          "sha256": "d1db4ca6459d297d7d42fdb0053aabfc741b8f16f80ee544f74fee58f9686f9a",
+          "size": 4233
+        },
+        "lib/run-filter.js": {
+          "sha256": "1e7fdf747680c3e598ab195a4fdeb7bcca33049bf45379d1c8ca9374d1ed2c52",
+          "size": 1260
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "88436cf22f1a896204093834031a164539e621a5ed1be767a091411b5c0208c2",
+          "size": 915
+        },
+        "README.md": {
+          "sha256": "e4a5ec41070fe0eeece35871e0ea5800071a53f4c62cfd10a6196b5a49a865fd",
+          "size": 1496
+        },
+        "test/__snapshots__/filter-aliases.test.js.snap": {
+          "sha256": "9388bfe287e73ed3cfb1311ee9ea7d37a2e9352fc34eb994c7f6aeff4784fa46",
+          "size": 9977
+        },
+        "test/__snapshots__/index.test.js.snap": {
+          "sha256": "ccd976f517200ab8e1441d646f0f79914f798036a906b226c6c8763dcba12bb4",
+          "size": 35965
+        },
+        "test/__snapshots__/per-filter-options-applied-to-nested-filters.test.js.snap": {
+          "sha256": "6d508b62db83005c9a5fa08c11b30f4b3eeeef995f0b25d0e37f48d29562b38e",
+          "size": 3865
+        },
+        "test/custom-filters.js": {
+          "sha256": "6c95f77f715914ba0d5eb7fcba77cd4c8971f09f44c40b471a97c9b1a08048e0",
+          "size": 199
+        },
+        "test/filter-aliases.test.js": {
+          "sha256": "8d64b50902b770850a4e9399442bfcb7e5c5f18d14a98bf76a363db8730f901e",
+          "size": 1748
+        },
+        "test/index.test.js": {
+          "sha256": "0b6cc469f23842b9b650b8efe0d0e8cb0f635062b5abf71ab7e4082526402d08",
+          "size": 1396
+        },
+        "test/per-filter-options-applied-to-nested-filters.test.js": {
+          "sha256": "8eb302861cce1072015a365151ef5efa0635de46a4c6c83f00bc5710ee7f8aea",
+          "size": 665
+        }
+      }
+    },
+    "pug-lexer": {
+      "version": "4.1.0",
+      "path": "packages/pug-lexer",
+      "main": "index.js",
+      "dependencies": {
+        "character-parser": "^4.0.0",
+        "is-expression": "^4.0.0",
+        "pug-error": "^1.3.3"
+      },
+      "devDependencies": {
+        "acorn": "^7.1.1",
+        "acorn-walk": "^7.1.1"
+      },
+      "files": {
+        "History.md": {
+          "sha256": "b6daf9cb0554540aa5ea5724ea690ec787e54f0cd0949efeaefcb6d5a90a0634",
+          "size": 1540
+        },
+        "index.d.ts": {
+          "sha256": "e2cc53953c5abb636a110f714d1c98b57f547a2f8a34ffb00fd9517fb01477d0",
+          "size": 9351
+        },
+        "index.js": {
+          "sha256": "3caf46e3e963abd894941a692cce5ad2f880a4ee9eb3157c63d95c0d6ad1d030",
+          "size": 44597
+        },
+        "LICENSE": {
+          "sha256": "44191656d296391e0ec97e32f5385f0d02b6f2992694082d22ea04ba0f66f9e4",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "73b85d5cca929084c18a8a7f04d322dd757f52eeeb2cb4ce25f0a6cb675e832d",
+          "size": 578
+        },
+        "README.md": {
+          "sha256": "0bc250744b2748d294c51b4130bbf7d3f97e2bb3580c3abe9f20493d95e844b5",
+          "size": 2229
+        },
+        "test/__snapshots__/index.test.js.snap": {
+          "sha256": "e528e40f742c4e4562e29b8c7e8f5180298b7898d646e9aaaffe83575f69cc46",
+          "size": 971246
+        },
+        "test/check-lexer-functions.test.js": {
+          "sha256": "8a19d961adb80cb9b02f044ea8ce7682f5fa417f86f574f0ea69224d6f188211",
+          "size": 2538
+        },
+        "test/index.test.js": {
+          "sha256": "bb9c333e7f0cb10a3e7604ee794d1c850232ba0e94730cefb9dd88287f99f93b",
+          "size": 1053
+        }
+      }
+    },
+    "pug-linker": {
+      "version": "3.0.6",
+      "path": "packages/pug-linker",
+      "main": "index.js",
+      "dependencies": {
+        "pug-error": "^1.3.3",
+        "pug-walk": "^1.1.8"
+      },
+      "devDependencies": {
+        "pug-lexer": "^4.1.0",
+        "pug-load": "^2.0.12",
+        "pug-parser": "^5.0.1"
+      },
+      "files": {
+        "HISTORY.md": {
+          "sha256": "c084d33b462a529982842add29dc651f525441973306ff853fe82685bb682ef9",
+          "size": 164
+        },
+        "index.js": {
+          "sha256": "f6d31a1db74072fb0a84da6cb2dd8c48c05357dc393213705b4ed6e44055b129",
+          "size": 5733
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "ddf128c33eae3781bfd4386dabbe3fc2d520d011983386597028f13adefaefdf",
+          "size": 540
+        },
+        "README.md": {
+          "sha256": "31bb0154315ad9bf94d7d6f4cf6ed38182492bc3b1c6ed9f6f5b2cabe763d56e",
+          "size": 1076
+        },
+        "test/__snapshots__/index.test.js.snap": {
+          "sha256": "04917b59a63e639aeeeed24f58c45665cd555c7650d4425f3b93862fb93f4a65",
+          "size": 130131
+        },
+        "test/index.test.js": {
+          "sha256": "795ce17eb51f0561ace35a7ab5d4b00d7a7128cd95deb1df5fedff7aa6bacd9e",
+          "size": 1117
+        }
+      }
+    },
+    "pug-load": {
+      "version": "2.0.12",
+      "path": "packages/pug-load",
+      "main": "index.js",
+      "dependencies": {
+        "object-assign": "^4.1.1",
+        "pug-walk": "^1.1.8"
+      },
+      "devDependencies": {
+        "pug-lexer": "^4.1.0",
+        "pug-parser": "^5.0.1"
+      },
+      "files": {
+        "HISTORY.md": {
+          "sha256": "c67c10752864f38b29bf1b0e43683fab110d9f97c3df84e837f1f378d822d2d6",
+          "size": 358
+        },
+        "index.js": {
+          "sha256": "f3bb8de56a45e670aa6267a4c2df013414aca621e25778b82d9a6cfe3f8f309b",
+          "size": 3301
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "dfa983d644da7e8e07ca39ba4d0dfe31584c038d1d890e4f22430e4da64b6157",
+          "size": 541
+        },
+        "README.md": {
+          "sha256": "e7b4226cb9b55e5f87db80ca39dde4b6cabc58c65422596e09b348db805c044d",
+          "size": 4076
+        },
+        "test/__snapshots__/index.test.js.snap": {
+          "sha256": "10427a31aadcdb747088c0861730a3c0b92f70012e37455cb88439b53fb7048b",
+          "size": 4737
+        },
+        "test/index.test.js": {
+          "sha256": "657483427df1d82905e020090f47db99eb69e7b8de328d42bef1d374e3073ca4",
+          "size": 679
+        }
+      }
+    },
+    "pug-parser": {
+      "version": "5.0.1",
+      "path": "packages/pug-parser",
+      "main": "index.js",
+      "dependencies": {
+        "pug-error": "^1.3.3",
+        "token-stream": "1.0.0"
+      },
+      "devDependencies": {},
+      "files": {
+        "HISTORY.md": {
+          "sha256": "fe8993b5f76204332dd6fd3620a6f64487c281cb926775416bb9a296f38adba4",
+          "size": 360
+        },
+        "index.js": {
+          "sha256": "243251356d734d41f01445e4e3dd1af1750155e03df5b364e924bd73e48b7e4d",
+          "size": 31128
+        },
+        "lib/inline-tags.js": {
+          "sha256": "01fd00604192975034b600dbc7e9b0a02f17bbde3617d2f088d42162d93a17d9",
+          "size": 214
+        },
+        "LICENSE": {
+          "sha256": "44191656d296391e0ec97e32f5385f0d02b6f2992694082d22ea04ba0f66f9e4",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "ed1a5f2e6c7c52d76fdeebcf2f40c4f1fbd2cd1793e293731ebab86c8e75450c",
+          "size": 515
+        },
+        "README.md": {
+          "sha256": "4d531a9cef1cd1f89f614547b365f32c3279bc1e20fbf8be2fada30107622a72",
+          "size": 2538
+        },
+        "test/__snapshots__/index.test.js.snap": {
+          "sha256": "9eb3eb1f78c24b571f9802001b169416d5107824eab9e717c44a0fbf6a5a0123",
+          "size": 572242
+        },
+        "test/__snapshots__/no-unnecessary-blocks.test.js.snap": {
+          "sha256": "598f3bc6a890d8df75a4182ad4191f99d5c07688aa1d1d8ff034339cbaa85f6f",
+          "size": 898
+        },
+        "test/index.test.js": {
+          "sha256": "c334ab1abf535089270850f724190d4c537dba68dd6f5083821dceefcf7af024",
+          "size": 598
+        },
+        "test/no-unnecessary-blocks.test.js": {
+          "sha256": "715da96df8d4502ed69f09f1c7eaa2f6bbdf362fdc9fc4506e32078a6c66bf94",
+          "size": 226
+        }
+      }
+    },
+    "pug-runtime": {
+      "version": "2.0.5",
+      "path": "packages/pug-runtime",
+      "main": "index.js",
+      "dependencies": {},
+      "devDependencies": {
+        "uglify-js": "^2.6.1"
+      },
+      "files": {
+        ".gitignore": {
+          "sha256": "5f7c9630797c4c4a33bcf9accf761236aeb40d1cadf933a3fe2f7a60a5d9c02c",
+          "size": 5
+        },
+        "build.js": {
+          "sha256": "695141dfc7abf3df13a46e55c3eee1a5e70af521ac1b1097011f9a2042d8800c",
+          "size": 634
+        },
+        "CHANGELOG.md": {
+          "sha256": "bdeaf7841d735878205f7c0740d396861824befd1a99efdf5435e98e86a9d327",
+          "size": 1630
+        },
+        "index.js": {
+          "sha256": "88b77557c4278a4894c8de1f244f68781e2309a602f78dc14dc6ed6b8c5a7e99",
+          "size": 6988
+        },
+        "lib/dependencies.js": {
+          "sha256": "a6e3a717273a574bd1d11a7b1e578e3156ad82e0c1fa8cded9bb5606b2e63d38",
+          "size": 467
+        },
+        "lib/internals.js": {
+          "sha256": "9142c30e88565f2f066661f38b024fc8f1cc7d6725314f659f535b3992b9a443",
+          "size": 166
+        },
+        "lib/sources.js": {
+          "sha256": "b59b5c2744df6190af7c896f527e235aa5407a0480f9bb3bebabe63428fa0f75",
+          "size": 2837
+        },
+        "LICENSE": {
+          "sha256": "44191656d296391e0ec97e32f5385f0d02b6f2992694082d22ea04ba0f66f9e4",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "57294c06e16504c27cf126f7e343cad3f3ebd6e65e196604d890c5049bfb51ae",
+          "size": 675
+        },
+        "prepublish.js": {
+          "sha256": "1c6cea908798e81e37f301d774c05cd4fceca9304ec2a9857dbda69eafbd9af6",
+          "size": 1728
+        },
+        "README.md": {
+          "sha256": "05cf26e0173defec505e536dd1e1fc07a1b64649961e1828e1e3a13c83be0d48",
+          "size": 2260
+        },
+        "test/index.test.js": {
+          "sha256": "f31d081f0e5d9853f2af6cb87152cf8fd8e23573a6b300f5603fc32dc62f13f8",
+          "size": 9007
+        },
+        "wrap.js": {
+          "sha256": "d61268a30899be4d0efb3d18427b1bc02ea002ec7d9acb6e904a41e16466d352",
+          "size": 237
+        }
+      }
+    },
+    "pug-strip-comments": {
+      "version": "1.0.4",
+      "path": "packages/pug-strip-comments",
+      "main": "index.js",
+      "dependencies": {
+        "pug-error": "^1.3.3"
+      },
+      "devDependencies": {
+        "line-json": "^2.0.0"
+      },
+      "files": {
+        "CHANGELOG.md": {
+          "sha256": "703cb2ec33bb9375bcc4fb4cc0030e5d2d4c6aa9fe0dbd4e4702ab769e539e32",
+          "size": 384
+        },
+        "index.js": {
+          "sha256": "e910fa7f01d73e3f1e2cba803e511009a70ed4feeae1d6330f282b4528a5efa7",
+          "size": 2199
+        },
+        "LICENSE": {
+          "sha256": "c525ec15c99bc4ca0769b1087a4278716eac896b2b7d8b6ccff57ad5ccde0a7c",
+          "size": 1058
+        },
+        "LICENSE.md": {
+          "sha256": "1ac0263302bfb8eedc54a10a44175b0df51419306d5bc1539bfd7a7da121bd08",
+          "size": 1070
+        },
+        "package.json": {
+          "sha256": "ec84fb82213cdf470f34477e56dad7ddb01d83034fd079795070375309fcb75e",
+          "size": 496
+        },
+        "README.md": {
+          "sha256": "80e95e90c6a5afdf40776366b853f1c28fcf4b1b5e048b0e83302924d737f9ce",
+          "size": 1797
+        },
+        "test/__snapshots__/index.test.js.snap": {
+          "sha256": "7b35763c942112fa9ebb8c5e793a45e10f3eec0edd9d1ed63ca3616b2e4c5582",
+          "size": 17037
+        },
+        "test/index.test.js": {
+          "sha256": "f7d564edaa77e7e175e07ad74310d826e721d456db674e8eb0cff305f0160134",
+          "size": 1404
+        }
+      }
+    },
+    "pug-walk": {
+      "version": "1.1.8",
+      "path": "packages/pug-walk",
+      "main": "index.js",
+      "dependencies": {},
+      "devDependencies": {
+        "pug-lexer": "^4.1.0",
+        "pug-parser": "^5.0.1"
+      },
+      "files": {
+        ".gitignore": {
+          "sha256": "ac432ed28821eb6597c50fd8c6db85e88bec46c4dfdc87306ca5ca035f490c94",
+          "size": 104
+        },
+        ".travis.yml": {
+          "sha256": "bee9b06148ef18ba7478fdbe6efb629d2880459b10b3d7831c5e47e44f1762be",
+          "size": 216
+        },
+        "HISTORY.md": {
+          "sha256": "c61b17dbf24367927c841a4d7256e5a026d8cdab21f11540a0b7c4dac16c557f",
+          "size": 66
+        },
+        "index.js": {
+          "sha256": "8bd3cc09b132b17e32bd89e2acb98633c7311505bb8f1d5d5aadfb8e1ba2ecdb",
+          "size": 3165
+        },
+        "LICENSE": {
+          "sha256": "f1a3942b131d45dfc0419801f74855333c920bb20c98feaeb1a393c4cac86a5a",
+          "size": 1058
+        },
+        "package.json": {
+          "sha256": "17db79ab9424d15d03d572ca5c81c0c9f6074d721d48e7b3c1d944048ccc1d75",
+          "size": 406
+        },
+        "README.md": {
+          "sha256": "bd112bf786ce7ccfdd1c9e89282ef2226c0d34bc302f798df54b98a48a5d6489",
+          "size": 4918
+        },
+        "test/index.test.js": {
+          "sha256": "7ab4a7360c7fd20438be5c9e4e936c76301c783b7d66449a419080dc3185829e",
+          "size": 4203
+        }
+      }
+    }
+  },
+  "baselineTestSummary": {
+    "command": "yarn build && yarn test",
+    "testSuitesTotal": 27,
+    "testSuitesPassed": 26,
+    "testSuitesWithApprovedEnvDiff": 1,
+    "testsTotal": 650,
+    "testsPassed": 648,
+    "testsWithApprovedEnvDiff": 2,
+    "snapshotsTotal": 326,
+    "snapshotsPassed": 326,
+    "approvedDiffIds": [
+      "NODE16_V8_TYPEERROR_NULL_UNDEFINED_PROPERTY"
+    ]
+  }
+}

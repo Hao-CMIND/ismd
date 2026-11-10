@@ -1,15 +1,18 @@
-'use strict';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import rustPug from '../../index.js';
+import serializers from '../differential/serializers.js';
 
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 const RAW_ROOT = path.resolve(__dirname, '../../../../raw/compiler');
 const rawPug = require(path.join(RAW_ROOT, 'packages/pug'));
-const rustPug = require('../../index.js');
-const serializers = require('../differential/serializers.js');
 
 test('Step 4B.1: Compile-time constant option evaluation, non-constants, syntax errors, unsupported constants, and void 0', () => {
   // 1a. Rich constant expressions evaluated at compile time only (not re-evaluated on render)

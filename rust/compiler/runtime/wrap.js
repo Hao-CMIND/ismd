@@ -1,7 +1,6 @@
-var runtime = require('./');
+import runtime from './index.js';
 
-module.exports = wrap;
-function wrap(template, templateName) {
+export default function wrap(template, templateName) {
   templateName = templateName || 'template';
   return Function(
     'pug',

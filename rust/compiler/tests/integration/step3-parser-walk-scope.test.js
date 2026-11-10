@@ -1,8 +1,17 @@
-'use strict';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import rustPug from '../../index.js';
+import {
+  compareStructured,
+  compareCodegen,
+  compareHtml,
+} from '../differential/serializers.js';
 
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const path = require('node:path');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 const RAW_ROOT = path.resolve(__dirname, '../../../../raw/compiler');
 const rawPug = require(path.join(RAW_ROOT, 'packages/pug'));
@@ -11,13 +20,6 @@ const rawStripComments = require(path.join(RAW_ROOT, 'packages/pug-strip-comment
 const rawParse = require(path.join(RAW_ROOT, 'packages/pug-parser'));
 const rawWalk = require(path.join(RAW_ROOT, 'packages/pug-walk'));
 const rawAddWith = require(path.join(RAW_ROOT, 'node_modules/with'));
-
-const rustPug = require('../../index.js');
-const {
-  compareStructured,
-  compareCodegen,
-  compareHtml,
-} = require('../differential/serializers.js');
 
 function cloneJson(val) {
   return JSON.parse(JSON.stringify(val));

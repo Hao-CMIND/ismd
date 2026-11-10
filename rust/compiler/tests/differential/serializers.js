@@ -1,8 +1,12 @@
-'use strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
 const RUST_COMPILER_ROOT = path.resolve(__dirname, '../..');
 const RAW_COMPILER_ROOT = path.resolve(RUST_COMPILER_ROOT, '../../raw/compiler');
@@ -288,7 +292,26 @@ function compareErrors(expectedErr, actualErr, basedirs) {
   };
 }
 
-module.exports = {
+export {
+  RUST_COMPILER_ROOT,
+  RAW_COMPILER_ROOT,
+  EXPECTED_DIFFERENCES,
+  matchesBasedir,
+  removeBasedir,
+  createFilenameSerializer,
+  prettierJavascriptSerializer,
+  bufferSerializer,
+  formatForSnapshot,
+  parseJestSnapFile,
+  formatJsWithPrettier,
+  compareCodegen,
+  compareStructured,
+  compareHtml,
+  checkApprovedErrorPattern,
+  compareErrors,
+};
+
+export default {
   RUST_COMPILER_ROOT,
   RAW_COMPILER_ROOT,
   EXPECTED_DIFFERENCES,

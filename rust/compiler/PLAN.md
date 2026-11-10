@@ -800,16 +800,134 @@ locals 相容包裝、綁定與控制流程處理
 
 **3A、3B、3C 的已承諾範圍與回歸驗收都通過，才可標記整個 Step 3 完成。**
 
-### Step 4：Loader、Filters、Linker
+### Step 4：Loader、Filters、Linker 與最小 Mixin 整合
 
-- [ ] 實作 `pug_load`：依賴載入、`basedir`、`read`／`resolve` hook、`RawInclude` 與原始 bytes。
-- [ ] 在 `pug_compiler` 的 parse adapter 中，依基準處理 path token 副檔名補齊；不改變單獨 Loader／Parser 入口的行為。
-- [ ] 擴充 Step 3B 已建立的 `pug_js::constant`，滿足 `pug_filters` 編譯期常數選項求值與錯誤契約。
-- [ ] 實作 `pug_filters`：`filterOptions`、`filterAliases`、自訂 JS filter 與 JSTransformer 橋接。
-- [ ] 分別驗證自訂 filter 函式、RawInclude 的 `renderBuffer` 分支及 JSTransformer 的 `render`／`renderFile` 路徑；是否存在及呼叫方式以本機基準為準。
-- [ ] 實作 `pug_linker`：`include`／`yield`、`extends` 與 block replace／prepend／append，保持 Filters 在 Linker 前執行。
-- [ ] 核對 `dependencies` 陣列順序、重複行為與 hook 呼叫日誌，不任意排序去重。
-- [ ] 接上 Mixin 案例所需的最小函式定義／呼叫能力，測試遞迴、動態名稱、繼承中的定義位置與 `block` 傳入；完整 Codegen 於 Step 5 收斂。
+**目標：完成模板依賴載入、編譯期 Filters、模板連結，並接回既有 Node 渲染路徑。**
+
+沿用 Step 0 固定的本機 `raw/compiler` 快照、實際解析依賴及測試工具，不另建編譯架構。
+
+本階段拆成：
+
+1. 4A：Loader、parse adapter 與依賴追蹤。
+2. 4B：常數選項求值與 Filters。
+3. 4C：Linker 與模板繼承。
+4. 4D：最小 Mixin 執行與整合驗收。
+
+以上是主要實作順序；各模組可先獨立驗證。
+整合管線必須維持 Loader → Filters → Linker → Codegen。
+
+#### 開始條件
+
+- [x] 核對 Step 3A／3B／3C 的實際測試結果與 `compat/matrix.md`，確認已承諾的 Parser、Walk、最小 Codegen 與 Scope／locals 範圍已有可重現結果；不能只依 PLAN 的勾選判斷完成。
+- [x] 確認 Step 1～3 相關回歸仍通過，包含 Node → NAPI → Rust → JS render、函式型 locals、來源位置及既有控制流程。
+- [x] 核對 `compat/baseline.json` 的來源、lockfile、依賴載入路徑與工具版本；沿用既有 serializers，不更新基準依賴或預期快照。
+- [x] 盤點本機 `pug-load`、`pug-filters`、`pug-linker` 測試及相關 Pug 整合案例，建立本階段測試清單，標示所需的 Host、Codegen、Runtime 與 Mixin 能力。
+
+前置核對通過後，直接開始 4A。
+
+若發現缺口，先補齊受影響工作所需的前置能力；不受影響的項目可以繼續。
+受阻案例須記錄原因，不得列為通過，也不得移除原已承諾的驗收範圍。
+
+#### 本階段共用要求：CompilerHost 與 Node 橋接
+
+- [x] 沿用既有 `CompilerHost`，完成本階段需要的同步 `read`、`resolve`、`filter` 與階段 hooks；不能全部延到 Step 6。
+- [x] 依前文編譯管線，在入口與各 Pug 依賴的正確階段呼叫 hooks；核對參數、次數、順序、資料修改及例外處理，不能編譯完成後才補跑。
+- [x] JS callbacks 在呼叫端所屬 `napi_env` 的 JS 執行緒同步執行，驗證 hook／filter 重入編譯時，外層與內層的來源、依賴及錯誤狀態不互相污染。
+- [x] NAPI 邊界保留 JS 拋出值及必要身分；各編譯階段的加註或包裝依基準重現，不一律轉成字串或泛用錯誤。
+- [x] 保留本階段所需的 Buffer、JS 函式與值型別，不透過一般 JSON 往返而靜默改變資料；render locals 持續直接交給 Node 執行。
+
+完整 `plugin.lex`／`plugin.parse` 擴充、其餘 replacement hooks 及跨平台／Worker 完整驗收仍在 Step 6。
+本階段已使用到的介面，必須在本階段驗收。
+
+#### Step 4A：Loader、parse adapter 與依賴追蹤
+
+**目標：先驗證載入後的 AST、來源與依賴，再接上 Filters／Linker。**
+
+- [x] 實作 `pug_load`，核對相對路徑、`filename`、`basedir`、巢狀 include／extends，以及自訂 `read`／`resolve` 的參數、回傳值與錯誤。
+- [x] 在 `pug_compiler` 的 parse adapter 中，依基準處理 path token 副檔名補齊；不加入單獨 Loader／Parser 入口。
+- [x] 每個 Pug 依賴依前文管線完成 Lexer、StripComments、Parser 與相關 hooks，保留各檔案的來源及位置資訊。
+- [x] 分開處理 Pug 模板與 `RawInclude`。原始 bytes 必須保留；文字解碼與 Buffer 轉換時點依基準，不將所有讀檔結果先轉成字串，也不將 RawInclude 一律送入 Lexer／Parser。
+- [x] 核對 `dependencies` 的路徑表示、順序與重複行為，以及對應的 `read`／`resolve`／hook 日誌；不自行排序、去重或加快取而改變可觀察行為。
+- [x] 驗證缺少必要路徑選項、檔案不存在、讀取失敗及依賴內語法錯誤，核對錯誤階段、檔名、行列與來源上下文。
+
+至少涵蓋：單層及多層依賴、重複引用同一檔案、自訂記憶體讀取、RawInclude，以及含中文／非 BMP 字元與 CRLF 的依賴檔案。
+
+**4A 驗收：載入後 AST、原始 bytes、dependencies、呼叫日誌與錯誤差異結果。**
+本階段不以完整 Codegen 通過為前提。
+
+#### Step 4B：常數選項求值與 Filters
+
+**目標：在編譯期正確取得 filter 選項，並依基準呼叫對應的 filter 路徑。**
+
+- [x] 擴充既有 `pug_js::constant`，完成本階段 filter 案例所需的常數判定與求值，區分已知常數、非常數、尚未支援及語法／求值錯誤。
+- [x] filter 選項必須在基準要求的編譯階段求值；不得延到 render，也不得把尚未支援的常數偽裝成非常數。
+- [x] 實作 `pug_filters`，核對 `filters`、`filterOptions`、`filterAliases` 的查找、合併優先序、值型別及 filename 傳遞方式。
+- [x] 驗證一般 filter、巢狀 filter 與 include filter 的處理順序、輸入內容、輸出節點及編譯期呼叫次數。
+- [x] 分別實作與驗證一般自訂 JS filter 函式、RawInclude 的 `.renderBuffer` 分支與回退，以及 JSTransformer 橋接；實際存在的 `render`／`renderFile` 等路徑與呼叫方式，以固定本機來源為準。
+- [x] 驗證未知 filter、無效選項、filter 拋出例外及異常回傳值，核對錯誤包裝階段與來源位置。
+
+自訂 filter 與 JSTransformer 不共用一套假定的呼叫規則。
+純 Rust 宿主未提供所需 filter 時，必須明確回報。
+
+**4B 驗收：處理後 AST、選項值、filter 呼叫日誌、Buffer 內容與錯誤差異結果。**
+完整 `constantinople` 相容範圍仍在 Step 5 收斂。
+
+#### Step 4C：Linker 與模板繼承
+
+**目標：完成載入及 Filters 後，正確整合模板結構。**
+
+- [x] 實作 `pug_linker`，核對 include 內容整合、include block／yield，以及巢狀結構的處理。
+- [x] 實作 extends、多層繼承及 block replace／prepend／append，驗證合併順序、節點位置與基準的非法用法錯誤。
+- [x] 保留繼承過程中的 Mixin 定義及其正確位置；Linker 不負責把 Mixin 呼叫無條件靜態展開。
+- [x] 確認 Filters 在 Linker 前執行，透過混合 include／extends／filters 的案例驗證實際處理順序。
+- [x] 保留連結後節點的來源資訊，使後續 Codegen 與執行錯誤能依基準指出原始模板位置。
+
+**4C 驗收：連結後 AST、節點順序、來源資訊與錯誤差異結果。**
+
+先使用等價且互不共享可變狀態的輸入 AST 做單階段比較，再接整合管線。
+Codegen 尚未支援造成的失敗，須與 Linker 差異分開記錄。
+
+#### Step 4D：最小 Mixin 執行與整合驗收
+
+**目標：讓本階段承諾的模板組合能經既有 Node 路徑實際渲染。**
+
+- [x] 在既有 `pug_code_gen` 接上本階段案例所需的 Mixin 函式定義、呼叫、參數傳遞與 block 傳入，維持執行期函式語意。
+- [x] 完成原 Step 4 已承諾的遞迴 Mixin、動態名稱、繼承中的定義位置與 block 傳入案例，不因拆分子階段而全部延到 Step 5。
+- [x] 將新增 Mixin 產物接入既有 Scope／locals 轉換，驗證名稱遮蔽、暫存名稱碰撞、locals 取值及必要副作用。
+- [x] 補齊上述案例實際需要的 Runtime helper、常數處理與 debug／來源接線，沿用固定 Runtime 生成機制。
+- [x] 透過既有公開編譯／渲染入口驗證完整管線，同時保留預設選項案例；不得暗中關閉 debug、改用其他 Runtime 模式或回退原版 Pug 來通過測試。
+
+完整 Mixin 邊界、attributes、全部 Codegen／Runtime 能力及選項組合仍在 Step 5 收斂。
+但本階段承諾案例所需的能力，必須在本階段完成。
+
+#### 測試與比較方式
+
+| 層級 | 必須比較 |
+|---|---|
+| Loader | 載入後 AST、bytes、路徑、dependencies、read／resolve 日誌及錯誤 |
+| Filters | 選項求值、呼叫參數與順序、Buffer、處理後 AST 及錯誤 |
+| Linker | 連結後 AST、節點順序、繼承合併、Mixin 定義位置及錯誤 |
+| Node 整合 | 同步時序、重入、JS 拋出值與階段包裝、hook 資料修改 |
+| 渲染 | HTML 精確字串、回傳值、locals 變化、getter 日誌及執行例外 |
+| JS 產物 | 固定格式化快照與原始 JS 字串，分別記錄結果 |
+
+原版與 Rust 使用相同內容、獨立建立的 AST、Host、callbacks 與 locals。
+含函式、Buffer、getter、原型或可變狀態的資料，由 fixture factory 分別建立，不以 JSON 複製。
+
+錯誤須區分發生於載入、選項求值、filter 執行、連結、Codegen、函式建構或 render。
+HTML 相同不能取代 AST、呼叫日誌、錯誤或 JS 產物的驗收。
+
+#### Step 4 完成條件
+
+- [x] 交付 4A／4B／4C 的單階段差異結果，以及 4D 的 Node 整合與渲染結果。
+- [x] 本階段已承諾範圍內沒有未處理或未核准的差異；必要的 Host／NAPI 接線已完成。
+- [x] 重跑 Step 1～3 既有回歸，確認 Token、AST、Walk、控制流程、Scope／locals 與 Node 執行路徑沒有退步。
+- [x] 更新 `compat/matrix.md`，列出測試命令、總數、通過、失敗、跳過、不支援與已核准差異。
+- [x] 延後項目逐一標明 Step 5／6 的承接位置，不計入本階段通過數。
+- [x] 實際驗收完成後才更新核取方塊；不得自動改寫基準快照或把原版回退結果計入 Rust 通過率。
+
+只有 Loader／Filters／Linker 的 AST 測試通過時，只能標記對應子階段完成。
+本階段承諾的 Mixin、Node 整合與回歸驗收都通過，才可標記整個 Step 4 完成。
 
 ### Step 5：補齊屬性、Codegen、Runtime 與選項
 

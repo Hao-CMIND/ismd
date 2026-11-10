@@ -1,8 +1,8 @@
-'use strict';
+import assert from 'node:assert';
+import { createRequire } from 'node:module';
+import pug from '../../index.js';
 
-const assert = require('assert');
-const path = require('path');
-const pug = require('../../');
+const require = createRequire(import.meta.url);
 
 function testPugErrorSuite() {
   const error = pug._error;
@@ -140,7 +140,7 @@ function testMinimalRenderAndDynamicLocals() {
   assert(clientCode.includes('module.exports = template;'));
 }
 
-function testSynchronousHostCallbacksAndReentrancy() {
+async function testSynchronousHostCallbacksAndReentrancy() {
   const order = [];
 
   const plugin = {
@@ -248,14 +248,14 @@ function testSynchronousHostCallbacksAndReentrancy() {
   assert.strictEqual(caught.customCode, 'ERR_CUSTOM_PLUGIN');
 
   // Verify register.js attaches require.extensions['.pug']
-  require('../../register');
+  await import('../../register.js');
   assert.strictEqual(typeof require.extensions['.pug'], 'function');
 }
 
-function main() {
+async function main() {
   testPugErrorSuite();
   testMinimalRenderAndDynamicLocals();
-  testSynchronousHostCallbacksAndReentrancy();
+  await testSynchronousHostCallbacksAndReentrancy();
   console.log(
     'PASS tests/integration/step1-skeleton.test.js (pug-error + render("p Hello") + fn() locals + sync host hooks + re-entrancy + register.js verified)'
   );

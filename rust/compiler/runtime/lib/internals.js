@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   "dependencies": true,
   "internals": true,
   "has_own_property": true,

@@ -1,10 +1,14 @@
-'use strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import runtime from './runtime/index.js';
+import runtimeWrap from './runtime/wrap.js';
+import runtimeBuild from './runtime/build.js';
 
-const fs = require('fs');
-const path = require('path');
-const runtime = require('./runtime');
-const runtimeWrap = require('./runtime/wrap');
-const runtimeBuild = require('./runtime/build');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
 function loadNativeAddon() {
   const candidates = [
@@ -30,10 +34,10 @@ function loadNativeAddon() {
 
 const native = loadNativeAddon();
 
-exports.name = 'Pug';
-exports.runtime = runtime;
-exports.cache = {};
-exports.filters = {};
+export const name = 'Pug';
+export { runtime };
+export const cache = {};
+export const filters = {};
 
 function makeError(code, message, options) {
   options = options || {};
@@ -65,11 +69,10 @@ function makeError(code, message, options) {
   return err;
 }
 
-exports._error = makeError;
-exports._runtimeBuild = function(fns) {
+export function _runtimeBuild(fns) {
   return native.runtimeBuild(fns);
-};
-exports._runtimeBuildJs = runtimeBuild;
+}
+export { makeError as _error, runtimeBuild as _runtimeBuildJs };
 
 function dtoToJsError(dto) {
   const err = new Error(dto.message);
@@ -136,10 +139,12 @@ function stripComments(input, options) {
   return outcome.data;
 }
 
-exports._lex = lex;
-exports.lex = lex;
-exports._stripComments = stripComments;
-exports.stripComments = stripComments;
+export {
+  lex as _lex,
+  lex,
+  stripComments as _stripComments,
+  stripComments,
+};
 
 function parse(tokens, options) {
   if (!Array.isArray(tokens)) {
@@ -417,18 +422,20 @@ function getLoadOptions(options) {
   );
 }
 
-exports._parse = parse;
-exports.parse = parse;
-exports._load = load;
-exports._walk = walkAST;
-exports.walk = walkAST;
-exports._addWith = function(obj, src, exclude) {
+export {
+  parse as _parse,
+  parse,
+  load as _load,
+  walkAST as _walk,
+  walkAST as walk,
+};
+export function _addWith(obj, src, exclude) {
   return native.addWithSync(
     String(obj),
     String(src),
     Array.isArray(exclude) ? exclude.map(String) : []
   );
-};
+}
 
 function requireFilterDep(name) {
   try {
@@ -520,22 +527,22 @@ function makeFilterHostCallback(filtersSet) {
   };
 }
 
-exports._handleFilters = function(ast, filters, filterOptions, filterAliases) {
+export function _handleFilters(ast, customFilters, filterOptions, filterAliases) {
   const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
   const outcome = native.handleFiltersSync(
     inputAst,
     filterOptions || null,
     filterAliases || undefined,
-    { filter: makeFilterHostCallback(filters || {}) }
+    { filter: makeFilterHostCallback(customFilters || {}) }
   );
   if (!outcome.ok) {
     if (outcome.plainError) throw new Error(outcome.plainError);
     if (outcome.error) throw dtoToJsError(outcome.error);
   }
   return reviveAstBuffers(outcome.data);
-};
+}
 
-exports._link = function(ast) {
+export function _link(ast) {
   const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
   const outcome = native.linkSync(inputAst);
   if (!outcome.ok) {
@@ -543,7 +550,7 @@ exports._link = function(ast) {
     if (outcome.error) throw dtoToJsError(outcome.error);
   }
   return reviveAstBuffers(outcome.data);
-};
+}
 
 function applyPlugins(value, options, plugins, name) {
   return plugins.reduce(function(val, plugin) {
@@ -572,8 +579,8 @@ function normalizePretty(pretty) {
 function compileBody(str, options) {
   const plugins = options.plugins || [];
   const filtersSet = {};
-  Object.keys(exports.filters).forEach(function(key) {
-    filtersSet[key] = exports.filters[key];
+  Object.keys(filters).forEach(function(key) {
+    filtersSet[key] = filters[key];
   });
   if (options.filters) {
     Object.keys(options.filters).forEach(function(key) {
@@ -769,17 +776,17 @@ function compileBody(str, options) {
 
 function handleTemplateCache(options, str) {
   const key = options.filename;
-  if (options.cache && exports.cache[key]) {
-    return exports.cache[key];
+  if (options.cache && cache[key]) {
+    return cache[key];
   } else {
     if (str === undefined) str = fs.readFileSync(options.filename, 'utf8');
-    const templ = exports.compile(str, options);
-    if (options.cache) exports.cache[key] = templ;
+    const templ = compile(str, options);
+    if (options.cache) cache[key] = templ;
     return templ;
   }
 }
 
-exports.compile = function(str, options) {
+export function compile(str, options) {
   options = options || {};
   str = String(str);
 
@@ -807,9 +814,9 @@ exports.compile = function(str, options) {
 
   res.dependencies = parsed.dependencies;
   return res;
-};
+}
 
-exports.compileClientWithDependenciesTracked = function(str, options) {
+export function compileClientWithDependenciesTracked(str, options) {
   options = options || {};
   str = String(str);
 
@@ -840,19 +847,19 @@ exports.compileClientWithDependenciesTracked = function(str, options) {
   }
 
   return { body: body, dependencies: parsed.dependencies };
-};
+}
 
-exports.compileClient = function(str, options) {
-  return exports.compileClientWithDependenciesTracked(str, options).body;
-};
+export function compileClient(str, options) {
+  return compileClientWithDependenciesTracked(str, options).body;
+}
 
-exports.compileFile = function(path, options) {
+export function compileFile(path, options) {
   options = options || {};
   options.filename = path;
   return handleTemplateCache(options);
-};
+}
 
-exports.render = function(str, options, fn) {
+export function render(str, options, fn) {
   if ('function' === typeof options) {
     fn = options;
     options = undefined;
@@ -860,7 +867,7 @@ exports.render = function(str, options, fn) {
   if (typeof fn === 'function') {
     let res;
     try {
-      res = exports.render(str, options);
+      res = render(str, options);
     } catch (ex) {
       return fn(ex);
     }
@@ -873,9 +880,9 @@ exports.render = function(str, options, fn) {
   }
 
   return handleTemplateCache(options, str)(options);
-};
+}
 
-exports.renderFile = function(path, options, fn) {
+export function renderFile(path, options, fn) {
   if ('function' === typeof options) {
     fn = options;
     options = undefined;
@@ -883,7 +890,7 @@ exports.renderFile = function(path, options, fn) {
   if (typeof fn === 'function') {
     let res;
     try {
-      res = exports.renderFile(path, options);
+      res = renderFile(path, options);
     } catch (ex) {
       return fn(ex);
     }
@@ -893,29 +900,59 @@ exports.renderFile = function(path, options, fn) {
   options = options || {};
   options.filename = path;
   return handleTemplateCache(options)(options);
-};
+}
 
-exports.compileFileClient = function(path, options) {
+export function compileFileClient(path, options) {
   const key = path + ':client';
   options = options || {};
   options.filename = path;
 
-  if (options.cache && exports.cache[key]) {
-    return exports.cache[key];
+  if (options.cache && cache[key]) {
+    return cache[key];
   }
 
   const str = fs.readFileSync(options.filename, 'utf8');
-  const out = exports.compileClient(str, options);
-  if (options.cache) exports.cache[key] = out;
+  const out = compileClient(str, options);
+  if (options.cache) cache[key] = out;
   return out;
-};
+}
 
-exports.__express = function(path, options, fn) {
+export function __express(path, options, fn) {
   if (
     options.compileDebug == undefined &&
     process.env.NODE_ENV === 'production'
   ) {
     options.compileDebug = false;
   }
-  exports.renderFile(path, options, fn);
+  renderFile(path, options, fn);
+}
+
+export default {
+  name,
+  runtime,
+  cache,
+  filters,
+  _error: makeError,
+  _runtimeBuild,
+  _runtimeBuildJs: runtimeBuild,
+  _lex: lex,
+  lex,
+  _stripComments: stripComments,
+  stripComments,
+  _parse: parse,
+  parse,
+  _load: load,
+  _walk: walkAST,
+  walk: walkAST,
+  _addWith,
+  _handleFilters,
+  _link,
+  compile,
+  compileClientWithDependenciesTracked,
+  compileClient,
+  compileFile,
+  render,
+  renderFile,
+  compileFileClient,
+  __express,
 };

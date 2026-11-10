@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * Independent Verification Runner for Pug Rust Compiler (Step 1 ~ Step 3)
  *
@@ -13,17 +11,22 @@
  * 7. Step 3C Audit (Direct addWith + End-to-End Pug across all 9 PLAN.md Scope/With categories)
  */
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const childProcess = require('child_process');
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import childProcess from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import serializers from '../../differential/serializers.js';
+import rustPug from '../../../index.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
 const RUST_ROOT = path.resolve(__dirname, '../../..');
 const REPO_ROOT = path.resolve(RUST_ROOT, '../..');
 const RAW_ROOT = path.resolve(REPO_ROOT, 'raw/compiler');
-
-const serializers = require(path.join(RUST_ROOT, 'tests/differential/serializers.js'));
-const rustPug = require(path.join(RUST_ROOT, 'index.js'));
 
 const rawPackages = path.join(RAW_ROOT, 'packages');
 const rawError = require(path.join(rawPackages, 'pug-error'));

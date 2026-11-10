@@ -1,9 +1,8 @@
-'use strict';
-
-const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
-const {
+import assert from 'node:assert';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import {
   RAW_COMPILER_ROOT,
   RUST_COMPILER_ROOT,
   formatForSnapshot,
@@ -11,7 +10,9 @@ const {
   compareCodegen,
   compareStructured,
   checkApprovedErrorPattern,
-} = require('./serializers');
+} from './serializers.js';
+
+const require = createRequire(import.meta.url);
 
 function testFilenameAndTokenSnapshots() {
   const lex = require(path.join(RAW_COMPILER_ROOT, 'packages/pug-lexer'));

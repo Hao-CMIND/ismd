@@ -1,10 +1,11 @@
-'use strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const { execSync } = require('child_process');
-
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const RUST_COMPILER_ROOT = path.resolve(__dirname, '../..');
 const RAW_COMPILER_ROOT = path.resolve(RUST_COMPILER_ROOT, '../../raw/compiler');
 const OUTPUT_FILE = path.join(RUST_COMPILER_ROOT, 'compat/baseline.json');

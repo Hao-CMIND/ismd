@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   "has_own_property": [],
   "merge": [
     "style"

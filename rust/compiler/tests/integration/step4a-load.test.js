@@ -1,10 +1,15 @@
-'use strict';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import rustPug from '../../index.js';
+import serializers from '../differential/serializers.js';
 
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 const RAW_ROOT = path.resolve(__dirname, '../../../../raw/compiler');
 const rawPug = require(path.join(RAW_ROOT, 'packages/pug'));
@@ -12,9 +17,6 @@ const rawLoad = require(path.join(RAW_ROOT, 'packages/pug-load'));
 const rawLex = require(path.join(RAW_ROOT, 'packages/pug-lexer'));
 const rawParse = require(path.join(RAW_ROOT, 'packages/pug-parser'));
 const rawWalk = require(path.join(RAW_ROOT, 'packages/pug-walk'));
-
-const rustPug = require('../../index.js');
-const serializers = require('../differential/serializers.js');
 
 test('Step 4A.1: pug-load baseline snapshot parity (foo.pug / bar.pug / bing.pug / script.js)', () => {
   const filename = path.join(RAW_ROOT, 'packages/pug-load/test/foo.pug');

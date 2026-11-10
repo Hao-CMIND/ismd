@@ -1,12 +1,15 @@
-'use strict';
+import assert from 'node:assert';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import rustPug from '../../index.js';
+import { compareStructured, compareHtml } from '../differential/serializers.js';
 
-const assert = require('assert');
-const path = require('path');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const rawLex = require(path.resolve(__dirname, '../../../../raw/compiler/packages/pug-lexer'));
 const rawStrip = require(path.resolve(__dirname, '../../../../raw/compiler/packages/pug-strip-comments'));
 const rawPug = require(path.resolve(__dirname, '../../../../raw/compiler/packages/pug'));
-const rustPug = require('../../index.js');
-const { compareStructured, compareHtml } = require('../differential/serializers');
 
 let passed = 0;
 function test(name, fn) {

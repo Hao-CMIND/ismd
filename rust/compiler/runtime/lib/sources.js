@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   "has_own_property": "var pug_has_own_property=Object.prototype.hasOwnProperty;",
   "merge": "function pug_merge(e,r){if(1===arguments.length){for(var t=e[0],g=1;g<e.length;g++)t=pug_merge(t,e[g]);return t}for(var l in r)if(\"class\"===l){var n=e[l]||[];e[l]=(Array.isArray(n)?n:[n]).concat(r[l]||[])}else if(\"style\"===l){var n=pug_style(e[l]);n=n&&\";\"!==n[n.length-1]?n+\";\":n;var a=pug_style(r[l]);a=a&&\";\"!==a[a.length-1]?a+\";\":a,e[l]=n+a}else e[l]=r[l];return e}",
   "classes_array": "function pug_classes_array(r,a){for(var s,e=\"\",u=\"\",c=Array.isArray(a),g=0;g<r.length;g++)(s=pug_classes(r[g]))&&(c&&a[g]&&(s=pug_escape(s)),e=e+u+s,u=\" \");return e}",

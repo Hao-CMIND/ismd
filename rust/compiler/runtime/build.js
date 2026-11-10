@@ -1,12 +1,8 @@
-'use strict';
+import dependencies from './lib/dependencies.js';
+import internals from './lib/internals.js';
+import sources from './lib/sources.js';
 
-var dependencies = require('./lib/dependencies.js');
-var internals = require('./lib/internals.js');
-var sources = require('./lib/sources.js');
-
-module.exports = build;
-
-function build(functions) {
+export default function build(functions) {
   var fns = [];
   functions = functions.filter(function(fn) {
     return !internals[fn];

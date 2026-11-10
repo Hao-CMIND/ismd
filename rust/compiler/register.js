@@ -1,5 +1,8 @@
-var pug = require('./');
-var resolvedPug = JSON.stringify(require.resolve('./'));
+import { createRequire } from 'node:module';
+import * as pug from './index.js';
+
+const require = createRequire(import.meta.url);
+const resolvedPug = JSON.stringify(require.resolve('./index.js'));
 
 function compileTemplate(module, filename) {
   var template = pug.compileFileClient(filename, {
@@ -18,3 +21,6 @@ function compileTemplate(module, filename) {
 if (require.extensions) {
   require.extensions['.pug'] = compileTemplate;
 }
+
+export { compileTemplate };
+export default compileTemplate;

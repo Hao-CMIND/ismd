@@ -1,9 +1,9 @@
-'use strict';
-
-const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
-const {
+import assert from 'node:assert';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import {
   RAW_COMPILER_ROOT,
   RUST_COMPILER_ROOT,
   formatForSnapshot,
@@ -13,7 +13,9 @@ const {
   compareHtml,
   checkApprovedErrorPattern,
   compareErrors,
-} = require('./serializers');
+} from './serializers.js';
+
+const require = createRequire(import.meta.url);
 
 function loadRawPackages() {
   const pkgRoot = path.join(RAW_COMPILER_ROOT, 'packages');
@@ -35,13 +37,13 @@ function loadRawPackages() {
   };
 }
 
-function tryLoadRustTarget() {
+async function tryLoadRustTarget() {
   const entryPath = path.join(RUST_COMPILER_ROOT, 'index.js');
   if (!fs.existsSync(entryPath)) {
     return null;
   }
   try {
-    return require(entryPath);
+    return await import(pathToFileURL(entryPath).href);
   } catch (err) {
     return { __loadError: err };
   }
@@ -1974,7 +1976,7 @@ ${catRows}
 `;
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const verifyBaseline = args.includes('--verify-baseline');
   const writeMatrix = args.includes('--write-matrix');
@@ -1984,7 +1986,7 @@ function main() {
   const jsonOutPath = jsonIdx !== -1 ? args[jsonIdx + 1] : null;
 
   const raw = loadRawPackages();
-  const rustTarget = tryLoadRustTarget();
+  const rustTarget = await tryLoadRustTarget();
   const results = [];
 
   const suites = [

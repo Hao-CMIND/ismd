@@ -524,15 +524,26 @@ test('Step 3B: Control flow (if/else/unless, each with else, each-of, while, cas
   }
 });
 
-test('Step 3B: Unsupported AST nodes in Step 3B (remaining pre-Step 4D Mixin nodes) explicitly report UNSUPPORTED_NODE error', () => {
-  const unsupportedTemplates = [
-    { src: 'mixin myMixin()\n  p hi\n+myMixin()', opts: { filename: 'unsupported.pug' } },
-    { src: 'mixin wrap()\n  block', opts: { filename: 'unsupported.pug' } },
+test('Step 3B: Codegen explicitly reports UNSUPPORTED_NODE when an unlowered node reaches codegen', () => {
+  const unsupportedAsts = [
+    { type: 'Include', file: { type: 'FileReference', path: 'x.pug', line: 1 }, block: { type: 'Block', nodes: [], line: 1 }, line: 1 },
+    { type: 'Attrs', attrs: [], line: 1 },
   ];
 
-  for (const tc of unsupportedTemplates) {
+  for (const injectedNode of unsupportedAsts) {
     assert.throws(
-      () => rustPug.compile(tc.src, tc.opts),
+      () =>
+        rustPug.compile('p ok', {
+          filename: 'unsupported.pug',
+          plugins: [
+            {
+              postLink(ast) {
+                ast.nodes.push(injectedNode);
+                return ast;
+              },
+            },
+          ],
+        }),
       (err) => {
         assert.equal(err.code, 'PUG:UNSUPPORTED_NODE');
         return true;

@@ -62,7 +62,7 @@ function isTargetBlocked(rustTarget) {
   return !rustTarget || Boolean(rustTarget.__loadError);
 }
 
-const STEP4_5_NODE_TYPES = new Set(['Mixin', 'MixinBlock']);
+const STEP4_5_NODE_TYPES = new Set([]);
 
 function findDeferredAstNodes(raw, src, filename, opts) {
   try {
@@ -1351,19 +1351,6 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
       typeof rawErr.code === 'string' &&
       rawErr.code.startsWith('PUG:');
 
-    if (tc === 'non-existant-filter') {
-      recordCase(
-        results,
-        'pug',
-        'Error',
-        `anti-cases/${tc}.pug`,
-        baseOk ? 'PASS' : 'FAIL',
-        'DEFERRED',
-        'PLAN.md §五 Step 4 (pug_filters): unknown filter line/source reporting'
-      );
-      continue;
-    }
-
     let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
     let note = '';
     if (rustPug) {
@@ -1386,53 +1373,39 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
   }
 
   // 4. error.reporting.test.js (including the 2 approved V8 TypeError cases)
-  const mixinErrFixture = path.join(
-    testDir,
-    'fixtures/runtime.with.mixin.error.pug'
-  );
-  let mixinErrMsg = '';
-  try {
-    raw.pug.renderFile(mixinErrFixture, {});
-  } catch (ex) {
-    mixinErrMsg = ex.message;
+  for (const [label, relFixture, legacyRegex] of [
+    ['error.reporting > runtime errors > in a mixin', 'fixtures/runtime.with.mixin.error.pug', /Cannot read property 'length' of null/],
+    ['error.reporting > runtime errors > in a layout', 'fixtures/runtime.layout.error.pug', /Cannot read property 'length' of undefined/],
+  ]) {
+    const fixturePath = path.join(testDir, relFixture);
+    let rawErr = null;
+    try {
+      raw.pug.renderFile(fixturePath, {});
+    } catch (ex) {
+      rawErr = ex;
+    }
+    const errMsg = rawErr ? rawErr.message : '';
+    const check = checkApprovedErrorPattern(errMsg, legacyRegex);
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let note = check.diffId || '';
+    if (rustPug) {
+      let rustErr = null;
+      try {
+        rustPug.renderFile(fixturePath, {});
+        targetStatus = 'FAIL';
+        note = 'Expected runtime error, succeeded';
+      } catch (ex) {
+        rustErr = ex;
+        if (rawErr && rustErr.message === rawErr.message && rustErr.path === rawErr.path) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          note = `Mismatch: path=${rustErr && rustErr.path} msg=${rustErr && rustErr.message}`;
+        }
+      }
+    }
+    recordCase(results, 'pug', 'Error', label, check.status, targetStatus, note);
   }
-  const mixinCheck = checkApprovedErrorPattern(
-    mixinErrMsg,
-    /Cannot read property 'length' of null/
-  );
-  recordCase(
-    results,
-    'pug',
-    'Error',
-    'error.reporting > runtime errors > in a mixin',
-    mixinCheck.status,
-    'DEFERRED',
-    `PLAN.md §五 Step 4-5 (mixin & renderFile)${mixinCheck.diffId ? `; ${mixinCheck.diffId}` : ''}`
-  );
-
-  const layoutErrFixture = path.join(
-    testDir,
-    'fixtures/runtime.layout.error.pug'
-  );
-  let layoutErrMsg = '';
-  try {
-    raw.pug.renderFile(layoutErrFixture, {});
-  } catch (ex) {
-    layoutErrMsg = ex.message;
-  }
-  const layoutCheck = checkApprovedErrorPattern(
-    layoutErrMsg,
-    /Cannot read property 'length' of undefined/
-  );
-  recordCase(
-    results,
-    'pug',
-    'Error',
-    'error.reporting > runtime errors > in a layout',
-    layoutCheck.status,
-    'DEFERRED',
-    `PLAN.md §五 Step 4-5 (extends/layout & renderFile)${layoutCheck.diffId ? `; ${layoutCheck.diffId}` : ''}`
-  );
 
   const otherErrorReportingCases = [
     'error.reporting > compile time > with no filename',
@@ -1730,43 +1703,92 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
   for (const [name, fn] of unitRenderTests) {
     runBehavioralCase('HTML', `pug.test.js > ${name}`, fn);
   }
-  recordCase(
-    results,
-    'pug',
-    'HTML',
-    'pug.test.js > unit render > should include block',
-    'PASS',
-    'DEFERRED',
-    'PLAN.md §五 Step 4 (pug_load / pug_linker): include block'
-  );
+  runBehavioralCase('HTML', 'pug.test.js > unit render > should include block', (p) => {
+    const str = [
+      'html',
+      '  head',
+      '    include fixtures/scripts.pug',
+      '      scripts(src="/app.js")',
+    ].join('\n');
+    assert.strictEqual(
+      p.render(str, { filename: path.join(testDir, 'pug.test.js') }),
+      '<html><head><script src="/jquery.js"></script><script src="/caustic.js"></script><scripts src="/app.js"></scripts></head></html>'
+    );
+  });
 
-  // 7. Explicitly deferred Step 4/5/6 API & integration cases (individually listed, NOT virtual counts)
+  // 6h. Step 4 dependencies & linker behavioral suites
+  for (const [caseName, depFiles] of [
+    ['extends1', ['dependency1.pug']],
+    ['include1', ['dependency1.pug']],
+    ['extends2', ['dependency2.pug', 'dependency3.pug']],
+    ['include2', ['dependency2.pug', 'dependency3.pug']],
+  ]) {
+    runBehavioralCase('API', `pug.test.js > .compile().dependencies > ${caseName}`, (p) => {
+      const filename = path.join(testDir, 'dependencies', `${caseName}.pug`);
+      const src = fs.readFileSync(filename, 'utf8');
+      const info = p.compile(src, { filename });
+      assert.deepStrictEqual(
+        info.dependencies,
+        depFiles.map((d) => path.resolve(testDir, 'dependencies', d))
+      );
+    });
+  }
+
+  runBehavioralCase('Error', 'extends-not-top-level/index.test.js', (p) => {
+    for (const file of ['index.pug', 'duplicate.pug']) {
+      let thrown = null;
+      try {
+        p.compileFile(path.join(testDir, 'extends-not-top-level', file));
+      } catch (ex) {
+        thrown = ex;
+      }
+      assert.ok(thrown, `expected error for ${file}`);
+      assert.strictEqual(thrown.code, 'PUG:EXTENDS_NOT_FIRST');
+      assert.strictEqual(
+        thrown.msg,
+        'Declaration of template inheritance ("extends") should be the first thing in the file. There can only be one extends statement per file.'
+      );
+    }
+  });
+
+  for (const [suiteDir, file, locals] of [
+    ['duplicate-block', 'index.pug', { ajax: true }],
+    ['duplicate-block', 'index.pug', { ajax: false }],
+    ['shadowed-block', 'index.pug', { ajax: true }],
+    ['shadowed-block', 'index.pug', { ajax: false }],
+    ['regression-2436', 'issue1.pug', { pretty: true }],
+    ['regression-2436', 'issue2.pug', { pretty: true }],
+  ]) {
+    const label = `${suiteDir}/index.test.js (${file}, ${JSON.stringify(locals)})`;
+    runBehavioralCase('HTML', label, (p) => {
+      const out = p.renderFile(path.join(testDir, suiteDir, file), locals);
+      assert.strictEqual(typeof out, 'string');
+      if (p !== raw.pug) {
+        const expected = raw.pug.renderFile(path.join(testDir, suiteDir, file), locals);
+        assert.strictEqual(out, expected);
+      }
+    });
+  }
+
+  // 7. Explicitly deferred Step 5/6 API & integration cases (individually listed, NOT virtual counts)
   const deferredApiAndPluginCases = [
-    ['API', 'pug.test.js > .compileFile() > issue-1593', 'PLAN.md §五 Step 4/6 (compileFile & pug_load)'],
-    ['API', 'pug.test.js > .compileFile() > caching (pass 1)', 'PLAN.md §五 Step 4/6 (compileFile & file cache)'],
-    ['API', 'pug.test.js > .compileFile() > caching (pass 2)', 'PLAN.md §五 Step 4/6 (compileFile & file cache)'],
-    ['API', 'pug.test.js > .renderFile() > sync string return', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
-    ['API', 'pug.test.js > .renderFile() > callback with options', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
-    ['API', 'pug.test.js > .renderFile() > callback without options', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
-    ['API', 'pug.test.js > .renderFile() > callback with error', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
-    ['API', 'pug.test.js > .renderFile() > caching (pass 1)', 'PLAN.md §五 Step 4/6 (renderFile & file cache)'],
-    ['API', 'pug.test.js > .renderFile() > caching (pass 2)', 'PLAN.md §五 Step 4/6 (renderFile & file cache)'],
+    ['API', 'pug.test.js > .compileFile() > issue-1593', 'PLAN.md §五 Step 6 (compileFile & file warnings)'],
+    ['API', 'pug.test.js > .compileFile() > caching (pass 1)', 'PLAN.md §五 Step 6 (compileFile & file cache)'],
+    ['API', 'pug.test.js > .compileFile() > caching (pass 2)', 'PLAN.md §五 Step 6 (compileFile & file cache)'],
+    ['API', 'pug.test.js > .renderFile() > sync string return', 'PLAN.md §五 Step 6 (renderFile & file API)'],
+    ['API', 'pug.test.js > .renderFile() > callback with options', 'PLAN.md §五 Step 6 (renderFile & callback)'],
+    ['API', 'pug.test.js > .renderFile() > callback without options', 'PLAN.md §五 Step 6 (renderFile & callback)'],
+    ['API', 'pug.test.js > .renderFile() > callback with error', 'PLAN.md §五 Step 6 (renderFile & callback)'],
+    ['API', 'pug.test.js > .renderFile() > caching (pass 1)', 'PLAN.md §五 Step 6 (renderFile & file cache)'],
+    ['API', 'pug.test.js > .renderFile() > caching (pass 2)', 'PLAN.md §五 Step 6 (renderFile & file cache)'],
     ['JS Artifact', 'pug.test.js > .compileFileClient() > returns template string', 'PLAN.md §五 Step 5/6 (compileFileClient)'],
     ['JS Artifact', 'pug.test.js > .compileFileClient() > name option', 'PLAN.md §五 Step 5/6 (compileFileClient)'],
     ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 1)', 'PLAN.md §五 Step 5/6 (compileFileClient & cache)'],
     ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 2)', 'PLAN.md §五 Step 5/6 (compileFileClient & cache)'],
-    ['API', 'pug.test.js > .compile().dependencies > extends1', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
-    ['API', 'pug.test.js > .compile().dependencies > include1', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
-    ['API', 'pug.test.js > .compile().dependencies > extends2', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
-    ['API', 'pug.test.js > .compile().dependencies > include2', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
     ['Filters/Plugins', 'plugins.test.js > #3295 lexer plugins in tag interpolation', 'PLAN.md §五 Step 6 (plugin.lex internal extension)'],
-    ['Error', 'duplicate-block/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
-    ['Error', 'extends-not-top-level/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
-    ['HTML', 'eachOf/index.test.js', 'PLAN.md §五 Step 4/6 (compileFile/renderFile integration)'],
-    ['Filters/Plugins', 'markdown-it/index.test.js', 'PLAN.md §五 Step 4 (pug_filters JSTransformer)'],
-    ['HTML', 'regression-2436/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
-    ['HTML', 'shadowed-block/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
-    ['Execution Semantics', 'examples.test.js', 'PLAN.md §五 Step 4-6 (full examples suite)'],
+    ['HTML', 'eachOf/index.test.js', 'PLAN.md §五 Step 5/6 (compileFile/renderFile integration)'],
+    ['Filters/Plugins', 'markdown-it/index.test.js', 'PLAN.md §五 Step 5/6 (markdown-it JSTransformer package check)'],
+    ['Execution Semantics', 'examples.test.js', 'PLAN.md §五 Step 5-6 (full examples suite)'],
   ];
   for (const [cat, name, note] of deferredApiAndPluginCases) {
     recordCase(results, 'pug', cat, name, 'PASS', 'DEFERRED', note);
@@ -1901,28 +1923,28 @@ ${catRows}
 
 | 類別 | 項目 | 原版基準行為 | 目前目標狀態 | 預計完成階段 |
 |---|---|---|---|---|
-| 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 6 |
-| 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`DEFERRED (Step 4/6)\` | Step 4 / Step 6 |
-| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 5 |
+| 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
+| 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`PARTIAL (Step 4 範圍)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
 | 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`DEFERRED (Step 5/6)\` | Step 5 / Step 6 |
-| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 5 |
-| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 6 |
-| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`DEFERRED (Step 4/6)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
+| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
+| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`PARTIAL (Step 4 範圍)\` | Step 4 / Step 6 |
 | 公開 API | \`pug.__express(path, options, fn)\` | \`NODE_ENV === 'production'\` 且未指定 \`compileDebug\` 時預設 \`false\` | \`DEFERRED (Step 6)\` | Step 6 |
 | 公開 API | \`pug.cache\` / \`pug.filters\` / \`pug.runtime\` / \`pug.name\` | 外部可直接讀寫 \`cache\` 與 \`filters\`；\`name === 'Pug'\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
 | 公開 API | \`require('pug/register')\` | 註冊 \`require.extensions['.pug'] = pug.compileFile\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
-| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 3 範圍)\` | Step 3 / Step 5 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`PASS (Step 3 範圍)\` | Step 3 / Step 5 / Step 6 |
-| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 3 範圍)\` | Step 1 / Step 3 / Step 5 |
-| 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`DEFERRED (Step 4)\` | Step 4 |
-| 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`PARTIAL (單檔入口)\` | Step 1 / Step 4 / Step 6 |
-| 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`PARTIAL (pre/postCodeGen)\` | Step 4 / Step 6 |
-| 外掛介面 | Replacement hooks (\`resolve\`, \`read\`, \`generateCode\`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 \`Buffer\` 回傳 | \`DEFERRED (Step 4/6)\` | Step 4 / Step 6 |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 4 範圍)\` | Step 3 / Step 5 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`PASS (Step 4 範圍)\` | Step 3 / Step 5 / Step 6 |
+| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 4 範圍)\` | Step 1 / Step 3 / Step 5 |
+| 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`PASS (Step 4 範圍)\` | Step 4 |
+| 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`PASS (Step 4 範圍)\` | Step 1 / Step 4 / Step 6 |
+| 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`PASS (Step 4 範圍)\` | Step 4 / Step 6 |
+| 外掛介面 | Replacement hooks (\`resolve\`, \`read\`, \`generateCode\`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 \`Buffer\` 回傳 | \`PASS (Step 4 範圍)\` | Step 4 / Step 6 |
 | 外掛介面 | 內部擴充 (\`plugin.lex\`, \`plugin.parse\`) | 如 \`#3295\` tag interpolation 中的 \`plugin.lex.advance\` | \`DEFERRED (Step 6)\` | Step 6 |
 
 ---
 
-## 5. Step 3 節點與編譯選項支援矩陣（四種能力分界）
+## 5. Step 4 節點與編譯選項支援矩陣（四種能力分界）
 
 | 類別 | AST 節點 / 編譯選項 | 可解析 (\`pug_parser\`) | 可走訪 (\`pug_walk\`) | 可產生 JS (\`pug_code_gen\`) | 可渲染 (\`Node VM + locals\`) | 延後完成階段與說明 |
 |---|---|:---:|:---:|:---:|:---:|---|
@@ -1932,14 +1954,14 @@ ${catRows}
 | AST 節點 | \`Conditional\` (\`if\` / \`else if\` / \`else\` / \`unless\`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
 | AST 節點 | \`Each\`（含 \`key\` 與 \`else\` 替代區塊）/ \`EachOf\` / \`While\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
 | AST 節點 | \`Case\` / \`When\` (\`default\` / \`block\`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
-| AST 節點 | \`AttributeBlock\` (\`&attributes\`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 3 已完成靜態/動態屬性與 \`&attributes\` 支援；完整 \`pug-attrs\` 52 筆獨立快照於 Step 5 收斂 |
-| AST 節點 | \`Filter\` / \`IncludeFilter\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 4（\`pug_filters\` 編譯期常數選項與 filter 執行） |
-| AST 節點 | \`Include\` / \`RawInclude\` / \`Extends\` / \`FileReference\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 4（\`pug_load\` 遞迴讀檔與 \`pug_linker\` 模板連結） |
-| AST 節點 | \`NamedBlock\` (\`block\` / \`append\` / \`prepend\`) / \`YieldBlock\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 4（\`pug_linker\` 繼承合併與 include yield 替換） |
-| AST 節點 | \`Mixin\`（定義與呼叫）/ \`MixinBlock\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 5（Mixin 完整 Codegen、動態呼叫與 block 傳遞） |
-| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成基本與語意支援；全組合於 Step 5 收斂 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（保留 \`compile\` 預設 \`compileDebug !== false\` 與 \`compileClient\` 預設 \`false\`） |
-| 編譯選項 | \`filename\` / \`basedir\`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ➖（單檔可，跨檔未支援） | ➖（單檔可，跨檔未支援） | Step 4（\`pug_load\` 跨檔案依賴解析） |
+| AST 節點 | \`AttributeBlock\` (\`&attributes\`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 3–4 已支援基本與 Mixin 屬性合併；完整 \`pug-attrs\` 52 筆獨立快照於 Step 5 收斂 |
+| AST 節點 | \`Filter\` / \`IncludeFilter\` | ✅ | ✅ | ✅ | ✅ | Step 4B 已完成（\`pug_filters\` 編譯期常數選項、filter 執行與 JSTransformer 橋接） |
+| AST 節點 | \`Include\` / \`RawInclude\` / \`Extends\` / \`FileReference\` | ✅ | ✅ | ✅ | ✅ | Step 4A/4C 已完成（\`pug_load\` 遞迴讀檔與 \`pug_linker\` 模板連結） |
+| AST 節點 | \`NamedBlock\` (\`block\` / \`append\` / \`prepend\`) / \`YieldBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4C 已完成（\`pug_linker\` 繼承合併、\`yield\` 替換與 \`Codegen\` 走訪） |
+| AST 節點 | \`Mixin\`（定義與呼叫）/ \`MixinBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4D 已完成（定義、參數/rest、動態名稱、繼承位置與 block/attributes 傳遞）；完整選項與 attrs 收斂於 Step 5 |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | ✅ | ✅ | ✅ | ✅ | Step 3–4 已完成基本與語意支援；全組合於 Step 5 收斂 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 3–4 已完成（保留 \`compile\` 預設 \`compileDebug !== false\` 與 \`compileClient\` 預設 \`false\`） |
+| 編譯選項 | \`filename\` / \`basedir\`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ✅ | ✅ | Step 4A 已完成（\`pug_load\` 跨檔案依賴解析） |
 | 外掛擴充 | \`plugin.parse\` / \`plugin.lex\` | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 6（完整 Node Plugin 相容驗收） |
 
 ---

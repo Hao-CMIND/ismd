@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use pug_ast::{
     Attribute, AttributeBlock, BlockCommentNode, BlockNode, CaseNode, CodeNode, CommentNode,
-    ConditionalNode, DoctypeNode, EachNode, EachOfNode, InterpolatedTagNode, Node, TagNode,
-    WhenNode, WhileNode,
+    ConditionalNode, DoctypeNode, EachNode, EachOfNode, InterpolatedTagNode, MixinNode, Node,
+    TagNode, WhenNode, WhileNode,
 };
 use pug_attrs::{AttrsFormat, compile_attrs};
 use pug_error::{ErrorOptions, PugError};
@@ -79,6 +81,8 @@ pub fn generate_code(ast: &BlockNode, options: &CodeGenOptions) -> Result<String
         xml: false,
         doctype: None,
         each_count: 0,
+        mixins: HashMap::new(),
+        dynamic_mixins: false,
     };
 
     if let Some(ref dt) = options.doctype
@@ -100,6 +104,12 @@ enum BufferedType {
     Code,
 }
 
+#[derive(Debug, Default)]
+struct MixinEntry {
+    used: bool,
+    instances: Vec<(usize, usize)>,
+}
+
 struct CodeGenerator<'a> {
     options: &'a CodeGenOptions,
     buf: Vec<String>,
@@ -118,6 +128,8 @@ struct CodeGenerator<'a> {
     xml: bool,
     doctype: Option<String>,
     each_count: usize,
+    mixins: HashMap<String, MixinEntry>,
+    dynamic_mixins: bool,
 }
 
 impl<'a> CodeGenerator<'a> {
@@ -274,6 +286,11 @@ impl<'a> CodeGenerator<'a> {
             Node::Block(b) => self.visit_block(b),
             Node::NamedBlock(nb) => self.visit_nodes(&nb.nodes),
             Node::YieldBlock(_) => Ok(()),
+            Node::MixinBlock(_) => {
+                self.visit_mixin_block();
+                Ok(())
+            }
+            Node::Mixin(m) => self.visit_mixin(m),
             Node::Tag(tag) => self.visit_tag(tag),
             Node::InterpolatedTag(tag) => self.visit_interpolated_tag(tag),
             Node::Text(text) => {
@@ -313,6 +330,148 @@ impl<'a> CodeGenerator<'a> {
 
     fn visit_block(&mut self, block: &BlockNode) -> Result<(), PugError> {
         self.visit_nodes(&block.nodes)
+    }
+
+    fn visit_mixin_block(&mut self) {
+        if let Some(ref pp) = self.options.pretty {
+            self.buf
+                .push(format!("pug_indent.push({});", js_stringify_str(&pp.repeat(self.indents))));
+        }
+        self.buf.push(String::from("block && block();"));
+        if self.options.pretty.is_some() {
+            self.buf.push(String::from("pug_indent.pop();"));
+        }
+    }
+
+    fn visit_mixin(&mut self, mixin: &MixinNode) -> Result<(), PugError> {
+        let dynamic = mixin.name.starts_with('#');
+        if dynamic {
+            self.dynamic_mixins = true;
+        }
+        let name_inner = if dynamic && mixin.name.len() >= 3 {
+            mixin.name[2..mixin.name.len() - 1].to_string()
+        } else {
+            format!("\"{}\"", mixin.name)
+        };
+        let name = format!("pug_mixins[{name_inner}]");
+        let args = mixin.args.as_deref().unwrap_or("");
+        let key = mixin.name.clone();
+        self.mixins.entry(key.clone()).or_default();
+
+        if mixin.call {
+            self.mixins.get_mut(&key).unwrap().used = true;
+            if let Some(ref pp) = self.options.pretty {
+                self.buf.push(format!(
+                    "pug_indent.push({});",
+                    js_stringify_str(&pp.repeat(self.indents))
+                ));
+            }
+            let attrs = mixin.attrs.as_deref().unwrap_or(&[]);
+            let mut attrs_blocks = mixin
+                .attribute_blocks
+                .as_deref()
+                .map(extract_attr_blocks)
+                .unwrap_or_default();
+
+            if mixin.block.is_some() || !attrs.is_empty() || !attrs_blocks.is_empty() {
+                self.buf.push(format!("{name}.call({{"));
+
+                if let Some(ref block) = mixin.block {
+                    self.buf.push(String::from("block: function(){"));
+                    self.parent_indents += 1;
+                    let saved_indents = self.indents;
+                    self.indents = 0;
+                    self.visit_block(block)?;
+                    self.indents = saved_indents;
+                    self.parent_indents -= 1;
+
+                    if !attrs.is_empty() || !attrs_blocks.is_empty() {
+                        self.buf.push(String::from("},"));
+                    } else {
+                        self.buf.push(String::from("}"));
+                    }
+                }
+
+                if !attrs_blocks.is_empty() {
+                    if !attrs.is_empty() {
+                        let val = self.compile_attrs_internal(attrs, false);
+                        attrs_blocks.insert(0, val);
+                    }
+                    if attrs_blocks.len() > 1 {
+                        let merge_fn = self.runtime("merge");
+                        self.buf.push(format!(
+                            "attributes: {merge_fn}([{}])",
+                            attrs_blocks.join(",")
+                        ));
+                    } else {
+                        self.buf
+                            .push(format!("attributes: {}", attrs_blocks[0]));
+                    }
+                } else if !attrs.is_empty() {
+                    let val = self.compile_attrs_internal(attrs, false);
+                    self.buf.push(format!("attributes: {val}"));
+                }
+
+                if !args.is_empty() {
+                    self.buf.push(format!("}}, {args});"));
+                } else {
+                    self.buf.push(String::from("});"));
+                }
+            } else {
+                self.buf.push(format!("{name}({args});"));
+            }
+
+            if self.options.pretty.is_some() {
+                self.buf.push(String::from("pug_indent.pop();"));
+            }
+        } else {
+            let mixin_start = self.buf.len();
+            let mut arg_parts: Vec<String> = if args.is_empty() {
+                Vec::new()
+            } else {
+                args.split(',').map(String::from).collect()
+            };
+            let mut rest: Option<String> = None;
+            if let Some(last) = arg_parts.last()
+                && let Some(stripped) = last.trim().strip_prefix("...")
+            {
+                rest = Some(stripped.to_string());
+                arg_parts.pop();
+            }
+
+            self.buf.push(format!(
+                "{name} = pug_interp = function({}){{",
+                arg_parts.join(",")
+            ));
+            self.buf.push(String::from(
+                "var block = (this && this.block), attributes = (this && this.attributes) || {};",
+            ));
+            if let Some(rest_name) = rest {
+                self.buf.push(format!("var {rest_name} = [];"));
+                self.buf.push(format!(
+                    "for (pug_interp = {}; pug_interp < arguments.length; pug_interp++) {{",
+                    arg_parts.len()
+                ));
+                self.buf
+                    .push(format!("  {rest_name}.push(arguments[pug_interp]);"));
+                self.buf.push(String::from("}"));
+            }
+
+            self.parent_indents += 1;
+            if let Some(ref block) = mixin.block {
+                self.visit_block(block)?;
+            }
+            self.parent_indents -= 1;
+            self.buf.push(String::from("};"));
+            let mixin_end = self.buf.len();
+            self.mixins
+                .entry(key)
+                .or_default()
+                .instances
+                .push((mixin_start, mixin_end));
+        }
+
+        Ok(())
     }
 
     fn visit_nodes(&mut self, nodes: &[Node]) -> Result<(), PugError> {
@@ -690,12 +849,24 @@ impl<'a> CodeGenerator<'a> {
         res
     }
 
-    fn finish(self) -> Result<String, PugError> {
+    fn finish(mut self) -> Result<String, PugError> {
         let fn_name = if self.options.template_name.is_empty() {
             "template"
         } else {
             &self.options.template_name
         };
+
+        if !self.dynamic_mixins {
+            for entry in self.mixins.values() {
+                if !entry.used {
+                    for &(start, end) in &entry.instances {
+                        for line in &mut self.buf[start..end] {
+                            line.clear();
+                        }
+                    }
+                }
+            }
+        }
 
         let mut js = self.buf.join("\n");
         let mut globals = self.options.globals.clone();

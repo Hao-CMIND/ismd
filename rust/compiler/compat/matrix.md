@@ -23,13 +23,13 @@
 | `pug-strip-comments` | `pug_strip_comments` | Step 2 | 12 | 12 PASS / 0 APPROVED_DIFF / 0 FAIL | 12 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 | `pug-parser` | `pug_parser + pug_ast` | Step 3 | 119 | 119 PASS / 0 APPROVED_DIFF / 0 FAIL | 119 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 | `pug-walk` | `pug_walk` | Step 3 | 5 | 5 PASS / 0 APPROVED_DIFF / 0 FAIL | 5 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
-| `pug-load` | `pug_load` | Step 4 | 1 | 1 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 1 DEFERRED / 0 BLOCKED / 0 FAIL |
-| `pug-filters` | `pug_filters + pug_js::constant` | Step 4 | 16 | 16 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 16 DEFERRED / 0 BLOCKED / 0 FAIL |
-| `pug-linker` | `pug_linker` | Step 4 | 24 | 24 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 24 DEFERRED / 0 BLOCKED / 0 FAIL |
+| `pug-load` | `pug_load` | Step 4 | 1 | 1 PASS / 0 APPROVED_DIFF / 0 FAIL | 1 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| `pug-filters` | `pug_filters + pug_js::constant` | Step 4 | 16 | 16 PASS / 0 APPROVED_DIFF / 0 FAIL | 16 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| `pug-linker` | `pug_linker` | Step 4 | 24 | 24 PASS / 0 APPROVED_DIFF / 0 FAIL | 24 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 | `pug-attrs` | `pug_attrs` | Step 5 | 52 | 52 PASS / 0 APPROVED_DIFF / 0 FAIL | 0 PASS / 52 DEFERRED / 0 BLOCKED / 0 FAIL |
 | `pug-runtime` | `pug_runtime` | Step 5 | 9 | 9 PASS / 0 APPROVED_DIFF / 0 FAIL | 9 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
-| `pug` | `pug_code_gen + pug_compiler + pug_napi` | Step 1–6 | 268 | 266 PASS / 2 APPROVED_DIFF / 0 FAIL | 160 PASS / 108 DEFERRED / 0 BLOCKED / 0 FAIL |
-| **合計** | — | **Step 0** | **658** | **656 PASS / 2 APPROVED_DIFF / 0 FAIL** | **457 PASS / 201 DEFERRED / 0 BLOCKED / 0 FAIL** |
+| `pug` | `pug_code_gen + pug_compiler + pug_napi` | Step 1–6 | 330 | 328 PASS / 2 APPROVED_DIFF / 0 FAIL | 293 PASS / 37 DEFERRED / 0 BLOCKED / 0 FAIL |
+| **合計** | — | **Step 0** | **720** | **718 PASS / 2 APPROVED_DIFF / 0 FAIL** | **631 PASS / 89 DEFERRED / 0 BLOCKED / 0 FAIL** |
 
 > 註：`pug-code-gen` (`2.0.2`) 在原版 Monorepo 中無獨立 `test/` 資料夾，其單元與快照測試合併於 `pug` 主套件的 `cases/*.pug`、`compileClient` 快照與執行語意測試中驗收。
 
@@ -39,13 +39,13 @@
 
 | 測試類別 | 追蹤案例數 | 原版基準 (`raw/compiler`) | Rust 目標 (`rust/compiler`) |
 |---|---:|---|---|
-| Token/AST | 272 | 272 PASS / 0 APPROVED_DIFF / 0 FAIL | 251 PASS / 21 DEFERRED / 0 BLOCKED / 0 FAIL |
-| HTML | 127 | 127 PASS / 0 APPROVED_DIFF / 0 FAIL | 64 PASS / 63 DEFERRED / 0 BLOCKED / 0 FAIL |
+| Token/AST | 273 | 273 PASS / 0 APPROVED_DIFF / 0 FAIL | 273 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| HTML | 131 | 131 PASS / 0 APPROVED_DIFF / 0 FAIL | 130 PASS / 1 DEFERRED / 0 BLOCKED / 0 FAIL |
 | Execution Semantics | 12 | 12 PASS / 0 APPROVED_DIFF / 0 FAIL | 11 PASS / 1 DEFERRED / 0 BLOCKED / 0 FAIL |
-| Filters/Plugins | 19 | 19 PASS / 0 APPROVED_DIFF / 0 FAIL | 1 PASS / 18 DEFERRED / 0 BLOCKED / 0 FAIL |
-| API | 25 | 25 PASS / 0 APPROVED_DIFF / 0 FAIL | 12 PASS / 13 DEFERRED / 0 BLOCKED / 0 FAIL |
-| Error | 87 | 85 PASS / 2 APPROVED_DIFF / 0 FAIL | 58 PASS / 29 DEFERRED / 0 BLOCKED / 0 FAIL |
-| JS Artifact | 116 | 116 PASS / 0 APPROVED_DIFF / 0 FAIL | 60 PASS / 56 DEFERRED / 0 BLOCKED / 0 FAIL |
+| Filters/Plugins | 17 | 17 PASS / 0 APPROVED_DIFF / 0 FAIL | 15 PASS / 2 DEFERRED / 0 BLOCKED / 0 FAIL |
+| API | 25 | 25 PASS / 0 APPROVED_DIFF / 0 FAIL | 16 PASS / 9 DEFERRED / 0 BLOCKED / 0 FAIL |
+| Error | 87 | 85 PASS / 2 APPROVED_DIFF / 0 FAIL | 67 PASS / 20 DEFERRED / 0 BLOCKED / 0 FAIL |
+| JS Artifact | 175 | 175 PASS / 0 APPROVED_DIFF / 0 FAIL | 119 PASS / 56 DEFERRED / 0 BLOCKED / 0 FAIL |
 
 ---
 
@@ -53,28 +53,28 @@
 
 | 類別 | 項目 | 原版基準行為 | 目前目標狀態 | 預計完成階段 |
 |---|---|---|---|---|
-| 公開 API | `pug.compile(str, options)` | 回傳附帶 `.dependencies` 的同步渲染函式 | `PARTIAL (Step 3 範圍)` | Step 1 / Step 3 / Step 6 |
-| 公開 API | `pug.compileFile(path, options)` | 讀取檔案並支援 `exports.cache[path]` | `DEFERRED (Step 4/6)` | Step 4 / Step 6 |
-| 公開 API | `pug.compileClient(str, options)` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | `PARTIAL (Step 3 範圍)` | Step 1 / Step 3 / Step 5 |
+| 公開 API | `pug.compile(str, options)` | 回傳附帶 `.dependencies` 的同步渲染函式 | `PARTIAL (Step 4 範圍)` | Step 1 / Step 3 / Step 4 / Step 6 |
+| 公開 API | `pug.compileFile(path, options)` | 讀取檔案並支援 `exports.cache[path]` | `PARTIAL (Step 4 範圍)` | Step 4 / Step 6 |
+| 公開 API | `pug.compileClient(str, options)` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | `PARTIAL (Step 4 範圍)` | Step 1 / Step 3 / Step 4 / Step 5 |
 | 公開 API | `pug.compileFileClient(path, options)` | 支援 `exports.cache[path + ':client']` 與 `name` | `DEFERRED (Step 5/6)` | Step 5 / Step 6 |
-| 公開 API | `pug.compileClientWithDependenciesTracked(str, options)` | 回傳 `{ body, dependencies }` | `PARTIAL (Step 3 範圍)` | Step 1 / Step 3 / Step 5 |
-| 公開 API | `pug.render(str, options, fn)` | 同步渲染或同步回呼 `fn(err, html)`；原始 `locals` 不經 JSON 序列化 | `PARTIAL (Step 3 範圍)` | Step 1 / Step 3 / Step 6 |
-| 公開 API | `pug.renderFile(path, options, fn)` | 檔案同步渲染或同步回呼 `fn(err, html)` | `DEFERRED (Step 4/6)` | Step 4 / Step 6 |
+| 公開 API | `pug.compileClientWithDependenciesTracked(str, options)` | 回傳 `{ body, dependencies }` | `PARTIAL (Step 4 範圍)` | Step 1 / Step 3 / Step 4 / Step 5 |
+| 公開 API | `pug.render(str, options, fn)` | 同步渲染或同步回呼 `fn(err, html)`；原始 `locals` 不經 JSON 序列化 | `PARTIAL (Step 4 範圍)` | Step 1 / Step 3 / Step 4 / Step 6 |
+| 公開 API | `pug.renderFile(path, options, fn)` | 檔案同步渲染或同步回呼 `fn(err, html)` | `PARTIAL (Step 4 範圍)` | Step 4 / Step 6 |
 | 公開 API | `pug.__express(path, options, fn)` | `NODE_ENV === 'production'` 且未指定 `compileDebug` 時預設 `false` | `DEFERRED (Step 6)` | Step 6 |
 | 公開 API | `pug.cache` / `pug.filters` / `pug.runtime` / `pug.name` | 外部可直接讀寫 `cache` 與 `filters`；`name === 'Pug'` | `PASS (Step 1 骨架)` | Step 1 / Step 6 |
 | 公開 API | `require('pug/register')` | 註冊 `require.extensions['.pug'] = pug.compileFile` | `PASS (Step 1 骨架)` | Step 1 / Step 6 |
-| 編譯選項 | `pretty` / `doctype` / `self` / `globals` | 縮排字串、DOCTYPE 模式、`self` 命名空間與全域變數白名單 | `PASS (Step 3 範圍)` | Step 3 / Step 5 |
-| 編譯選項 | `compileDebug` / `includeSources` / `debug` | 保留 `compile` 與 `compileClient` 預設差異 | `PASS (Step 3 範圍)` | Step 3 / Step 5 / Step 6 |
-| 編譯選項 | `inlineRuntimeFunctions` / `name` / `module` | 內嵌 `pug_*` 依賴展開或 `runtimeWrap` / `require("pug-runtime")` | `PASS (Step 3 範圍)` | Step 1 / Step 3 / Step 5 |
-| 編譯選項 | `filename` / `basedir` | Node `path` 相容解析，不任意 `fs::canonicalize` | `DEFERRED (Step 4)` | Step 4 |
-| 外掛介面 | `preLex` / `postLex` / `preParse` / `postParse` / `preLoad` / `postLoad` | 對入口與每個 `include`/`extends` 依賴檔案在主執行緒同步呼叫 | `PARTIAL (單檔入口)` | Step 1 / Step 4 / Step 6 |
-| 外掛介面 | `preFilters` / `postFilters` / `preLink` / `postLink` / `preCodeGen` / `postCodeGen` | 管線各階段 AST / Code 同步轉換 hook | `PARTIAL (pre/postCodeGen)` | Step 4 / Step 6 |
-| 外掛介面 | Replacement hooks (`resolve`, `read`, `generateCode`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 `Buffer` 回傳 | `DEFERRED (Step 4/6)` | Step 4 / Step 6 |
+| 編譯選項 | `pretty` / `doctype` / `self` / `globals` | 縮排字串、DOCTYPE 模式、`self` 命名空間與全域變數白名單 | `PASS (Step 4 範圍)` | Step 3 / Step 5 |
+| 編譯選項 | `compileDebug` / `includeSources` / `debug` | 保留 `compile` 與 `compileClient` 預設差異 | `PASS (Step 4 範圍)` | Step 3 / Step 5 / Step 6 |
+| 編譯選項 | `inlineRuntimeFunctions` / `name` / `module` | 內嵌 `pug_*` 依賴展開或 `runtimeWrap` / `require("pug-runtime")` | `PASS (Step 4 範圍)` | Step 1 / Step 3 / Step 5 |
+| 編譯選項 | `filename` / `basedir` | Node `path` 相容解析，不任意 `fs::canonicalize` | `PASS (Step 4 範圍)` | Step 4 |
+| 外掛介面 | `preLex` / `postLex` / `preParse` / `postParse` / `preLoad` / `postLoad` | 對入口與每個 `include`/`extends` 依賴檔案在主執行緒同步呼叫 | `PASS (Step 4 範圍)` | Step 1 / Step 4 / Step 6 |
+| 外掛介面 | `preFilters` / `postFilters` / `preLink` / `postLink` / `preCodeGen` / `postCodeGen` | 管線各階段 AST / Code 同步轉換 hook | `PASS (Step 4 範圍)` | Step 4 / Step 6 |
+| 外掛介面 | Replacement hooks (`resolve`, `read`, `generateCode`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 `Buffer` 回傳 | `PASS (Step 4 範圍)` | Step 4 / Step 6 |
 | 外掛介面 | 內部擴充 (`plugin.lex`, `plugin.parse`) | 如 `#3295` tag interpolation 中的 `plugin.lex.advance` | `DEFERRED (Step 6)` | Step 6 |
 
 ---
 
-## 5. Step 3 節點與編譯選項支援矩陣（四種能力分界）
+## 5. Step 4 節點與編譯選項支援矩陣（四種能力分界）
 
 | 類別 | AST 節點 / 編譯選項 | 可解析 (`pug_parser`) | 可走訪 (`pug_walk`) | 可產生 JS (`pug_code_gen`) | 可渲染 (`Node VM + locals`) | 延後完成階段與說明 |
 |---|---|:---:|:---:|:---:|:---:|---|
@@ -84,14 +84,14 @@
 | AST 節點 | `Conditional` (`if` / `else if` / `else` / `unless`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
 | AST 節點 | `Each`（含 `key` 與 `else` 替代區塊）/ `EachOf` / `While` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
 | AST 節點 | `Case` / `When` (`default` / `block`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
-| AST 節點 | `AttributeBlock` (`&attributes`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 3 已完成靜態/動態屬性與 `&attributes` 支援；完整 `pug-attrs` 52 筆獨立快照於 Step 5 收斂 |
-| AST 節點 | `Filter` / `IncludeFilter` | ✅ | ✅ | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | Step 4（`pug_filters` 編譯期常數選項與 filter 執行） |
-| AST 節點 | `Include` / `RawInclude` / `Extends` / `FileReference` | ✅ | ✅ | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | Step 4（`pug_load` 遞迴讀檔與 `pug_linker` 模板連結） |
-| AST 節點 | `NamedBlock` (`block` / `append` / `prepend`) / `YieldBlock` | ✅ | ✅ | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | Step 4（`pug_linker` 繼承合併與 include yield 替換） |
-| AST 節點 | `Mixin`（定義與呼叫）/ `MixinBlock` | ✅ | ✅ | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | Step 5（Mixin 完整 Codegen、動態呼叫與 block 傳遞） |
-| 編譯選項 | `pretty` / `doctype` / `self` / `globals` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成基本與語意支援；全組合於 Step 5 收斂 |
-| 編譯選項 | `compileDebug` / `includeSources` / `inlineRuntimeFunctions` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（保留 `compile` 預設 `compileDebug !== false` 與 `compileClient` 預設 `false`） |
-| 編譯選項 | `filename` / `basedir`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ➖（單檔可，跨檔未支援） | ➖（單檔可，跨檔未支援） | Step 4（`pug_load` 跨檔案依賴解析） |
+| AST 節點 | `AttributeBlock` (`&attributes`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 3–4 已支援基本與 Mixin 屬性合併；完整 `pug-attrs` 52 筆獨立快照於 Step 5 收斂 |
+| AST 節點 | `Filter` / `IncludeFilter` | ✅ | ✅ | ✅ | ✅ | Step 4B 已完成（`pug_filters` 編譯期常數選項、filter 執行與 JSTransformer 橋接） |
+| AST 節點 | `Include` / `RawInclude` / `Extends` / `FileReference` | ✅ | ✅ | ✅ | ✅ | Step 4A/4C 已完成（`pug_load` 遞迴讀檔與 `pug_linker` 模板連結） |
+| AST 節點 | `NamedBlock` (`block` / `append` / `prepend`) / `YieldBlock` | ✅ | ✅ | ✅ | ✅ | Step 4C 已完成（`pug_linker` 繼承合併、`yield` 替換與 `Codegen` 走訪） |
+| AST 節點 | `Mixin`（定義與呼叫）/ `MixinBlock` | ✅ | ✅ | ✅ | ✅ | Step 4D 已完成（定義、參數/rest、動態名稱、繼承位置與 block/attributes 傳遞）；完整選項與 attrs 收斂於 Step 5 |
+| 編譯選項 | `pretty` / `doctype` / `self` / `globals` | ✅ | ✅ | ✅ | ✅ | Step 3–4 已完成基本與語意支援；全組合於 Step 5 收斂 |
+| 編譯選項 | `compileDebug` / `includeSources` / `inlineRuntimeFunctions` | ✅ | ✅ | ✅ | ✅ | Step 3–4 已完成（保留 `compile` 預設 `compileDebug !== false` 與 `compileClient` 預設 `false`） |
+| 編譯選項 | `filename` / `basedir`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ✅ | ✅ | Step 4A 已完成（`pug_load` 跨檔案依賴解析） |
 | 外掛擴充 | `plugin.parse` / `plugin.lex` | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | Step 6（完整 Node Plugin 相容驗收） |
 
 ---

@@ -929,15 +929,133 @@ HTML 相同不能取代 AST、呼叫日誌、錯誤或 JS 產物的驗收。
 只有 Loader／Filters／Linker 的 AST 測試通過時，只能標記對應子階段完成。
 本階段承諾的 Mixin、Node 整合與回歸驗收都通過，才可標記整個 Step 4 完成。
 
-### Step 5：補齊屬性、Codegen、Runtime 與選項
+### Step 5：補齊常數求值、Runtime、Attrs、Codegen 與選項
 
-- [ ] 完成 `pug_attrs`：class 陣列／物件、style 物件、布林屬性、`toJSON`、escape、同名屬性合併與輸出順序，通過 `pug-attrs/test/`。
-- [ ] 在 Step 3／4 的最小能力上補齊 `pug_code_gen`，包含 doctype、void-elements、Mixin、pretty、compileDebug、self、globals、includeSources 與 inlineRuntimeFunctions。
-- [ ] 完成各編譯選項的組合測試，不只測試單一選項或單一 API 入口。
-- [ ] 完成 `pug_runtime` 的 helper 範圍、依賴展開與產物字串驗收，分別確認 inline 與外部 Runtime 行為。
-- [ ] 完整對齊 `constantinople` 相容範圍；對已知常數、非常數、非法及尚未支援的運算清楚區分。
-- [ ] 對新增節點及選項擴充 Scope／locals 回歸測試，確認 Step 3 語意沒有退步。
-- [ ] 按 Step 0 規則執行 `pug-code-gen` 格式化快照、原始字串與執行差異測試。
+**目標：在 Step 3／4 已建立的能力上，完成固定本機基準的屬性生成、Codegen、Runtime 與編譯選項相容範圍。**
+
+沿用既有 crate 分工、Oxc、Node 執行路徑及固定相容基準，不重新設計編譯架構。
+
+本階段拆成：
+
+1. 5A：補齊常數求值與 Runtime。
+2. 5B：完成 Attrs。
+3. 5C：完成 Codegen 與 Mixin。
+4. 5D：編譯選項、整合與回歸驗收。
+
+以上是主要實作順序，不要求 5A 全部完成才開始 5B／5C。
+各案例需要的常數、Runtime 或其他前置能力，須在該案例驗收前完成。
+
+#### 開始條件與階段邊界
+
+- [x] 核對 `compat/baseline.json`、既有測試結果與 `compat/matrix.md`，確認來源、實際依賴、工具版本及 serializers 沒有漂移。
+- [x] 確認 Step 3 的 Parser、Walk、最小 Codegen 與 Scope／locals 已承諾範圍仍通過。
+- [x] 核對 Step 4 的 Loader、Filters、Linker、同步 Host 橋接與最小 Mixin 實際進度，不以 PLAN 勾選或規格修訂代替測試證據。
+- [x] 盤點本機 `pug-attrs`、`pug-code-gen`、`pug-runtime` 與已鎖定 `constantinople` 的實作及相關測試，建立完整功能與案例對照。
+- [x] 將案例區分為可獨立驗證，以及依賴 Step 4 的整合案例，標明前置能力與目前狀態。
+
+不受 Step 4 未完成項目影響的工作，可以直接開始。
+受影響案例須先補齊前置能力，再進行整合驗收；不得以跳過計為通過。
+
+單階段測試可使用人工建立的相容 AST，但不能取代真實 Pug 經 Loader → Filters → Linker → Codegen 的整合測試。
+
+#### Step 5A：補齊常數求值與 Runtime
+
+**目標：讓 Attrs 與 Codegen 使用一致、可驗證的常數能力及 Runtime 產物。**
+
+- [x] 在 Step 3／4 的 `pug_js::constant` 基礎上，依固定 `constantinople` 實作補齊已宣告的相容範圍，核對輸入、選項、常數判定、求值結果與錯誤。
+- [x] 持續區分已知常數、非常數、尚未支援及語法／求值錯誤；不能把未完成的運算一律歸類為非常數。
+- [x] 對基準會處理的特殊值與資料型別建立案例，驗證值及其生成 JS 的表示方式，避免透過一般 JSON 轉換而改變結果。
+- [x] 常數判定通過後，才依基準執行必要的編譯期求值與輸出合併；動態表達式保留到 render，不在編譯時提前執行。
+- [x] 完成 Runtime helper 範圍、依賴展開、排序及 `build(fns)` 拼接行為，分別驗證外部 Runtime 與 inline Runtime。
+- [x] 維持 `runtime/index.js` 為 helper 邏輯單一來源，沿用固定生成腳本、工具版本與選項；生成資料不得手動修改。
+- [x] 驗證重新生成的 sources、dependencies、internals 與固定基準一致，並確認建置不會產生未預期漂移。
+
+Oxc 負責解析與分析，不代表已提供完整常數求值能力。
+要求原始 JS 字串相容的案例，不得只以執行結果相同代替。
+
+#### Step 5B：完成 Attrs
+
+**目標：完成屬性 JS 生成，並驗證實際執行時的輸出與副作用。**
+
+- [x] 完成 `pug_attrs` 的 class 陣列／物件、style 物件、布林屬性、escaping、`toJSON`、同名屬性合併及輸出順序。
+- [x] 核對靜態屬性、動態屬性及屬性區塊合併的處理方式，依基準保留屬性順序，不依賴 Rust 無序集合的迭代順序。
+- [x] 分別驗證產生的 JS、執行後的 HTML，以及 getter、`toJSON`、型別轉換等可觀察副作用的次數、順序與錯誤。
+- [x] 動態屬性仍由 Node 在 render 時求值，不將 locals 或動態物件先序列化交給 Rust 計算。
+- [x] 執行本機 `pug-attrs` 完整測試清單，並加入與 Mixin attributes、escaping 及 Runtime 的整合案例。
+
+**5B 驗收須同時包含 JS 產物、HTML 與執行副作用。**
+只比較最後的屬性字串，不足以判定相容。
+
+#### Step 5C：完成 Codegen 與 Mixin
+
+**目標：補齊基準節點與產物行為，延續既有 Scope／locals 轉換。**
+
+- [x] 依本機 `pug-code-gen` 實作與測試盤點全部節點及分支，補齊 Step 3／4 尚未完成的能力，不只處理目前清單列出的範例。
+- [x] 完成 doctype、void-elements、文字與空白處理、註解，以及基準其餘節點的 JS 生成與錯誤行為。
+- [x] 在 Step 4 最小 Mixin 能力上，補齊基準的參數語意、attributes、block、遞迴、動態名稱及相關執行上下文。
+- [x] 驗證 Mixin 與 include／extends／block 合併後的執行結果，保留正確定義位置及函式呼叫語意。
+- [x] 對新增節點與生成結構擴充 Scope／locals 回歸，驗證遮蔽、自由變數、內部名稱碰撞、getter、賦值、`this`、`arguments` 與 `return`。
+- [x] 保留原始模板來源資訊，核對入口及依賴檔案在 Codegen、函式建構與 render 階段的錯誤位置。
+- [x] 沿用相容輸出器；Oxc 用於解析與分析，不任意重新列印整份 JS，造成未核准的原始字串差異。
+
+對尚未支援的節點或分支，必須明確回報並記錄。
+不得忽略節點、輸出空字串，或回退原版 Pug 後計為 Rust 通過。
+
+#### Step 5D：編譯選項、整合與回歸驗收
+
+**目標：驗證選項彼此組合，以及各入口預設值造成的實際差異。**
+
+- [x] 完成 `pretty`、`compileDebug`、`includeSources`、`self`、`globals` 與 `inlineRuntimeFunctions` 的基準行為。
+- [x] 分開測試選項未提供、明確開啟、明確關閉及基準允許的其他值，保留各公開入口的預設差異。
+- [x] 依下表建立有明確預期結果的組合案例，不只各測一次單一選項。
+- [x] 對已支援的 compile／render／client 入口執行必要整合；案例依賴的入口接線須在本階段補齊，完整公開 API 驗收仍在 Step 6。
+- [x] 接上 Step 4 已完成的跨檔、Filters、繼承及 Mixin 案例，確認新增 Codegen 與 Runtime 能力沒有改變 dependencies、hook 時序或錯誤契約。
+
+| 組合範圍 | 必須驗證 |
+|---|---|
+| pretty × 節點結構 | boolean／自訂縮排字串、巢狀標籤、文字與空白、doctype／void-elements |
+| compileDebug × includeSources | 各入口預設值、入口與依賴來源、錯誤行列及來源上下文 |
+| self × globals × locals | 名稱排除、全域回退、同名屬性、原型鏈及 getter 副作用 |
+| inlineRuntimeFunctions × 入口 | 預設模式、明確切換、helper 依賴、外部 Runtime 與 inline 產物 |
+| Mixin × attributes × block | 參數、屬性合併與 escaping、block 執行、遞迴及動態呼叫 |
+| 常數／動態值 × Attrs／Codegen | 編譯期與執行期的分界、輸出合併、求值次數及錯誤階段 |
+
+選項組合以固定本機基準支援的行為為準。
+不得為通過測試而暗中關閉 debug、變更入口預設值或切換 Runtime 模式。
+
+#### 統一驗收規則
+
+每個案例分開記錄：
+
+1. HTML 與回傳值。
+2. locals 變化、getter／`toJSON` 等可觀察副作用。
+3. 錯誤類型、欄位、來源位置與發生階段。
+4. 固定 Prettier／Babel 設定下的格式化快照。
+5. 未格式化的原始 JS 字串。
+6. 適用時的 inline Runtime 字串及 helper 依賴。
+
+以上結果不能互相替代。
+HTML 相同不代表副作用、錯誤或 JS 產物相容。
+
+原版與 Rust 使用同一 fixture factory 分別建立等價輸入。
+含函式、getter、原型或可變狀態的資料，不使用 JSON 複製，也不共用已受前次執行影響的物件。
+
+沿用固定基準及既有安全差異政策，不自動更新快照來消除實作差異。
+
+#### Step 5 完成條件
+
+- [x] 常數求值、Runtime、Attrs 與 Codegen 的完整宣告範圍已有差異測試結果。
+- [x] 本階段選項與必要組合案例已通過，包含各入口預設行為。
+- [x] 依賴 Step 4 的整合案例已實際接通並通過，不只保留人工 AST 或單階段結果。
+- [x] 重跑 Step 1～4 既有回歸，確認詞法、AST、Walk、Host、依賴、Filters、Linker 及 Scope／locals 沒有退步。
+- [x] 更新 `compat/matrix.md`，記錄測試命令、總數、通過、失敗、跳過、不支援及已核准差異。
+- [x] 範圍內沒有未處理或未核准的差異；不得新增排除項目來掩蓋原已承諾功能的失敗。
+- [x] 延後至 Step 6 的事項逐一列明，不計入本階段通過數；實際驗收完成後才更新核取方塊。
+
+Step 6 繼續負責完整公開 API、cache、callback、`__express`、`register.js`、完整 plugin 擴充、平台／Worker 與發行驗收。
+
+只有獨立模組通過時，僅能標記對應子階段完成。
+必要的選項組合、跨階段整合及回歸驗收全部通過，才可標記整個 Step 5 完成。
 
 ### Step 6：API／擴充整合與發行驗收
 

@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import rustPug from '../../index.js';
+import depLib from '../../runtime/lib/dependencies.js';
+import intLib from '../../runtime/lib/internals.js';
+import srcLib from '../../runtime/lib/sources.js';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -269,5 +274,118 @@ test('Step 5.5: Scope/locals regression across Step 4-5 constructs (mixins, attr
     );
   } finally {
     delete globalThis.appPrefix;
+  }
+});
+
+test('Step 5.6: runtime/lib parity, attribute getter/toJSON side-effect order & errors, and entry compileDebug/includeSources defaults', () => {
+  // 6a. Generated runtime lib tables match raw/compiler pug-runtime/lib exactly
+  assert.deepEqual(depLib, require(path.join(RAW_ROOT, 'packages/pug-runtime/lib/dependencies.js')));
+  assert.deepEqual(intLib, require(path.join(RAW_ROOT, 'packages/pug-runtime/lib/internals.js')));
+  assert.deepEqual(srcLib, require(path.join(RAW_ROOT, 'packages/pug-runtime/lib/sources.js')));
+
+  // 6b. Attribute getter / toJSON / toString side-effect call counts, order, and errors
+  const attrSideEffectTpl = 'div(class=objCls, style=objStyle, data-a=objA)&attributes(dynBag)';
+  const makeAttrLocals = (log) => {
+    const objCls = [];
+    Object.defineProperty(objCls, '0', {
+      enumerable: true,
+      get() {
+        log.push('cls[0]');
+        return 'c1';
+      },
+    });
+    const objStyle = {};
+    Object.defineProperty(objStyle, 'color', {
+      enumerable: true,
+      get() {
+        log.push('style.color');
+        return 'red';
+      },
+    });
+    const objA = {
+      toJSON() {
+        log.push('objA.toJSON');
+        return { k: 1 };
+      },
+    };
+    const dynBag = {};
+    Object.defineProperty(dynBag, 'title', {
+      enumerable: true,
+      get() {
+        log.push('dynBag.title');
+        return {
+          toJSON() {
+            log.push('dynBag.title.toJSON');
+            return 'J';
+          },
+        };
+      },
+    });
+    return { objCls, objStyle, objA, dynBag };
+  };
+
+  const rLog = [];
+  const xLog = [];
+  const rawAttrHtml = rawPug.compile(attrSideEffectTpl, { compileDebug: false })(makeAttrLocals(rLog));
+  const rustAttrHtml = rustPug.compile(attrSideEffectTpl, { compileDebug: false })(makeAttrLocals(xLog));
+  assert.equal(rustAttrHtml, rawAttrHtml);
+  assert.deepEqual(xLog, rLog);
+  assert.equal(
+    serializers.compareCodegen(
+      rawPug.compileClient(attrSideEffectTpl, { compileDebug: false }),
+      rustPug.compileClient(attrSideEffectTpl, { compileDebug: false })
+    ).ok,
+    true
+  );
+
+  for (const badTpl of ['div(data-x=badObj)', 'div&attributes(badBag)']) {
+    const makeBad = () => ({
+      badObj: {
+        toJSON() {
+          throw new RangeError('tojson-boom');
+        },
+      },
+      get badBag() {
+        throw new TypeError('bag-boom');
+      },
+    });
+    let re;
+    let xe;
+    try { rawPug.compile(badTpl, { filename: 'b.pug', compileDebug: true })(makeBad()); } catch (e) { re = e; }
+    try { rustPug.compile(badTpl, { filename: 'b.pug', compileDebug: true })(makeBad()); } catch (e) { xe = e; }
+    assert.ok(re && xe);
+    assert.equal(xe.message, re.message);
+  }
+
+  // 6c. compile vs compileClient defaults for compileDebug x includeSources across entry + include
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-step5-defaults-'));
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'inc.pug'), 'p= boom.x\n');
+    const entry = path.join(tmpDir, 'main.pug');
+    const src = 'include inc\n';
+    for (const cDbg of [undefined, true, false]) {
+      for (const incSrc of [undefined, true, false]) {
+        const opts = { filename: entry };
+        if (cDbg !== undefined) opts.compileDebug = cDbg;
+        if (incSrc !== undefined) opts.includeSources = incSrc;
+        assert.equal(
+          serializers.compareCodegen(
+            rawPug.compileClient(src, opts),
+            rustPug.compileClient(src, opts)
+          ).ok,
+          true,
+          `compileClient mismatch for ${JSON.stringify(opts)}`
+        );
+
+        let re;
+        let xe;
+        try { rawPug.compile(src, opts)({}); } catch (e) { re = e; }
+        try { rustPug.compile(src, opts)({}); } catch (e) { xe = e; }
+        assert.equal(Boolean(xe), Boolean(re));
+        assert.equal(xe.message, re.message);
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

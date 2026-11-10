@@ -135,6 +135,134 @@ exports.lex = lex;
 exports._stripComments = stripComments;
 exports.stripComments = stripComments;
 
+function parse(tokens, options) {
+  if (!Array.isArray(tokens)) {
+    throw new Error(
+      'Expected tokens to be an Array but got "' + typeof tokens + '"'
+    );
+  }
+  if (options !== undefined && (typeof options !== 'object' || options === null)) {
+    throw new Error(
+      'Expected "options" to be an object but got "' + typeof options + '"'
+    );
+  }
+  options = options || {};
+  const outcome = native.parseSync(tokens, {
+    filename: options.filename,
+    src: options.src,
+  });
+  if (!outcome.ok && outcome.error) {
+    throw dtoToJsError(outcome.error);
+  }
+  return outcome.data;
+}
+
+function walkAST(ast, before, after, options) {
+  if (after && typeof after === 'object' && typeof options === 'undefined') {
+    options = after;
+    after = null;
+  }
+  options = options || { includeDependencies: false };
+  const parents = (options.parents = options.parents || []);
+  const initialParentsSnapshot = parents.slice();
+  const jsStack = [];
+
+  const userBefore = typeof before === 'function' ? before : null;
+  const userAfter = typeof after === 'function' ? after : null;
+
+  const callbacks = {
+    before: function(step) {
+      let replaced = false;
+      let replacement = undefined;
+      const nodeObj = step.node;
+      parents.splice(0, parents.length, ...jsStack, ...initialParentsSnapshot);
+
+      let res;
+      if (userBefore) {
+        const replace = function replace(rep) {
+          if (Array.isArray(rep) && !replace.arrayAllowed) {
+            throw new Error(
+              'replace() can only be called with an array if the last parent is a Block or NamedBlock'
+            );
+          }
+          replaced = true;
+          replacement = rep;
+        };
+        replace.arrayAllowed = Boolean(step.arrayAllowed);
+        res = userBefore(nodeObj, replace);
+      }
+
+      const finalNode = replaced ? replacement : nodeObj;
+      if (res !== false && !Array.isArray(finalNode)) {
+        jsStack.unshift(finalNode);
+        parents.splice(0, parents.length, ...jsStack, ...initialParentsSnapshot);
+      }
+
+      return {
+        cont: res !== false,
+        replaced: true,
+        replacement: finalNode,
+      };
+    },
+    after: function(step) {
+      const origNode = jsStack.shift();
+      let nodeObj = step.node;
+      if (origNode && typeof origNode === 'object' && nodeObj && typeof nodeObj === 'object') {
+        Object.assign(origNode, nodeObj);
+        nodeObj = origNode;
+      }
+      parents.splice(0, parents.length, ...jsStack, ...initialParentsSnapshot);
+
+      let replaced = false;
+      let replacement = undefined;
+      if (userAfter) {
+        const replace = function replace(rep) {
+          if (Array.isArray(rep) && !replace.arrayAllowed) {
+            throw new Error(
+              'replace() can only be called with an array if the last parent is a Block or NamedBlock'
+            );
+          }
+          replaced = true;
+          replacement = rep;
+        };
+        replace.arrayAllowed = Boolean(step.arrayAllowed);
+        userAfter(nodeObj, replace);
+      }
+
+      if (!replaced) {
+        replaced = true;
+        replacement = nodeObj;
+      }
+      return {
+        cont: true,
+        replaced,
+        replacement,
+      };
+    },
+  };
+
+  const result = native.walkSync(
+    ast,
+    Boolean(options.includeDependencies),
+    initialParentsSnapshot,
+    callbacks
+  );
+  parents.splice(0, parents.length, ...initialParentsSnapshot);
+  return result;
+}
+
+exports._parse = parse;
+exports.parse = parse;
+exports._walk = walkAST;
+exports.walk = walkAST;
+exports._addWith = function(obj, src, exclude) {
+  return native.addWithSync(
+    String(obj),
+    String(src),
+    Array.isArray(exclude) ? exclude.map(String) : []
+  );
+};
+
 function applyPlugins(value, options, plugins, name) {
   return plugins.reduce(function(val, plugin) {
     return plugin[name] ? plugin[name](val, options) : val;
@@ -257,7 +385,7 @@ function compileBody(str, options) {
       filename: options.filename,
       basedir: options.basedir,
       pretty: normalizePretty(options.pretty),
-      compileDebug: Boolean(options.compileDebug),
+      compileDebug: options.compileDebug !== false,
       doctype: options.doctype,
       inlineRuntimeFunctions: Boolean(options.inlineRuntimeFunctions),
       globals: Array.isArray(options.globals) ? options.globals : [],

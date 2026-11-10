@@ -5,7 +5,9 @@ use pug_ast::{BlockNode, Token};
 use pug_compiler::{CompileOptions, CompilerHost, compile_body};
 use pug_error::{ErrorOptions, PugError};
 use pug_lexer::{LexerOptions, lex};
+use pug_parser::{ParserOptions, parse_json_tokens};
 use pug_strip_comments::{StripCommentsOptions, strip_comments_json};
+use pug_walk::walk_json_ast;
 use serde_json::Value;
 
 #[napi(object)]
@@ -89,6 +91,16 @@ pub fn make_error_dto(
 #[napi]
 pub fn runtime_build(functions: Vec<String>) -> String {
     pug_runtime::build(&functions)
+}
+
+#[napi]
+pub fn add_with_sync(
+    obj: String,
+    src: String,
+    exclude: Option<Vec<String>>,
+) -> Result<String> {
+    let ex = exclude.unwrap_or_default();
+    pug_js::add_with_checked(&obj, &src, &ex).map_err(|e| napi::Error::from_reason(e.message))
 }
 
 #[napi(object)]
@@ -177,6 +189,157 @@ pub fn strip_comments_sync(
         Err(_panic) => Err(napi::Error::from_reason(
             "Internal Rust panic caught at FFI boundary in strip_comments_sync",
         )),
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct NapiParserOptions {
+    pub filename: Option<String>,
+    pub src: Option<String>,
+}
+
+#[napi]
+pub fn parse_sync(
+    tokens: Vec<Value>,
+    options: Option<NapiParserOptions>,
+) -> Result<NapiJsonOutcome> {
+    let opts = options.unwrap_or_default();
+    let parse_opts = ParserOptions {
+        filename: opts.filename,
+        src: opts.src,
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parse_json_tokens(&tokens, &parse_opts)
+    }));
+    match outcome {
+        Ok(Ok(ast)) => {
+            let val = serde_json::to_value(ast)
+                .map_err(|e| napi::Error::from_reason(format!("Failed to serialize AST: {e}")))?;
+            Ok(NapiJsonOutcome {
+                ok: true,
+                data: Some(val),
+                error: None,
+            })
+        }
+        Ok(Err(pug_err)) => Ok(NapiJsonOutcome {
+            ok: false,
+            data: None,
+            error: Some(NapiPugErrorDto::from(pug_err)),
+        }),
+        Err(_panic) => Err(napi::Error::from_reason(
+            "Internal Rust panic caught at FFI boundary in parse_sync",
+        )),
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NapiWalkStepInput {
+    pub node: Value,
+    pub array_allowed: bool,
+    pub parents: Vec<Value>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NapiWalkStepResult {
+    pub cont: Option<bool>,
+    pub replaced: bool,
+    pub replacement: Option<Value>,
+}
+
+#[napi]
+pub fn walk_sync(
+    env: Env,
+    ast: Value,
+    include_dependencies: Option<bool>,
+    initial_parents: Option<Vec<Value>>,
+    callbacks: Object,
+) -> Result<Value> {
+    let before_cb: Option<Function<NapiWalkStepInput, NapiWalkStepResult>> =
+        if callbacks.has_named_property("before")? {
+            callbacks.get_named_property("before")?
+        } else {
+            None
+        };
+    let after_cb: Option<Function<NapiWalkStepInput, NapiWalkStepResult>> =
+        if callbacks.has_named_property("after")? {
+            callbacks.get_named_property("after")?
+        } else {
+            None
+        };
+
+    let pending_js_err: std::cell::RefCell<Option<napi::Error>> = std::cell::RefCell::new(None);
+    let mut parents = initial_parents.unwrap_or_default();
+
+    let res = walk_json_ast(
+        ast,
+        &mut |node, array_allowed, cur_parents| {
+            let Some(ref cb) = before_cb else {
+                return Ok((true, None));
+            };
+            let input = NapiWalkStepInput {
+                node: node.clone(),
+                array_allowed,
+                parents: cur_parents.to_vec(),
+            };
+            match cb.call(input) {
+                Ok(step_res) => {
+                    let cont = step_res.cont.unwrap_or(true);
+                    let rep = if step_res.replaced {
+                        step_res.replacement
+                    } else {
+                        None
+                    };
+                    Ok((cont, rep))
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    *pending_js_err.borrow_mut() = Some(e);
+                    Err(msg)
+                }
+            }
+        },
+        &mut |node, array_allowed, cur_parents| {
+            let Some(ref cb) = after_cb else {
+                return Ok(None);
+            };
+            let input = NapiWalkStepInput {
+                node: node.clone(),
+                array_allowed,
+                parents: cur_parents.to_vec(),
+            };
+            match cb.call(input) {
+                Ok(step_res) => {
+                    let rep = if step_res.replaced {
+                        step_res.replacement
+                    } else {
+                        None
+                    };
+                    Ok(rep)
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    *pending_js_err.borrow_mut() = Some(e);
+                    Err(msg)
+                }
+            }
+        },
+        include_dependencies.unwrap_or(false),
+        &mut parents,
+    );
+
+    let _ = env;
+    match res {
+        Ok(final_ast) => Ok(final_ast),
+        Err(msg) => {
+            if let Some(js_err) = pending_js_err.into_inner() {
+                Err(js_err)
+            } else {
+                Err(napi::Error::from_reason(msg))
+            }
+        }
     }
 }
 

@@ -8,3 +8,5 @@ license.workspace = true
 [dependencies]
 pug_ast.workspace = true
 pug_error.workspace = true
+serde.workspace = true
+serde_json.workspace = true

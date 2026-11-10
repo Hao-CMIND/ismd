@@ -58,6 +58,37 @@ function recordCase(results, pkg, category, name, baselineStatus, targetStatus, 
   });
 }
 
+function isTargetBlocked(rustTarget) {
+  return !rustTarget || Boolean(rustTarget.__loadError);
+}
+
+const STEP4_5_NODE_TYPES = new Set([
+  'Include',
+  'RawInclude',
+  'Extends',
+  'NamedBlock',
+  'YieldBlock',
+  'Mixin',
+  'MixinBlock',
+  'Filter',
+]);
+
+function findDeferredAstNodes(raw, src, filename) {
+  try {
+    const tokens = raw.stripComments(raw.lex(src, { filename }), { filename });
+    const ast = raw.parse(tokens, { filename, src });
+    const found = new Set();
+    raw.walk(ast, (node) => {
+      if (STEP4_5_NODE_TYPES.has(node.type)) {
+        found.add(node.type);
+      }
+    });
+    return Array.from(found);
+  } catch (_) {
+    return [];
+  }
+}
+
 function runPugErrorSuite(raw, rustTarget, results) {
   const cases = [
     {
@@ -102,7 +133,7 @@ function runPugErrorSuite(raw, rustTarget, results) {
     },
   ];
 
-  const rustErrorFn = rustTarget && !rustTarget.__loadError ? rustTarget._error || rustTarget.error : null;
+  const rustErrorFn = !isTargetBlocked(rustTarget) ? rustTarget._error || rustTarget.error : null;
 
   for (const c of cases) {
     const rawErr = raw.error(...c.args);
@@ -112,16 +143,20 @@ function runPugErrorSuite(raw, rustTarget, results) {
       rawErr.msg === 'My message';
     const baselineStatus = baseOk ? 'PASS' : 'FAIL';
 
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
+    let note = '';
     if (rustErrorFn) {
       try {
         const rustErr = rustErrorFn(...c.args);
         targetStatus = compareErrors(rawErr, rustErr).ok ? 'PASS' : 'FAIL';
-      } catch (_) {
+      } catch (err) {
         targetStatus = 'FAIL';
+        note = `Unexpected exception: ${err.message}`;
       }
+    } else if (!isTargetBlocked(rustTarget)) {
+      note = 'Missing _error export in Step 1 scope';
     }
-    recordCase(results, 'pug-error', 'Error', c.name, baselineStatus, targetStatus);
+    recordCase(results, 'pug-error', 'Error', c.name, baselineStatus, targetStatus, note);
   }
 }
 
@@ -133,7 +168,7 @@ function runPugLexerSuite(raw, rustTarget, results) {
     path.join(testDir, '__snapshots__/index.test.js.snap')
   );
 
-  const rustLex = rustTarget && !rustTarget.__loadError ? rustTarget._lex || rustTarget.lex : null;
+  const rustLex = !isTargetBlocked(rustTarget) ? rustTarget._lex || rustTarget.lex : null;
 
   for (const file of fs.readdirSync(casesDir).sort()) {
     if (!file.endsWith('.pug')) continue;
@@ -143,7 +178,7 @@ function runPugLexerSuite(raw, rustTarget, results) {
     const baseOk = formatForSnapshot(rawTokens) === snaps[`${file} 1`];
     const baselineStatus = baseOk ? 'PASS' : 'FAIL';
 
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
     if (rustLex) {
       try {
         const rustTokens = rustLex(src, { filename: fullPath });
@@ -174,7 +209,7 @@ function runPugLexerSuite(raw, rustTarget, results) {
       rawActual && formatForSnapshot(rawActual) === snaps[`${file} 1`];
     const baselineStatus = baseOk ? 'PASS' : 'FAIL';
 
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
     if (rustLex) {
       try {
         rustLex(src, { filename: fullPath });
@@ -221,7 +256,7 @@ function runPugStripCommentsSuite(raw, rustTarget, results) {
       const baseOk = formatForSnapshot(rawOut) === snaps[`${file} ${m.idx}`];
       const baselineStatus = baseOk ? 'PASS' : 'FAIL';
 
-      let targetStatus = 'UNSUPPORTED';
+      let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
       if (rustStrip) {
         try {
           const rustOut = rustStrip(lineJSON.parse(rawStr), m.opts);
@@ -254,7 +289,7 @@ function runPugStripCommentsSuite(raw, rustTarget, results) {
     const baseOk = rawErr && formatForSnapshot(rawErr) === snaps[`${file} 1`];
     const baselineStatus = baseOk ? 'PASS' : 'FAIL';
 
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
     if (rustStrip) {
       try {
         rustStrip(lineJSON.parse(rawStr));
@@ -297,7 +332,7 @@ function runPugParserSuite(raw, rustTarget, results) {
     const baseOk = formatForSnapshot(rawAst) === snaps[`${file} 1`];
     const baselineStatus = baseOk ? 'PASS' : 'FAIL';
 
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
     if (rustParse) {
       try {
         const rustAst = rustParse(lines.map(JSON.parse), { filename: file });
@@ -318,13 +353,22 @@ function runPugParserSuite(raw, rustTarget, results) {
   const nubOk =
     formatForSnapshot(nubAst) ===
     nubSnaps['no uncessessary blocks should be added 1'];
+  let nubTargetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
+  if (rustParse) {
+    try {
+      const rustNubAst = rustParse(raw.lex(nubInput));
+      nubTargetStatus = compareStructured(nubAst, rustNubAst).ok ? 'PASS' : 'FAIL';
+    } catch (_) {
+      nubTargetStatus = 'FAIL';
+    }
+  }
   recordCase(
     results,
     'pug-parser',
     'Token/AST',
     'no-unnecessary-blocks',
     nubOk ? 'PASS' : 'FAIL',
-    rustParse ? 'UNSUPPORTED' : 'UNSUPPORTED'
+    nubTargetStatus
   );
 }
 
@@ -333,22 +377,273 @@ function runPugWalkSuite(raw, rustTarget, results) {
     rustTarget && !rustTarget.__loadError
       ? rustTarget._walk || rustTarget.walk
       : null;
-  const walkCases = [
-    'simple',
-    'replace([]) > block flattening',
-    'replace([]) > adding include filters',
-    'replace([]) > fails when parent is not Block',
-  ];
-  for (const name of walkCases) {
-    recordCase(
-      results,
-      'pug-walk',
-      'Token/AST',
-      name,
-      'PASS',
-      rustWalk ? 'UNSUPPORTED' : 'UNSUPPORTED'
-    );
+
+  const walkBlocked = isTargetBlocked(rustTarget) || !rustWalk;
+
+  // 1. simple (+ options.parents stability & cleanup check)
+  let simpleTarget = walkBlocked ? 'BLOCKED' : 'FAIL';
+  let simpleNote = '';
+  if (rustWalk) {
+    try {
+      const opts = {};
+      let firstRef = null;
+      let refChanged = false;
+      const ast = rustWalk(
+        raw.parse(raw.lex('.my-class foo')),
+        (node, replace) => {
+          if (firstRef === null) firstRef = opts.parents;
+          else if (opts.parents !== firstRef) refChanged = true;
+          if (node.type === 'Text') {
+            replace({
+              type: 'Text',
+              val: 'bar',
+              line: node.line,
+              column: node.column,
+            });
+          }
+        },
+        () => {},
+        opts
+      );
+      const parentsOk = !refChanged && Array.isArray(opts.parents) && opts.parents.length === 0;
+      const astOk = compareStructured(raw.parse(raw.lex('.my-class bar')), ast).ok;
+      simpleTarget = parentsOk && astOk ? 'PASS' : 'FAIL';
+      if (!parentsOk) {
+        simpleNote = `options.parents refChanged=${refChanged}, finalLen=${opts.parents?.length}`;
+      }
+    } catch (err) {
+      simpleTarget = 'FAIL';
+      simpleNote = err.message;
+    }
   }
+  recordCase(results, 'pug-walk', 'Token/AST', 'simple', 'PASS', simpleTarget, simpleNote);
+
+  // 2. replace([]) > block flattening
+  let flattenTarget = walkBlocked ? 'BLOCKED' : 'FAIL';
+  if (rustWalk) {
+    try {
+      const called = [];
+      const ast = rustWalk(
+        {
+          type: 'Block',
+          nodes: [
+            {
+              type: 'Block',
+              nodes: [
+                {
+                  type: 'Block',
+                  nodes: [
+                    { type: 'Text', val: 'a' },
+                    { type: 'Text', val: 'b' },
+                  ],
+                },
+                { type: 'Text', val: 'c' },
+              ],
+            },
+            { type: 'Text', val: 'd' },
+          ],
+        },
+        (node, replace) => {
+          if (node.type === 'Text') {
+            called.push('before ' + node.val);
+            if (node.val === 'a') {
+              if (!replace.arrayAllowed) throw new Error('replace.arrayAllowed set wrongly');
+              replace([
+                { type: 'Text', val: 'e' },
+                { type: 'Text', val: 'f' },
+              ]);
+            }
+          }
+        },
+        (node, replace) => {
+          if (node.type === 'Block' && replace.arrayAllowed) {
+            replace(node.nodes);
+          } else if (node.type === 'Text') {
+            called.push('after ' + node.val);
+          }
+        }
+      );
+      const expectedAst = {
+        type: 'Block',
+        nodes: [
+          { type: 'Text', val: 'e' },
+          { type: 'Text', val: 'f' },
+          { type: 'Text', val: 'b' },
+          { type: 'Text', val: 'c' },
+          { type: 'Text', val: 'd' },
+        ],
+      };
+      const expectedCalled = [
+        'before a',
+        'before e',
+        'after e',
+        'before f',
+        'after f',
+        'before b',
+        'after b',
+        'before c',
+        'after c',
+        'before d',
+        'after d',
+      ];
+      flattenTarget =
+        compareStructured(expectedAst, ast).ok &&
+        compareStructured(expectedCalled, called).ok
+          ? 'PASS'
+          : 'FAIL';
+    } catch (_) {
+      flattenTarget = 'FAIL';
+    }
+  }
+  recordCase(
+    results,
+    'pug-walk',
+    'Token/AST',
+    'replace([]) > block flattening',
+    'PASS',
+    flattenTarget
+  );
+
+  // 3. replace([]) > adding include filters
+  let includeFiltersTarget = walkBlocked ? 'BLOCKED' : 'FAIL';
+  if (rustWalk) {
+    try {
+      const ast = rustWalk(
+        raw.parse(raw.lex('include:filter1:filter2 file')),
+        (node, replace) => {
+          if (node.type === 'IncludeFilter') {
+            if (!replace.arrayAllowed) throw new Error('replace.arrayAllowed false');
+            if (node.name === 'filter1') {
+              const firstFilter = 'filter3';
+              replace([
+                {
+                  type: 'IncludeFilter',
+                  name: firstFilter,
+                  attrs: [],
+                  line: node.line,
+                  column: node.column,
+                },
+                {
+                  type: 'IncludeFilter',
+                  name: 'filter4',
+                  attrs: [],
+                  line: node.line,
+                  column: node.column + firstFilter.length + 1,
+                },
+              ]);
+            } else if (node.name === 'filter2') {
+              replace([]);
+            }
+          }
+        }
+      );
+      includeFiltersTarget = compareStructured(
+        raw.parse(raw.lex('include:filter3:filter4 file')),
+        ast
+      ).ok
+        ? 'PASS'
+        : 'FAIL';
+    } catch (_) {
+      includeFiltersTarget = 'FAIL';
+    }
+  }
+  recordCase(
+    results,
+    'pug-walk',
+    'Token/AST',
+    'replace([]) > adding include filters',
+    'PASS',
+    includeFiltersTarget
+  );
+
+  // 4. replace([]) > fails when parent is not Block
+  let failNotBlockTarget = walkBlocked ? 'BLOCKED' : 'FAIL';
+  if (rustWalk) {
+    try {
+      let checked = false;
+      rustWalk(raw.parse(raw.lex('p content')), (node, replace) => {
+        if (
+          node.type === 'Block' &&
+          node.nodes[0] &&
+          node.nodes[0].type === 'Text'
+        ) {
+          if (replace.arrayAllowed) throw new Error('replace.arrayAllowed set wrongly');
+          let threw = false;
+          try {
+            replace([]);
+          } catch (_) {
+            threw = true;
+          }
+          if (!threw) throw new Error('Expected replace([]) to throw');
+          checked = true;
+        }
+      });
+      failNotBlockTarget = checked ? 'PASS' : 'FAIL';
+    } catch (_) {
+      failNotBlockTarget = 'FAIL';
+    }
+  }
+  recordCase(
+    results,
+    'pug-walk',
+    'Token/AST',
+    'replace([]) > fails when parent is not Block',
+    'PASS',
+    failNotBlockTarget
+  );
+
+  // 5. options.parents in-place mutation & cleanup when `after` is omitted
+  let parentsNoAfterTarget = walkBlocked ? 'BLOCKED' : 'FAIL';
+  let parentsNoAfterNote = '';
+  if (rustWalk) {
+    try {
+      const makeAst = () => raw.parse(raw.lex('div\n  p hello'));
+      const rawOpts = {};
+      let rawRef = null;
+      let rawChanged = false;
+      raw.walk(
+        makeAst(),
+        () => {
+          if (!rawRef) rawRef = rawOpts.parents;
+          else if (rawOpts.parents !== rawRef) rawChanged = true;
+        },
+        null,
+        rawOpts
+      );
+      const rustOpts = {};
+      let rustRef = null;
+      let rustChanged = false;
+      rustWalk(
+        makeAst(),
+        () => {
+          if (!rustRef) rustRef = rustOpts.parents;
+          else if (rustOpts.parents !== rustRef) rustChanged = true;
+        },
+        null,
+        rustOpts
+      );
+      const ok =
+        rustChanged === rawChanged &&
+        Array.isArray(rustOpts.parents) &&
+        rustOpts.parents.length === rawOpts.parents.length;
+      parentsNoAfterTarget = ok ? 'PASS' : 'FAIL';
+      if (!ok) {
+        parentsNoAfterNote = `refChanged=${rustChanged} (expected ${rawChanged}), finalLen=${rustOpts.parents?.length} (expected ${rawOpts.parents?.length})`;
+      }
+    } catch (err) {
+      parentsNoAfterTarget = 'FAIL';
+      parentsNoAfterNote = err.message;
+    }
+  }
+  recordCase(
+    results,
+    'pug-walk',
+    'Token/AST',
+    'options.parents in-place mutation & cleanup without after',
+    'PASS',
+    parentsNoAfterTarget,
+    parentsNoAfterNote
+  );
 }
 
 function runPugLoadSuite(raw, rustTarget, results) {
@@ -373,7 +668,8 @@ function runPugLoadSuite(raw, rustTarget, results) {
     'Filters/Plugins',
     'pug-load recursive extends/include/Buffer',
     baseOk ? 'PASS' : 'FAIL',
-    'UNSUPPORTED'
+    'DEFERRED',
+    'PLAN.md §五 Step 4 (pug_load): recursive file loading & RawInclude'
   );
 }
 
@@ -415,7 +711,8 @@ function runPugFiltersSuite(raw, rustTarget, results) {
         'Filters/Plugins',
         `cases/${file}`,
         baseOk ? 'PASS' : 'FAIL',
-        'UNSUPPORTED'
+        'DEFERRED',
+        'PLAN.md §五 Step 4 (pug_filters): compile-time filter evaluation'
       );
     }
 
@@ -436,7 +733,8 @@ function runPugFiltersSuite(raw, rustTarget, results) {
         'Error',
         `errors/${file}`,
         baseOk ? 'PASS' : 'FAIL',
-        'UNSUPPORTED'
+        'DEFERRED',
+        'PLAN.md §五 Step 4 (pug_filters): filter error handling'
       );
     }
   } finally {
@@ -449,7 +747,15 @@ function runPugFiltersSuite(raw, rustTarget, results) {
     'filter-aliases > options are applied before aliases',
     'per-filter-options-applied-to-nested-filters',
   ]) {
-    recordCase(results, 'pug-filters', 'Filters/Plugins', name, 'PASS', 'UNSUPPORTED');
+    recordCase(
+      results,
+      'pug-filters',
+      'Filters/Plugins',
+      name,
+      'PASS',
+      'DEFERRED',
+      'PLAN.md §五 Step 4 (pug_filters): filterAliases & filterOptions'
+    );
   }
 }
 
@@ -473,7 +779,8 @@ function runPugLinkerSuite(raw, rustTarget, results) {
       'Token/AST',
       `cases/${file}`,
       baseOk ? 'PASS' : 'FAIL',
-      'UNSUPPORTED'
+      'DEFERRED',
+      'PLAN.md §五 Step 4 (pug_linker): include/extends linking'
     );
   }
 
@@ -491,7 +798,8 @@ function runPugLinkerSuite(raw, rustTarget, results) {
       'Token/AST',
       `special-cases/${file}`,
       baseOk ? 'PASS' : 'FAIL',
-      'UNSUPPORTED'
+      'DEFERRED',
+      'PLAN.md §五 Step 4 (pug_linker): special cases linking'
     );
   }
 
@@ -514,13 +822,14 @@ function runPugLinkerSuite(raw, rustTarget, results) {
       'Error',
       `errors/${file}`,
       baseOk ? 'PASS' : 'FAIL',
-      'UNSUPPORTED'
+      'DEFERRED',
+      'PLAN.md §五 Step 4 (pug_linker): linker error cases'
     );
   }
 }
 
 function runPugAttrsAndRuntimeSuite(raw, rustTarget, results) {
-  // pug-attrs has 46 cases across 4 option groups (verified by Jest PASS)
+  // pug-attrs has 52 standalone cases across 4 option groups (Step 5)
   const attrGroups = [
     { group: 'terse: true, format: html', count: 20 },
     { group: 'terse: false, format: html', count: 6 },
@@ -535,19 +844,20 @@ function runPugAttrsAndRuntimeSuite(raw, rustTarget, results) {
         'JS Artifact',
         `${g.group} #${i}`,
         'PASS',
-        'UNSUPPORTED'
+        'DEFERRED',
+        'PLAN.md §五 Step 5 (pug_attrs): standalone 52-case JS artifact convergence'
       );
     }
   }
 
   const runtimeFns = ['attr', 'attrs', 'classes', 'escape', 'merge', 'style'];
   const rustRuntime =
-    rustTarget && !rustTarget.__loadError ? rustTarget.runtime : null;
+    !isTargetBlocked(rustTarget) ? rustTarget.runtime : null;
   const rustRuntimeBuild =
-    rustTarget && !rustTarget.__loadError ? rustTarget._runtimeBuild : null;
+    !isTargetBlocked(rustTarget) ? rustTarget._runtimeBuild : null;
 
   for (const name of runtimeFns) {
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
     if (rustRuntime && rustRuntimeBuild) {
       const rawBuilt = raw.runtimeBuild([name]);
       const rustBuilt = rustRuntimeBuild([name]);
@@ -572,7 +882,7 @@ function runPugAttrsAndRuntimeSuite(raw, rustTarget, results) {
     'rethrow > should handle bad arguments gracefully',
   ];
   for (const name of rethrowCases) {
-    let targetStatus = 'UNSUPPORTED';
+    let targetStatus = isTargetBlocked(rustTarget) ? 'BLOCKED' : 'FAIL';
     if (rustRuntime && rustRuntimeBuild) {
       const rawBuilt = raw.runtimeBuild(['rethrow']);
       const rustBuilt = rustRuntimeBuild(['rethrow']);
@@ -595,9 +905,10 @@ function runPugAttrsAndRuntimeSuite(raw, rustTarget, results) {
 function runPugIntegrationSuite(raw, rustTarget, results) {
   const testDir = path.join(RAW_COMPILER_ROOT, 'packages/pug/test');
   const runUtils = require(path.join(testDir, 'run-utils'));
-  const rustPug = rustTarget && !rustTarget.__loadError ? rustTarget : null;
+  const targetBlocked = isTargetBlocked(rustTarget);
+  const rustPug = targetBlocked ? null : rustTarget;
 
-  // 1. cases/*.pug (117 cases)
+  // 1. cases/*.pug (115 cases) — classified by AST nodes vs Step 1-3 committed scope
   const cases = runUtils.findCases(path.join(testDir, 'cases')).sort();
   for (const tc of cases) {
     const pugPath = path.join(testDir, 'cases', `${tc}.pug`);
@@ -606,13 +917,18 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     const expectedHtml = fs.readFileSync(htmlPath, 'utf8').trim().replace(/\r/g, '');
     const opts = {
       filename: pugPath,
-      pretty: true,
+      pretty: !/\.min$/.test(tc),
+      doctype: /xml/.test(tc) ? 'xml' : undefined,
       basedir: path.join(testDir, 'cases'),
       filters: runUtils.filters,
       filterAliases: { markdown: 'markdown-it' },
     };
 
-    const fn = raw.pug.compile(str, opts);
+    const fn = raw.pug.compile(str, {
+      ...opts,
+      pretty: true,
+      doctype: undefined,
+    });
     let actualHtml = fn({ title: 'Pug' }).trim();
     let cmpExpected = expectedHtml;
     if (/filter/.test(tc)) {
@@ -621,64 +937,159 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     }
     const baseOk = compareHtml(cmpExpected, actualHtml).ok;
 
-    let targetStatus = 'UNSUPPORTED';
+    const deferredNodes = findDeferredAstNodes(raw, str, pugPath);
+    if (deferredNodes.length > 0) {
+      recordCase(
+        results,
+        'pug',
+        'HTML',
+        `cases/${tc}.pug`,
+        baseOk ? 'PASS' : 'FAIL',
+        'DEFERRED',
+        `PLAN.md §五 Step 4-5; missing AST nodes: ${deferredNodes.join(', ')}`
+      );
+      continue;
+    }
+
+    // Step 3B in-scope HTML check
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let targetNote = targetBlocked ? 'Target native module failed to load' : '';
     if (rustPug && typeof rustPug.compile === 'function') {
       try {
-        const rustFn = rustPug.compile(str, opts);
+        const rustFn = rustPug.compile(str, {
+          ...opts,
+          pretty: true,
+          doctype: undefined,
+        });
         let rustHtml = rustFn({ title: 'Pug' }).trim();
         if (/filter/.test(tc)) {
           rustHtml = rustHtml.replace(/\n| /g, '');
         }
-        targetStatus = compareHtml(cmpExpected, rustHtml).ok
-          ? 'PASS'
-          : 'UNSUPPORTED';
-      } catch (_) {
-        targetStatus = 'UNSUPPORTED';
+        if (compareHtml(cmpExpected, rustHtml).ok) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = 'HTML mismatch in Step 3B scope';
+        }
+      } catch (err) {
+        targetStatus = 'FAIL';
+        if (err && (err.code === 'PUG:UNSUPPORTED_NODE' || err.code === 'PUG:UNKNOWN_FILTER')) {
+          targetNote = `Step 1-3 committed feature reported unsupported (${err.code}): ${err.message}`;
+        } else {
+          targetNote = `Unexpected exception: ${err && err.message ? err.message : String(err)}`;
+        }
+      }
+    } else if (!targetBlocked) {
+      targetNote = 'Missing rustPug.compile export';
+    }
+    recordCase(results, 'pug', 'HTML', `cases/${tc}.pug`, baseOk ? 'PASS' : 'FAIL', targetStatus, targetNote);
+
+    // Step 3B in-scope JS Artifact (compileClient dual-layer: Prettier + Raw) check
+    let jsStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let jsNote = '';
+    if (rustPug && typeof rustPug.compileClient === 'function') {
+      try {
+        const clientOpts = {
+          filename: `${tc}.pug`,
+          pretty: opts.pretty,
+          doctype: opts.doctype,
+          compileDebug: false,
+        };
+        const rawClient = raw.pug.compileClient(str, clientOpts);
+        const rustClient = rustPug.compileClient(str, clientOpts);
+        const cg = compareCodegen(rawClient, rustClient);
+        if (cg.ok) {
+          jsStatus = 'PASS';
+        } else {
+          jsStatus = 'FAIL';
+          jsNote = `JS artifact mismatch (prettierMatch=${cg.prettierMatch}, rawMatch=${cg.rawMatch})`;
+        }
+      } catch (err) {
+        jsStatus = 'FAIL';
+        jsNote = `compileClient threw: ${err && err.message ? err.message : String(err)}`;
       }
     }
-    recordCase(results, 'pug', 'HTML', `cases/${tc}.pug`, baseOk ? 'PASS' : 'FAIL', targetStatus);
+    recordCase(results, 'pug', 'JS Artifact', `cases/${tc}.pug (compileClient)`, 'PASS', jsStatus, jsNote);
   }
 
-  // 2. cases-es2015/*.pug (2 cases)
+  // 2. cases-es2015/*.pug
   const es2015Cases = runUtils.findCases(path.join(testDir, 'cases-es2015')).sort();
   for (const tc of es2015Cases) {
-    recordCase(
-      results,
-      'pug',
-      'HTML',
-      `cases-es2015/${tc}.pug`,
-      'PASS',
-      'UNSUPPORTED'
-    );
+    const pugPath = path.join(testDir, 'cases-es2015', `${tc}.pug`);
+    const htmlPath = path.join(testDir, 'cases-es2015', `${tc}.html`);
+    const str = fs.readFileSync(pugPath, 'utf8');
+    const expectedHtml = fs.readFileSync(htmlPath, 'utf8').trim().replace(/\r/g, '');
+    const rawHtml = raw.pug.compile(str, { filename: pugPath, pretty: true })({ title: 'Pug' }).trim();
+    const baseOk = compareHtml(expectedHtml, rawHtml).ok;
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let note = '';
+    if (rustPug) {
+      try {
+        const rustHtml = rustPug.compile(str, { filename: pugPath, pretty: true })({ title: 'Pug' }).trim();
+        targetStatus = compareHtml(expectedHtml, rustHtml).ok ? 'PASS' : 'FAIL';
+        if (targetStatus === 'FAIL') note = 'HTML mismatch';
+      } catch (err) {
+        targetStatus = 'FAIL';
+        note = err.message;
+      }
+    }
+    recordCase(results, 'pug', 'HTML', `cases-es2015/${tc}.pug`, baseOk ? 'PASS' : 'FAIL', targetStatus, note);
   }
 
-  // 3. anti-cases/*.pug (27 syntax error cases)
+  // 3. anti-cases/*.pug (22 syntax error cases)
   const antiCases = runUtils.findCases(path.join(testDir, 'anti-cases')).sort();
   for (const tc of antiCases) {
     const pugPath = path.join(testDir, 'anti-cases', `${tc}.pug`).replace(/\\/g, '/');
     const str = fs.readFileSync(pugPath, 'utf8');
-    let baseOk = false;
+    const compileOpts = {
+      filename: pugPath,
+      pretty: true,
+      basedir: path.join(testDir, 'anti-cases'),
+      filters: runUtils.filters,
+    };
+    let rawErr = null;
     try {
-      raw.pug.compile(str, {
-        filename: pugPath,
-        pretty: true,
-        basedir: path.join(testDir, 'anti-cases'),
-        filters: runUtils.filters,
-      });
+      raw.pug.compile(str, compileOpts);
     } catch (ex) {
-      baseOk =
-        ex instanceof Error &&
-        typeof ex.code === 'string' &&
-        ex.code.startsWith('PUG:');
+      rawErr = ex;
     }
-    recordCase(
-      results,
-      'pug',
-      'Error',
-      `anti-cases/${tc}.pug`,
-      baseOk ? 'PASS' : 'FAIL',
-      'UNSUPPORTED'
-    );
+    const baseOk =
+      rawErr instanceof Error &&
+      typeof rawErr.code === 'string' &&
+      rawErr.code.startsWith('PUG:');
+
+    if (tc === 'non-existant-filter') {
+      recordCase(
+        results,
+        'pug',
+        'Error',
+        `anti-cases/${tc}.pug`,
+        baseOk ? 'PASS' : 'FAIL',
+        'DEFERRED',
+        'PLAN.md §五 Step 4 (pug_filters): unknown filter line/source reporting'
+      );
+      continue;
+    }
+
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let note = '';
+    if (rustPug) {
+      let rustErr = null;
+      try {
+        rustPug.compile(str, compileOpts);
+        targetStatus = 'FAIL';
+        note = 'Expected error but compile succeeded';
+      } catch (ex) {
+        rustErr = ex;
+        if (rawErr && rustErr && rawErr.code === rustErr.code) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          note = `Error code mismatch: expected ${rawErr?.code}, got ${rustErr?.code}`;
+        }
+      }
+    }
+    recordCase(results, 'pug', 'Error', `anti-cases/${tc}.pug`, baseOk ? 'PASS' : 'FAIL', targetStatus, note);
   }
 
   // 4. error.reporting.test.js (including the 2 approved V8 TypeError cases)
@@ -702,8 +1113,8 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     'Error',
     'error.reporting > runtime errors > in a mixin',
     mixinCheck.status,
-    'UNSUPPORTED',
-    mixinCheck.diffId || ''
+    'DEFERRED',
+    `PLAN.md §五 Step 4-5 (mixin & renderFile)${mixinCheck.diffId ? `; ${mixinCheck.diffId}` : ''}`
   );
 
   const layoutErrFixture = path.join(
@@ -726,11 +1137,10 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     'Error',
     'error.reporting > runtime errors > in a layout',
     layoutCheck.status,
-    'UNSUPPORTED',
-    layoutCheck.diffId || ''
+    'DEFERRED',
+    `PLAN.md §五 Step 4-5 (extends/layout & renderFile)${layoutCheck.diffId ? `; ${layoutCheck.diffId}` : ''}`
   );
 
-  // Remaining 19 error.reporting.test.js cases + API / plugin / regression suites
   const otherErrorReportingCases = [
     'error.reporting > compile time > with no filename',
     'error.reporting > compile time > with a filename',
@@ -754,96 +1164,324 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     'error.reporting > import without filename/basedir throws error',
   ];
   for (const name of otherErrorReportingCases) {
-    recordCase(results, 'pug', 'Error', name, 'PASS', 'UNSUPPORTED');
+    recordCase(
+      results,
+      'pug',
+      'Error',
+      name,
+      'PASS',
+      'DEFERRED',
+      'PLAN.md §五 Step 4/6 (error.reporting integration suite)'
+    );
   }
 
-  const apiAndPluginSuites = [
-    { cat: 'API', name: 'pug.test.js > unit tests with .render() (25 groups)', target: 'UNSUPPORTED' },
-    {
-      cat: 'API',
-      name: 'pug.test.js > .compileFile() & cache (3 cases)',
-      target: rustPug && typeof rustPug.compileFile === 'function' ? 'PASS' : 'UNSUPPORTED',
-    },
-    {
-      cat: 'API',
-      name: 'pug.test.js > .render() callback & cache (3 cases)',
-      target: rustPug && typeof rustPug.render === 'function' ? 'PASS' : 'UNSUPPORTED',
-    },
-    {
-      cat: 'API',
-      name: 'pug.test.js > .compile() options & self (7 cases)',
-      target: rustPug && typeof rustPug.compile === 'function' ? 'PASS' : 'UNSUPPORTED',
-    },
-    {
-      cat: 'JS Artifact',
-      name: 'pug.test.js > .compileClient() & module snapshots (4 cases)',
-      target:
-        rustPug &&
-        compareCodegen(
-          raw.pug.compileClient('.bar= self.foo', {
-            self: true,
-            module: true,
-            inlineRuntimeFunctions: true,
-          }),
-          rustPug.compileClient('.bar= self.foo', {
-            self: true,
-            module: true,
-            inlineRuntimeFunctions: true,
-          })
-        ).ok
-          ? 'PASS'
-          : 'UNSUPPORTED',
-    },
-    {
-      cat: 'API',
-      name: 'pug.test.js > .renderFile() sync/callback/cache (6 cases)',
-      target: rustPug && typeof rustPug.renderFile === 'function' ? 'PASS' : 'UNSUPPORTED',
-    },
-    {
-      cat: 'JS Artifact',
-      name: 'pug.test.js > .compileFileClient() name/cache (4 cases)',
-      target: rustPug && typeof rustPug.compileFileClient === 'function' ? 'PASS' : 'UNSUPPORTED',
-    },
-    {
-      cat: 'Execution Semantics',
-      name: 'pug.test.js > .runtime.merge & .runtime.attrs (2 cases)',
-      target: rustPug && rustPug.runtime ? 'PASS' : 'UNSUPPORTED',
-    },
-    {
-      cat: 'Filters/Plugins',
-      name: 'pug.test.js > filter indentation maintained (1 case)',
-      target:
-        rustPug &&
-        rustPug.render(':indents\n  x\n   x', {
-          filters: {
-            indents: (s) =>
-              s
-                .split(/\n/)
-                .map((l) => l.match(/^ */)[0].length)
-                .join(','),
-          },
-        }) === '0,1'
-          ? 'PASS'
-          : 'UNSUPPORTED',
-    },
-    { cat: 'API', name: 'pug.test.js > .compile().dependencies (4 cases)', target: 'UNSUPPORTED' },
-    {
-      cat: 'API',
-      name: 'pug.test.js > .name === "Pug" (1 case)',
-      target: rustPug && rustPug.name === 'Pug' ? 'PASS' : 'UNSUPPORTED',
-    },
-    { cat: 'Filters/Plugins', name: 'plugins.test.js > #3295 lexer plugins in tag interpolation', target: 'UNSUPPORTED' },
-    { cat: 'Error', name: 'duplicate-block/index.test.js', target: 'UNSUPPORTED' },
-    { cat: 'Error', name: 'extends-not-top-level/index.test.js', target: 'UNSUPPORTED' },
-    { cat: 'HTML', name: 'eachOf/index.test.js', target: 'UNSUPPORTED' },
-    { cat: 'Filters/Plugins', name: 'markdown-it/index.test.js', target: 'UNSUPPORTED' },
-    { cat: 'HTML', name: 'regression-2436/index.test.js', target: 'UNSUPPORTED' },
-    { cat: 'HTML', name: 'shadowed-block/index.test.js', target: 'UNSUPPORTED' },
-    { cat: 'Execution Semantics', name: 'examples.test.js (12 example templates)', target: 'UNSUPPORTED' },
-  ];
-  for (const s of apiAndPluginSuites) {
-    recordCase(results, 'pug', s.cat, s.name, 'PASS', s.target);
+  // 5. Export presence check (distinct from behavioral acceptance!)
+  {
+    const requiredExports = [
+      ['compile', 'function'],
+      ['compileFile', 'function'],
+      ['compileClient', 'function'],
+      ['compileClientWithDependenciesTracked', 'function'],
+      ['compileFileClient', 'function'],
+      ['render', 'function'],
+      ['renderFile', 'function'],
+      ['__express', 'function'],
+      ['cache', 'object'],
+      ['filters', 'object'],
+      ['runtime', 'object'],
+      ['name', 'string'],
+    ];
+    let ok = false;
+    let note = '';
+    if (rustPug) {
+      const missing = requiredExports.filter(([k, t]) => typeof rustPug[k] !== t).map(([k]) => k);
+      ok = missing.length === 0;
+      if (!ok) note = `Missing exports: ${missing.join(', ')}`;
+    }
+    recordCase(
+      results,
+      'pug',
+      'API',
+      'API exports presence check (exports surface only)',
+      'PASS',
+      targetBlocked ? 'BLOCKED' : ok ? 'PASS' : 'FAIL',
+      note
+    );
   }
+
+  // 6. Helper to run a differential behavioral check against raw.pug & rustPug
+  function runBehavioralCase(cat, name, fn) {
+    if (targetBlocked) {
+      recordCase(results, 'pug', cat, name, 'PASS', 'BLOCKED', 'Native module blocked');
+      return;
+    }
+    let baseOk = false;
+    try {
+      fn(raw.pug);
+      baseOk = true;
+    } catch (_) {
+      baseOk = false;
+    }
+    let targetStatus = 'FAIL';
+    let note = '';
+    try {
+      fn(rustPug);
+      targetStatus = 'PASS';
+    } catch (err) {
+      targetStatus = 'FAIL';
+      note = err && err.message ? err.message : String(err);
+    }
+    recordCase(results, 'pug', cat, name, baseOk ? 'PASS' : 'FAIL', targetStatus, note);
+  }
+
+  // 6a. pug.test.js > .name === "Pug" (1 case)
+  runBehavioralCase('API', 'pug.test.js > .name === "Pug"', (p) => {
+    assert.strictEqual(p.name, 'Pug');
+  });
+
+  // 6b. pug.test.js > .render() callback & cache (3 individual cases)
+  runBehavioralCase('API', 'pug.test.js > .render(str, fn)', (p) => {
+    let called = false;
+    p.render('p foo bar', (err, str) => {
+      called = true;
+      assert.ok(!err);
+      assert.strictEqual(str, '<p>foo bar</p>');
+    });
+    assert.strictEqual(called, true);
+  });
+  runBehavioralCase('API', 'pug.test.js > .render(str, options, fn)', (p) => {
+    let called = false;
+    p.render('p #{foo}', { foo: 'bar' }, (err, str) => {
+      called = true;
+      assert.ok(!err);
+      assert.strictEqual(str, '<p>bar</p>');
+    });
+    assert.strictEqual(called, true);
+  });
+  runBehavioralCase('API', 'pug.test.js > .render(str, options, fn) cache', (p) => {
+    let errCalled = false;
+    p.render('p bar', { cache: true }, (err) => {
+      errCalled = true;
+      assert.ok(err && /the "filename" option is required for caching/.test(err.message));
+    });
+    assert.strictEqual(errCalled, true);
+
+    const key = '__runner_cache_test__';
+    delete p.cache[key];
+    let okCalled = false;
+    p.render('p foo bar', { cache: true, filename: key }, (err, str) => {
+      okCalled = true;
+      assert.ok(!err);
+      assert.strictEqual(str, '<p>foo bar</p>');
+    });
+    delete p.cache[key];
+    assert.strictEqual(okCalled, true);
+  });
+
+  // 6c. pug.test.js > .compile() options & self (7 individual cases)
+  runBehavioralCase('API', 'pug.test.js > .compile() basic', (p) => {
+    const fn = p.compile('p foo');
+    assert.strictEqual(fn(), '<p>foo</p>');
+  });
+  runBehavioralCase('API', 'pug.test.js > .compile() locals', (p) => {
+    const fn = p.compile('p= foo');
+    assert.strictEqual(fn({ foo: 'bar' }), '<p>bar</p>');
+  });
+  runBehavioralCase('API', 'pug.test.js > .compile() locals in self hash', (p) => {
+    const fn = p.compile('p= self.foo', { self: true });
+    assert.strictEqual(fn({ foo: 'bar' }), '<p>bar</p>');
+  });
+  runBehavioralCase('API', 'pug.test.js > .compile() no debug', (p) => {
+    const fn = p.compile('p foo\np #{bar}', { compileDebug: false });
+    assert.strictEqual(fn({ bar: 'baz' }), '<p>foo</p><p>baz</p>');
+  });
+  runBehavioralCase('API', 'pug.test.js > .compile() no debug and global helpers', (p) => {
+    const fn = p.compile('p foo\np #{bar}', { compileDebug: false, helpers: 'global' });
+    assert.strictEqual(fn({ bar: 'baz' }), '<p>foo</p><p>baz</p>');
+  });
+  runBehavioralCase('API', 'pug.test.js > .compile() perf.pug', (p) => {
+    const perfSrc = fs.readFileSync(path.join(testDir, 'fixtures/perf.pug'), 'utf8');
+    const fn = p.compile(perfSrc, {});
+    const sample = {
+      report: [
+        { id: 1, parent: null, type: 'chapter', name: 'C1' },
+        { id: 2, parent: 1, type: 'section', name: 'S1' },
+      ],
+    };
+    const expected = raw.pug.compile(perfSrc, {})(sample);
+    assert.strictEqual(fn(sample), expected);
+  });
+  runBehavioralCase('API', 'pug.test.js > .compile() allows trailing space (#1586)', (p) => {
+    assert.strictEqual(p.render('ul \n  li An Item'), '<ul> <li>An Item</li></ul>');
+  });
+
+  // 6d. pug.test.js > .compileClient() & module snapshots (4 individual cases)
+  runBehavioralCase('JS Artifact', 'pug.test.js > .compileClient(str) basic.pug', (p) => {
+    const src = fs.readFileSync(path.join(testDir, 'cases/basic.pug'), 'utf8');
+    const expected = fs.readFileSync(path.join(testDir, 'cases/basic.html'), 'utf8').replace(/\s/g, '');
+    const clientStr = p.compileClient(src);
+    const fn = Function('pug', clientStr + '\nreturn template;')(p.runtime);
+    const actual = fn({ name: 'foo' }).replace(/\s/g, '');
+    assert.strictEqual(actual, expected);
+    const rawClientStr = raw.pug.compileClient(src);
+    const cg = compareCodegen(rawClientStr, clientStr);
+    assert.strictEqual(cg.ok, true, `Codegen mismatch (prettier=${cg.prettierMatch}, raw=${cg.rawMatch})`);
+  });
+  runBehavioralCase('JS Artifact', 'pug.test.js > .compileClient(str, { self: true })', (p) => {
+    const clientStr = p.compileClient('.bar= self.foo', { self: true });
+    const fn = Function('pug', clientStr + '\nreturn template;')(p.runtime);
+    assert.strictEqual(fn({ foo: 'baz' }), '<div class="bar">baz</div>');
+    const cg = compareCodegen(raw.pug.compileClient('.bar= self.foo', { self: true }), clientStr);
+    assert.strictEqual(cg.ok, true, `Codegen mismatch (prettier=${cg.prettierMatch}, raw=${cg.rawMatch})`);
+  });
+  runBehavioralCase('JS Artifact', 'pug.test.js > .compileClient() module inlineRuntimeFunctions: true', (p) => {
+    const opts = { self: true, module: true, inlineRuntimeFunctions: true };
+    const clientStr = p.compileClient('.bar= self.foo', opts);
+    const cg = compareCodegen(raw.pug.compileClient('.bar= self.foo', opts), clientStr);
+    assert.strictEqual(cg.ok, true, `Codegen mismatch (prettier=${cg.prettierMatch}, raw=${cg.rawMatch})`);
+    const mod = { exports: {} };
+    new Function('module', clientStr)(mod);
+    assert.strictEqual(mod.exports({ foo: 'baz' }), '<div class="bar">baz</div>');
+  });
+  runBehavioralCase('JS Artifact', 'pug.test.js > .compileClient() module inlineRuntimeFunctions: false', (p) => {
+    const opts = { self: true, module: true, inlineRuntimeFunctions: false };
+    const clientStr = p.compileClient('.bar= self.foo', opts);
+    const cg = compareCodegen(raw.pug.compileClient('.bar= self.foo', opts), clientStr);
+    assert.strictEqual(cg.ok, true, `Codegen mismatch (prettier=${cg.prettierMatch}, raw=${cg.rawMatch})`);
+    const mod = { exports: {} };
+    new Function('module', 'require', clientStr)(mod, (id) => {
+      if (id === 'pug-runtime') return p.runtime;
+      throw new Error('Unexpected require: ' + id);
+    });
+    assert.strictEqual(mod.exports({ foo: 'baz' }), '<div class="bar">baz</div>');
+  });
+
+  // 6e. pug.test.js > .runtime.merge & .runtime.attrs (2 individual cases)
+  runBehavioralCase('Execution Semantics', 'pug.test.js > .runtime.merge', (p) => {
+    assert.deepStrictEqual(
+      p.runtime.merge({}, { class: ['foo', 'bar'], foo: 'bar' }),
+      { class: ['foo', 'bar'], foo: 'bar' }
+    );
+    assert.deepStrictEqual(
+      p.runtime.merge({ class: ['foo'], foo: 'baz' }, { class: ['bar'], foo: 'bar' }),
+      { class: ['foo', 'bar'], foo: 'bar' }
+    );
+    assert.deepStrictEqual(
+      p.runtime.merge({ class: ['foo', 'bar'], foo: 'bar' }, {}),
+      { class: ['foo', 'bar'], foo: 'bar' }
+    );
+  });
+  runBehavioralCase('Execution Semantics', 'pug.test.js > .runtime.attrs', (p) => {
+    assert.strictEqual(p.runtime.attrs({}), '');
+    assert.strictEqual(p.runtime.attrs({ class: [] }), '');
+    assert.strictEqual(p.runtime.attrs({ class: ['foo'] }), ' class="foo"');
+    assert.strictEqual(p.runtime.attrs({ class: ['foo'], id: 'bar' }), ' class="foo" id="bar"');
+  });
+
+  // 6f. pug.test.js > filter indentation maintained (1 case)
+  runBehavioralCase('Filters/Plugins', 'pug.test.js > filter indentation maintained', (p) => {
+    const filters = {
+      indents: (s) => s.split(/\n/).map((l) => l.match(/^ */)[0].length).join(','),
+    };
+    const indents = [
+      ':indents', '  x', '   x', '    x', '     x', '  x', '      x', '      x',
+      '     x', '     x', '      x', '    x', '  x', '    x', '  x', '   x',
+    ].join('\n');
+    assert.strictEqual(p.render(indents, { filters }), '0,1,2,3,0,4,4,3,3,4,2,0,2,0,1');
+  });
+
+  // 6g. pug.test.js > unit tests with .render() (representative Step 1-3 in-scope cases + 1 Step 4 deferred)
+  const unitRenderTests = [
+    ['unit render > doctypes', (p) => {
+      assert.strictEqual(p.render('doctype xml'), '<?xml version="1.0" encoding="utf-8" ?>');
+      assert.strictEqual(p.render('doctype html'), '<!DOCTYPE html>');
+      assert.strictEqual(p.render('doctype foo bar baz'), '<!DOCTYPE foo bar baz>');
+      assert.strictEqual(p.render('doctype', { doctype: 'html' }), '<!DOCTYPE html>');
+      assert.strictEqual(p.render('doctype html', { doctype: 'xml' }), '<!DOCTYPE html>');
+      assert.strictEqual(p.render('html'), '<html></html>');
+      assert.strictEqual(p.render('html', { doctype: 'html' }), '<!DOCTYPE html><html></html>');
+    }],
+    ['unit render > Buffers', (p) => {
+      assert.strictEqual(p.render(Buffer.from('p foo')), '<p>foo</p>');
+    }],
+    ['unit render > line endings', (p) => {
+      const src = ['p', 'div', 'img'];
+      assert.strictEqual(p.render(src.join('\n')), '<p></p><div></div><img/>');
+      assert.strictEqual(p.render(src.join('\r')), '<p></p><div></div><img/>');
+      assert.strictEqual(p.render(src.join('\r\n')), '<p></p><div></div><img/>');
+      assert.strictEqual(p.render(src.join('\n'), { doctype: 'html' }), '<p></p><div></div><img>');
+    }],
+    ['unit render > flexible indentation', (p) => {
+      assert.strictEqual(
+        p.render('html\n  body\n   h1 Wahoo\n   p test'),
+        '<html><body><h1>Wahoo</h1><p>test</p></body></html>'
+      );
+    }],
+    ['unit render > interpolation values', (p) => {
+      assert.strictEqual(p.render('p Users: #{15}'), '<p>Users: 15</p>');
+      assert.strictEqual(p.render('p Users: #{null}'), '<p>Users: </p>');
+      assert.strictEqual(p.render('p Users: #{undefined}'), '<p>Users: </p>');
+      assert.strictEqual(p.render('p Users: #{0}'), '<p>Users: 0</p>');
+      assert.strictEqual(p.render('p Users: #{false}'), '<p>Users: false</p>');
+    }],
+    ['unit render > html 5 mode boolean attrs', (p) => {
+      assert.strictEqual(p.render('doctype html\ninput(type="checkbox", checked)'), '<!DOCTYPE html><input type="checkbox" checked>');
+      assert.strictEqual(p.render('doctype html\ninput(type="checkbox", checked=true)'), '<!DOCTYPE html><input type="checkbox" checked>');
+      assert.strictEqual(p.render('doctype html\ninput(type="checkbox", checked=false)'), '<!DOCTYPE html><input type="checkbox">');
+    }],
+    ['unit render > control flow (each/if/unless/else/else-if)', (p) => {
+      assert.strictEqual(p.render('- var users = ["tobi", "jane", "loki"];\nfor user in users\n  if user == "tobi"\n    p awesome #{user}\n  else if user == "jane"\n    p lame #{user}\n  else\n    p #{user}'), '<p>awesome tobi</p><p>lame jane</p><p>loki</p>');
+      assert.strictEqual(p.render('- var users = []\nunless users.length\n  p no users'), '<p>no users</p>');
+    }],
+  ];
+  for (const [name, fn] of unitRenderTests) {
+    runBehavioralCase('HTML', `pug.test.js > ${name}`, fn);
+  }
+  recordCase(
+    results,
+    'pug',
+    'HTML',
+    'pug.test.js > unit render > should include block',
+    'PASS',
+    'DEFERRED',
+    'PLAN.md §五 Step 4 (pug_load / pug_linker): include block'
+  );
+
+  // 7. Explicitly deferred Step 4/5/6 API & integration cases (individually listed, NOT virtual counts)
+  const deferredApiAndPluginCases = [
+    ['API', 'pug.test.js > .compileFile() > issue-1593', 'PLAN.md §五 Step 4/6 (compileFile & pug_load)'],
+    ['API', 'pug.test.js > .compileFile() > caching (pass 1)', 'PLAN.md §五 Step 4/6 (compileFile & file cache)'],
+    ['API', 'pug.test.js > .compileFile() > caching (pass 2)', 'PLAN.md §五 Step 4/6 (compileFile & file cache)'],
+    ['API', 'pug.test.js > .renderFile() > sync string return', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
+    ['API', 'pug.test.js > .renderFile() > callback with options', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
+    ['API', 'pug.test.js > .renderFile() > callback without options', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
+    ['API', 'pug.test.js > .renderFile() > callback with error', 'PLAN.md §五 Step 4/6 (renderFile & pug_load)'],
+    ['API', 'pug.test.js > .renderFile() > caching (pass 1)', 'PLAN.md §五 Step 4/6 (renderFile & file cache)'],
+    ['API', 'pug.test.js > .renderFile() > caching (pass 2)', 'PLAN.md §五 Step 4/6 (renderFile & file cache)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > returns template string', 'PLAN.md §五 Step 5/6 (compileFileClient)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > name option', 'PLAN.md §五 Step 5/6 (compileFileClient)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 1)', 'PLAN.md §五 Step 5/6 (compileFileClient & cache)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 2)', 'PLAN.md §五 Step 5/6 (compileFileClient & cache)'],
+    ['API', 'pug.test.js > .compile().dependencies > extends1', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
+    ['API', 'pug.test.js > .compile().dependencies > include1', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
+    ['API', 'pug.test.js > .compile().dependencies > extends2', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
+    ['API', 'pug.test.js > .compile().dependencies > include2', 'PLAN.md §五 Step 4 (pug_load dependencies)'],
+    ['Filters/Plugins', 'plugins.test.js > #3295 lexer plugins in tag interpolation', 'PLAN.md §五 Step 6 (plugin.lex internal extension)'],
+    ['Error', 'duplicate-block/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
+    ['Error', 'extends-not-top-level/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
+    ['HTML', 'eachOf/index.test.js', 'PLAN.md §五 Step 4/6 (compileFile/renderFile integration)'],
+    ['Filters/Plugins', 'markdown-it/index.test.js', 'PLAN.md §五 Step 4 (pug_filters JSTransformer)'],
+    ['HTML', 'regression-2436/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
+    ['HTML', 'shadowed-block/index.test.js', 'PLAN.md §五 Step 4 (pug_linker)'],
+    ['Execution Semantics', 'examples.test.js', 'PLAN.md §五 Step 4-6 (full examples suite)'],
+  ];
+  for (const [cat, name, note] of deferredApiAndPluginCases) {
+    recordCase(results, 'pug', cat, name, 'PASS', 'DEFERRED', note);
+  }
+}
+
+function createStatusCounters() {
+  return { PASS: 0, FAIL: 0, DEFERRED: 0, BLOCKED: 0, APPROVED_DIFF: 0 };
 }
 
 function summarizeResults(results) {
@@ -851,8 +1489,8 @@ function summarizeResults(results) {
   const byCategory = {};
   const totals = {
     total: results.length,
-    baseline: { PASS: 0, FAIL: 0, UNSUPPORTED: 0, APPROVED_DIFF: 0 },
-    target: { PASS: 0, FAIL: 0, UNSUPPORTED: 0, APPROVED_DIFF: 0 },
+    baseline: createStatusCounters(),
+    target: createStatusCounters(),
   };
 
   for (const r of results) {
@@ -862,24 +1500,24 @@ function summarizeResults(results) {
     if (!byPackage[r.pkg]) {
       byPackage[r.pkg] = {
         total: 0,
-        baseline: { PASS: 0, FAIL: 0, UNSUPPORTED: 0, APPROVED_DIFF: 0 },
-        target: { PASS: 0, FAIL: 0, UNSUPPORTED: 0, APPROVED_DIFF: 0 },
+        baseline: createStatusCounters(),
+        target: createStatusCounters(),
       };
     }
     byPackage[r.pkg].total++;
-    byPackage[r.pkg].baseline[r.baselineStatus]++;
-    byPackage[r.pkg].target[r.targetStatus]++;
+    byPackage[r.pkg].baseline[r.baselineStatus] = (byPackage[r.pkg].baseline[r.baselineStatus] || 0) + 1;
+    byPackage[r.pkg].target[r.targetStatus] = (byPackage[r.pkg].target[r.targetStatus] || 0) + 1;
 
     if (!byCategory[r.category]) {
       byCategory[r.category] = {
         total: 0,
-        baseline: { PASS: 0, FAIL: 0, UNSUPPORTED: 0, APPROVED_DIFF: 0 },
-        target: { PASS: 0, FAIL: 0, UNSUPPORTED: 0, APPROVED_DIFF: 0 },
+        baseline: createStatusCounters(),
+        target: createStatusCounters(),
       };
     }
     byCategory[r.category].total++;
-    byCategory[r.category].baseline[r.baselineStatus]++;
-    byCategory[r.category].target[r.targetStatus]++;
+    byCategory[r.category].baseline[r.baselineStatus] = (byCategory[r.category].baseline[r.baselineStatus] || 0) + 1;
+    byCategory[r.category].target[r.targetStatus] = (byCategory[r.category].target[r.targetStatus] || 0) + 1;
   }
 
   return { totals, byPackage, byCategory };
@@ -904,10 +1542,10 @@ function generateMatrixMarkdown(results, summary) {
     .map(([pkg, crate, step]) => {
       const s = summary.byPackage[pkg] || {
         total: 0,
-        baseline: { PASS: 0, APPROVED_DIFF: 0, FAIL: 0 },
-        target: { PASS: 0, APPROVED_DIFF: 0, FAIL: 0, UNSUPPORTED: 0 },
+        baseline: createStatusCounters(),
+        target: createStatusCounters(),
       };
-      return `| \`${pkg}\` | \`${crate}\` | ${step} | ${s.total} | ${s.baseline.PASS} PASS / ${s.baseline.APPROVED_DIFF} APPROVED_DIFF / ${s.baseline.FAIL} FAIL | ${s.target.PASS} PASS / ${s.target.UNSUPPORTED} UNSUPPORTED / ${s.target.FAIL} FAIL |`;
+      return `| \`${pkg}\` | \`${crate}\` | ${step} | ${s.total} | ${s.baseline.PASS} PASS / ${s.baseline.APPROVED_DIFF} APPROVED_DIFF / ${s.baseline.FAIL} FAIL | ${s.target.PASS} PASS / ${s.target.DEFERRED} DEFERRED / ${s.target.BLOCKED} BLOCKED / ${s.target.FAIL} FAIL |`;
     })
     .join('\n');
 
@@ -924,10 +1562,10 @@ function generateMatrixMarkdown(results, summary) {
     .map((cat) => {
       const s = summary.byCategory[cat] || {
         total: 0,
-        baseline: { PASS: 0, APPROVED_DIFF: 0, FAIL: 0 },
-        target: { PASS: 0, APPROVED_DIFF: 0, FAIL: 0, UNSUPPORTED: 0 },
+        baseline: createStatusCounters(),
+        target: createStatusCounters(),
       };
-      return `| ${cat} | ${s.total} | ${s.baseline.PASS} PASS / ${s.baseline.APPROVED_DIFF} APPROVED_DIFF / ${s.baseline.FAIL} FAIL | ${s.target.PASS} PASS / ${s.target.UNSUPPORTED} UNSUPPORTED / ${s.target.FAIL} FAIL |`;
+      return `| ${cat} | ${s.total} | ${s.baseline.PASS} PASS / ${s.baseline.APPROVED_DIFF} APPROVED_DIFF / ${s.baseline.FAIL} FAIL | ${s.target.PASS} PASS / ${s.target.DEFERRED} DEFERRED / ${s.target.BLOCKED} BLOCKED / ${s.target.FAIL} FAIL |`;
     })
     .join('\n');
 
@@ -940,9 +1578,10 @@ function generateMatrixMarkdown(results, summary) {
 | 狀態碼 | 定義 |
 |---|---|
 | \`PASS\` | 與基準版本（\`raw/compiler\`）輸出、快照、錯誤欄位或雙層 Codegen 完全一致 |
-| \`FAIL\` | 已實作功能與基準輸出不一致，或非預期拋錯 |
-| \`UNSUPPORTED\` | 目標階段尚未實作（將於對應 Step 1–6 逐步實作並切換為 \`PASS\`） |
-| \`APPROVED_DIFF\` | 已登錄於 \`compat/expected-differences.json\` 的環境／平台差異 |
+| \`FAIL\` | 本階段已承諾功能與基準不一致、非預期拋錯，或回報不支援 |
+| \`DEFERRED\` | 驗收前明列屬於後續階段（Step 4–6）且本輪不驗收之案例（不計為 PASS） |
+| \`BLOCKED\` | 環境或原版／候選基準無法執行（不計為 PASS） |
+| \`APPROVED_DIFF\` | 已登錄於 \`compat/expected-differences.json\` 的環境／平台差異（不計為完全相容通過） |
 
 ---
 
@@ -951,7 +1590,7 @@ function generateMatrixMarkdown(results, summary) {
 | 原版套件 | 對應 Rust Crate | 目標階段 | 追蹤案例數 | 原版基準 (\`raw/compiler\`) | Rust 目標 (\`rust/compiler\`) |
 |---|---|---|---:|---|---|
 ${pkgRows}
-| **合計** | — | **Step 0** | **${summary.totals.total}** | **${summary.totals.baseline.PASS} PASS / ${summary.totals.baseline.APPROVED_DIFF} APPROVED_DIFF / ${summary.totals.baseline.FAIL} FAIL** | **${summary.totals.target.PASS} PASS / ${summary.totals.target.UNSUPPORTED} UNSUPPORTED / ${summary.totals.target.FAIL} FAIL** |
+| **合計** | — | **Step 0** | **${summary.totals.total}** | **${summary.totals.baseline.PASS} PASS / ${summary.totals.baseline.APPROVED_DIFF} APPROVED_DIFF / ${summary.totals.baseline.FAIL} FAIL** | **${summary.totals.target.PASS} PASS / ${summary.totals.target.DEFERRED} DEFERRED / ${summary.totals.target.BLOCKED} BLOCKED / ${summary.totals.target.FAIL} FAIL** |
 
 > 註：\`pug-code-gen\` (\`2.0.2\`) 在原版 Monorepo 中無獨立 \`test/\` 資料夾，其單元與快照測試合併於 \`pug\` 主套件的 \`cases/*.pug\`、\`compileClient\` 快照與執行語意測試中驗收。
 
@@ -969,28 +1608,50 @@ ${catRows}
 
 | 類別 | 項目 | 原版基準行為 | 目前目標狀態 | 預計完成階段 |
 |---|---|---|---|---|
-| 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`UNSUPPORTED\` | Step 1 / Step 6 |
-| 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`UNSUPPORTED\` | Step 4 / Step 6 |
-| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`UNSUPPORTED\` | Step 1 / Step 5 |
-| 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`UNSUPPORTED\` | Step 5 / Step 6 |
-| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`UNSUPPORTED\` | Step 1 / Step 5 |
-| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`UNSUPPORTED\` | Step 1 / Step 6 |
-| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`UNSUPPORTED\` | Step 4 / Step 6 |
-| 公開 API | \`pug.__express(path, options, fn)\` | \`NODE_ENV === 'production'\` 且未指定 \`compileDebug\` 時預設 \`false\` | \`UNSUPPORTED\` | Step 6 |
-| 公開 API | \`pug.cache\` / \`pug.filters\` / \`pug.runtime\` / \`pug.name\` | 外部可直接讀寫 \`cache\` 與 \`filters\`；\`name === 'Pug'\` | \`UNSUPPORTED\` | Step 1 / Step 6 |
-| 公開 API | \`require('pug/register')\` | 註冊 \`require.extensions['.pug'] = pug.compileFile\` | \`UNSUPPORTED\` | Step 1 / Step 6 |
-| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`UNSUPPORTED\` | Step 3 / Step 5 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`UNSUPPORTED\` | Step 5 / Step 6 |
-| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`UNSUPPORTED\` | Step 1 / Step 5 |
-| 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`UNSUPPORTED\` | Step 4 |
-| 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`UNSUPPORTED\` | Step 1 / Step 4 / Step 6 |
-| 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`UNSUPPORTED\` | Step 4 / Step 6 |
-| 外掛介面 | Replacement hooks (\`resolve\`, \`read\`, \`generateCode\`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 \`Buffer\` 回傳 | \`UNSUPPORTED\` | Step 4 / Step 6 |
-| 外掛介面 | 內部擴充 (\`plugin.lex\`, \`plugin.parse\`) | 如 \`#3295\` tag interpolation 中的 \`plugin.lex.advance\` | \`UNSUPPORTED\` | Step 6 |
+| 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 6 |
+| 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`DEFERRED (Step 4/6)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 5 |
+| 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`DEFERRED (Step 5/6)\` | Step 5 / Step 6 |
+| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 5 |
+| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PARTIAL (Step 3 範圍)\` | Step 1 / Step 3 / Step 6 |
+| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`DEFERRED (Step 4/6)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.__express(path, options, fn)\` | \`NODE_ENV === 'production'\` 且未指定 \`compileDebug\` 時預設 \`false\` | \`DEFERRED (Step 6)\` | Step 6 |
+| 公開 API | \`pug.cache\` / \`pug.filters\` / \`pug.runtime\` / \`pug.name\` | 外部可直接讀寫 \`cache\` 與 \`filters\`；\`name === 'Pug'\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
+| 公開 API | \`require('pug/register')\` | 註冊 \`require.extensions['.pug'] = pug.compileFile\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 3 範圍)\` | Step 3 / Step 5 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`PASS (Step 3 範圍)\` | Step 3 / Step 5 / Step 6 |
+| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 3 範圍)\` | Step 1 / Step 3 / Step 5 |
+| 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`DEFERRED (Step 4)\` | Step 4 |
+| 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`PARTIAL (單檔入口)\` | Step 1 / Step 4 / Step 6 |
+| 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`PARTIAL (pre/postCodeGen)\` | Step 4 / Step 6 |
+| 外掛介面 | Replacement hooks (\`resolve\`, \`read\`, \`generateCode\`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 \`Buffer\` 回傳 | \`DEFERRED (Step 4/6)\` | Step 4 / Step 6 |
+| 外掛介面 | 內部擴充 (\`plugin.lex\`, \`plugin.parse\`) | 如 \`#3295\` tag interpolation 中的 \`plugin.lex.advance\` | \`DEFERRED (Step 6)\` | Step 6 |
 
 ---
 
-## 5. 已核准差異（Approved Differences）
+## 5. Step 3 節點與編譯選項支援矩陣（四種能力分界）
+
+| 類別 | AST 節點 / 編譯選項 | 可解析 (\`pug_parser\`) | 可走訪 (\`pug_walk\`) | 可產生 JS (\`pug_code_gen\`) | 可渲染 (\`Node VM + locals\`) | 延後完成階段與說明 |
+|---|---|:---:|:---:|:---:|:---:|---|
+| AST 節點 | \`Block\` / \`Tag\` / \`InterpolatedTag\` / \`Text\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（含 inline tags、block expansion、text interpolation） |
+| AST 節點 | \`Comment\` / \`BlockComment\` / \`Doctype\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（含 conditional comments 與 doctype 模式） |
+| AST 節點 | \`Code\`（buffered / unbuffered / 附帶 \`block\`） | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（保留完整 JS 上下文與行號追蹤） |
+| AST 節點 | \`Conditional\` (\`if\` / \`else if\` / \`else\` / \`unless\`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
+| AST 節點 | \`Each\`（含 \`key\` 與 \`else\` 替代區塊）/ \`EachOf\` / \`While\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
+| AST 節點 | \`Case\` / \`When\` (\`default\` / \`block\`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
+| AST 節點 | \`AttributeBlock\` (\`&attributes\`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 3 已完成靜態/動態屬性與 \`&attributes\` 支援；完整 \`pug-attrs\` 52 筆獨立快照於 Step 5 收斂 |
+| AST 節點 | \`Filter\` / \`IncludeFilter\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 4（\`pug_filters\` 編譯期常數選項與 filter 執行） |
+| AST 節點 | \`Include\` / \`RawInclude\` / \`Extends\` / \`FileReference\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 4（\`pug_load\` 遞迴讀檔與 \`pug_linker\` 模板連結） |
+| AST 節點 | \`NamedBlock\` (\`block\` / \`append\` / \`prepend\`) / \`YieldBlock\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 4（\`pug_linker\` 繼承合併與 include yield 替換） |
+| AST 節點 | \`Mixin\`（定義與呼叫）/ \`MixinBlock\` | ✅ | ✅ | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 5（Mixin 完整 Codegen、動態呼叫與 block 傳遞） |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成基本與語意支援；全組合於 Step 5 收斂 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（保留 \`compile\` 預設 \`compileDebug !== false\` 與 \`compileClient\` 預設 \`false\`） |
+| 編譯選項 | \`filename\` / \`basedir\`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ➖（單檔可，跨檔未支援） | ➖（單檔可，跨檔未支援） | Step 4（\`pug_load\` 跨檔案依賴解析） |
+| 外掛擴充 | \`plugin.parse\` / \`plugin.lex\` | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 6（完整 Node Plugin 相容驗收） |
+
+---
+
+## 6. 已核准差異（Approved Differences）
 
 | 差異 ID | 影響案例 | 狀態 | 說明 |
 |---|---|---|---|
@@ -1004,6 +1665,8 @@ function main() {
   const writeMatrix = args.includes('--write-matrix');
   const suiteIdx = args.indexOf('--suite');
   const suiteFilter = suiteIdx !== -1 ? args[suiteIdx + 1] : null;
+  const jsonIdx = args.indexOf('--json');
+  const jsonOutPath = jsonIdx !== -1 ? args[jsonIdx + 1] : null;
 
   const raw = loadRawPackages();
   const rustTarget = tryLoadRustTarget();
@@ -1029,6 +1692,23 @@ function main() {
 
   const summary = summarizeResults(results);
 
+  if (jsonOutPath) {
+    fs.writeFileSync(
+      path.resolve(jsonOutPath),
+      JSON.stringify(
+        {
+          summary,
+          failures: results.filter((r) => r.targetStatus === 'FAIL' || r.baselineStatus === 'FAIL'),
+          blocked: results.filter((r) => r.targetStatus === 'BLOCKED'),
+          results,
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+  }
+
   if (writeMatrix && !suiteFilter) {
     const matrixPath = path.join(RUST_COMPILER_ROOT, 'compat/matrix.md');
     fs.writeFileSync(matrixPath, generateMatrixMarkdown(results, summary), 'utf8');
@@ -1042,13 +1722,29 @@ function main() {
     `  Baseline (raw/compiler): ${summary.totals.baseline.PASS} PASS, ${summary.totals.baseline.APPROVED_DIFF} APPROVED_DIFF, ${summary.totals.baseline.FAIL} FAIL`
   );
   console.log(
-    `  Target  (rust/compiler): ${summary.totals.target.PASS} PASS, ${summary.totals.target.APPROVED_DIFF} APPROVED_DIFF, ${summary.totals.target.UNSUPPORTED} UNSUPPORTED, ${summary.totals.target.FAIL} FAIL`
+    `  Target  (rust/compiler): ${summary.totals.target.PASS} PASS, ${summary.totals.target.APPROVED_DIFF} APPROVED_DIFF, ${summary.totals.target.DEFERRED} DEFERRED, ${summary.totals.target.BLOCKED} BLOCKED, ${summary.totals.target.FAIL} FAIL`
   );
+
+  const failedCases = results.filter((r) => r.targetStatus === 'FAIL');
+  if (failedCases.length > 0) {
+    console.error(`Target failures (${failedCases.length}):`);
+    for (const f of failedCases) {
+      console.error(`  FAIL [${f.pkg}/${f.category}] ${f.name}${f.note ? ' — ' + f.note : ''}`);
+    }
+  }
 
   if (verifyBaseline && summary.totals.baseline.FAIL > 0) {
     console.error('Baseline verification failed!');
     process.exit(1);
   }
+  if (!verifyBaseline && (summary.totals.target.FAIL > 0 || summary.totals.target.BLOCKED > 0 || summary.totals.baseline.FAIL > 0)) {
+    process.exit(1);
+  }
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  console.error('Differential runner crashed:', err && err.stack ? err.stack : err);
+  process.exit(1);
+}

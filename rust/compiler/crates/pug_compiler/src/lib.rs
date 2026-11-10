@@ -171,6 +171,19 @@ pub fn compile_body<H: CompilerHost>(
 
     // 7. preCodeGen -> generateCode -> postCodeGen
     ast = host.pre_code_gen(ast)?;
+    let debug_sources_json = if options.include_sources {
+        let mut map = serde_json::Map::new();
+        let key = options
+            .filename
+            .clone()
+            .unwrap_or_else(|| String::from("undefined"));
+        map.insert(key, Value::String(source.to_string()));
+        let json = serde_json::to_string(&Value::Object(map))
+            .unwrap_or_else(|_| String::from("{}"));
+        Some(pug_js::escape_js_stringify_chars(&json))
+    } else {
+        None
+    };
     let code_gen_opts = CodeGenOptions {
         compile_debug: options.compile_debug,
         pretty: options.pretty.clone(),
@@ -179,12 +192,14 @@ pub fn compile_body<H: CompilerHost>(
         globals: options.globals.clone(),
         use_self: options.use_self,
         include_sources: options.include_sources,
+        debug_sources_json,
         template_name: if options.template_name.is_empty() {
             String::from("template")
         } else {
             options.template_name.clone()
         },
         filename: options.filename.clone(),
+        src: Some(contents),
     };
     let js = match host.custom_generate_code(&ast)? {
         Some(custom_js) => custom_js,

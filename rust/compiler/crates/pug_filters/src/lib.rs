@@ -52,7 +52,7 @@ where
                     is_html: None,
                 });
             }
-            Node::Text(_) | Node::Comment(_) => {}
+            Node::Text(_) | Node::Comment(_) | _ => {}
         }
     }
     Ok(())

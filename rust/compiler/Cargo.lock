@@ -979,6 +979,8 @@ version = "0.1.0"
 dependencies = [
  "pug_ast",
  "pug_error",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

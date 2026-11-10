@@ -21,11 +21,13 @@ pub struct Token {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<String>,
+    pub args: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
+    pub key: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
     #[serde(rename = "selfClosing", skip_serializing_if = "Option::is_none")]
     pub self_closing: Option<bool>,
 }
@@ -43,6 +45,7 @@ impl Token {
             args: None,
             key: None,
             code: None,
+            value: None,
             self_closing: None,
         }
     }

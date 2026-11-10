@@ -117,7 +117,7 @@ impl<'a> Parser<'a> {
 
         match tok.token_type.as_str() {
             "tag" | "class" | "id" => self.parse_tag(),
-            "text" => {
+            "text" | "text-html" => {
                 let tok = self.advance().unwrap();
                 let val = token_str_val(tok);
                 Ok(Node::Text(TextNode {
@@ -125,17 +125,21 @@ impl<'a> Parser<'a> {
                     line: tok.loc.start.line,
                     column: Some(tok.loc.start.column),
                     filename: tok.loc.filename.clone().or_else(|| self.filename.clone()),
-                    is_html: None,
+                    is_html: if tok.token_type == "text-html" {
+                        Some(true)
+                    } else {
+                        None
+                    },
                 }))
             }
-            "code" => {
+            "code" | "interpolated-code" => {
                 let tok = self.advance().unwrap();
                 let val = token_str_val(tok);
                 Ok(Node::Code(CodeNode {
                     val,
                     buffer: tok.buffer.unwrap_or(false),
                     must_escape: tok.must_escape.unwrap_or(false),
-                    is_inline: false,
+                    is_inline: tok.token_type == "interpolated-code",
                     block: None,
                     line: tok.loc.start.line,
                     column: Some(tok.loc.start.column),
@@ -145,12 +149,41 @@ impl<'a> Parser<'a> {
             "filter" => self.parse_filter(),
             "comment" => {
                 let tok = self.advance().unwrap();
+                let val = token_str_val(tok);
+                let buffer = tok.buffer.unwrap_or(false);
+                let line = tok.loc.start.line;
+                let column = Some(tok.loc.start.column);
+                let filename = tok.loc.filename.clone().or_else(|| self.filename.clone());
+                if let Some(next) = self.peek()
+                    && next.token_type == "start-pipeless-text"
+                {
+                    let block = self.parse_pipeless_text_block(line, &filename);
+                    let mut text_parts = Vec::new();
+                    for n in block.nodes {
+                        if let Node::Text(tn) = n {
+                            text_parts.push(tn.val);
+                        }
+                    }
+                    let joined = text_parts.join("");
+                    let full_val = if val.is_empty() {
+                        format!("\n{joined}\n")
+                    } else {
+                        format!("{val}\n{joined}\n")
+                    };
+                    return Ok(Node::Comment(CommentNode {
+                        val: full_val,
+                        buffer,
+                        line,
+                        column,
+                        filename,
+                    }));
+                }
                 Ok(Node::Comment(CommentNode {
-                    val: token_str_val(tok),
-                    buffer: tok.buffer.unwrap_or(false),
-                    line: tok.loc.start.line,
-                    column: Some(tok.loc.start.column),
-                    filename: tok.loc.filename.clone().or_else(|| self.filename.clone()),
+                    val,
+                    buffer,
+                    line,
+                    column,
+                    filename,
                 }))
             }
             other => {
@@ -221,18 +254,25 @@ impl<'a> Parser<'a> {
             filename: filename.clone(),
         };
         let mut code_node: Option<Box<CodeNode>> = None;
+        let mut self_closing = false;
+
+        if let Some(tok) = self.peek()
+            && tok.token_type == "slash"
+        {
+            self.advance();
+            self_closing = true;
+        }
 
         if let Some(tok) = self.peek() {
             match tok.token_type.as_str() {
-                "text" => {
-                    let t = self.advance().unwrap();
-                    block.nodes.push(Node::Text(TextNode {
-                        val: token_str_val(t),
-                        line: t.loc.start.line,
-                        column: Some(t.loc.start.column),
-                        filename: t.loc.filename.clone().or_else(|| filename.clone()),
-                        is_html: None,
-                    }));
+                "dot" => {
+                    self.advance();
+                    if let Some(next) = self.peek()
+                        && next.token_type == "start-pipeless-text"
+                    {
+                        let pipeless = self.parse_pipeless_text_block(line, &filename);
+                        block.nodes.extend(pipeless.nodes);
+                    }
                 }
                 "code" => {
                     let t = self.advance().unwrap();
@@ -247,6 +287,9 @@ impl<'a> Parser<'a> {
                         filename: t.loc.filename.clone().or_else(|| filename.clone()),
                     }));
                 }
+                "text" | "interpolated-code" | "start-pug-interpolation" => {
+                    self.parse_inline_text_sequence(&mut block.nodes, &filename)?;
+                }
                 _ => {}
             }
         }
@@ -260,7 +303,7 @@ impl<'a> Parser<'a> {
 
         Ok(Node::Tag(TagNode {
             name: name.clone(),
-            self_closing: false,
+            self_closing,
             block,
             attrs,
             attribute_blocks: Vec::new(),
@@ -271,6 +314,127 @@ impl<'a> Parser<'a> {
             code: code_node,
             text_only: None,
         }))
+    }
+
+    fn parse_inline_text_sequence(
+        &mut self,
+        nodes: &mut Vec<Node>,
+        filename: &Option<String>,
+    ) -> Result<(), PugError> {
+        while let Some(tok) = self.peek() {
+            match tok.token_type.as_str() {
+                "text" => {
+                    let t = self.advance().unwrap();
+                    nodes.push(Node::Text(TextNode {
+                        val: token_str_val(t),
+                        line: t.loc.start.line,
+                        column: Some(t.loc.start.column),
+                        filename: t.loc.filename.clone().or_else(|| filename.clone()),
+                        is_html: None,
+                    }));
+                }
+                "interpolated-code" => {
+                    let t = self.advance().unwrap();
+                    nodes.push(Node::Code(CodeNode {
+                        val: token_str_val(t),
+                        buffer: t.buffer.unwrap_or(false),
+                        must_escape: t.must_escape.unwrap_or(false),
+                        is_inline: true,
+                        block: None,
+                        line: t.loc.start.line,
+                        column: Some(t.loc.start.column),
+                        filename: t.loc.filename.clone().or_else(|| filename.clone()),
+                    }));
+                }
+                "start-pug-interpolation" => {
+                    self.advance();
+                    while let Some(inner) = self.peek() {
+                        if inner.token_type == "end-pug-interpolation" {
+                            self.advance();
+                            break;
+                        }
+                        nodes.push(self.parse_expr()?);
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_pipeless_text_block(
+        &mut self,
+        line: usize,
+        filename: &Option<String>,
+    ) -> BlockNode {
+        let mut nodes = Vec::new();
+        if let Some(next) = self.peek()
+            && next.token_type == "start-pipeless-text"
+        {
+            self.advance();
+            while let Some(t) = self.peek() {
+                match t.token_type.as_str() {
+                    "end-pipeless-text" => {
+                        self.advance();
+                        break;
+                    }
+                    "newline" => {
+                        let nl = self.advance().unwrap();
+                        nodes.push(Node::Text(TextNode {
+                            val: String::from("\n"),
+                            line: nl.loc.start.line,
+                            column: Some(nl.loc.start.column),
+                            filename: filename.clone(),
+                            is_html: None,
+                        }));
+                    }
+                    "text" => {
+                        let txt = self.advance().unwrap();
+                        nodes.push(Node::Text(TextNode {
+                            val: token_str_val(txt),
+                            line: txt.loc.start.line,
+                            column: Some(txt.loc.start.column),
+                            filename: filename.clone(),
+                            is_html: None,
+                        }));
+                    }
+                    "interpolated-code" => {
+                        let ic = self.advance().unwrap();
+                        nodes.push(Node::Code(CodeNode {
+                            val: token_str_val(ic),
+                            buffer: ic.buffer.unwrap_or(false),
+                            must_escape: ic.must_escape.unwrap_or(false),
+                            is_inline: true,
+                            block: None,
+                            line: ic.loc.start.line,
+                            column: Some(ic.loc.start.column),
+                            filename: filename.clone(),
+                        }));
+                    }
+                    "start-pug-interpolation" => {
+                        self.advance();
+                        while let Some(inner) = self.peek() {
+                            if inner.token_type == "end-pug-interpolation" {
+                                self.advance();
+                                break;
+                            }
+                            if let Ok(n) = self.parse_expr() {
+                                nodes.push(n);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+        BlockNode {
+            nodes,
+            line,
+            column: None,
+            filename: filename.clone(),
+        }
     }
 
     fn parse_filter(&mut self) -> Result<Node, PugError> {

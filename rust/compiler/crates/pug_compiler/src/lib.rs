@@ -124,6 +124,7 @@ pub fn compile_body<H: CompilerHost>(
     let contents = host.pre_lex(source.to_string(), filename)?;
     let lex_opts = LexerOptions {
         filename: options.filename.clone(),
+        ..LexerOptions::default()
     };
     let mut tokens = lex(&contents, &lex_opts)?;
     tokens = host.post_lex(tokens)?;
@@ -139,7 +140,10 @@ pub fn compile_body<H: CompilerHost>(
     }
 
     // 3. stripComments -> preParse -> Parser -> postParse -> preLoad
-    tokens = strip_comments(tokens, StripCommentsOptions::default())?;
+    tokens = strip_comments(
+        tokens,
+        StripCommentsOptions::new(true, false, options.filename.clone()),
+    )?;
     tokens = host.pre_parse(tokens)?;
     let parse_opts = ParserOptions {
         filename: options.filename.clone(),

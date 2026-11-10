@@ -22,6 +22,7 @@
     "build": "cargo build -p pug_napi",
     "test:rust": "cargo test --workspace",
     "test:step1": "node tests/integration/step1-skeleton.test.js",
+    "test:step2": "node tests/integration/step2-lexer.test.js",
     "test:diff": "node tests/differential/runner.js",
     "test:diff:baseline": "node tests/differential/runner.js --verify-baseline",
     "test:serializers": "node tests/differential/serializers.test.js",

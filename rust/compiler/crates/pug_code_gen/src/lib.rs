@@ -69,8 +69,11 @@ impl<'a> CodeGenerator<'a> {
     fn visit_block(&mut self, block: &BlockNode) {
         for (i, node) in block.nodes.iter().enumerate() {
             if i > 0
-                && matches!(block.nodes.get(i - 1), Some(Node::Text(_)))
-                && matches!(node, Node::Text(_))
+                && let (Some(Node::Text(prev)), Node::Text(curr)) =
+                    (block.nodes.get(i - 1), node)
+                && prev.line != curr.line
+                && prev.val != "\n"
+                && curr.val != "\n"
             {
                 self.push_html("\n");
             }

@@ -4,6 +4,8 @@ use napi_derive::napi;
 use pug_ast::{BlockNode, Token};
 use pug_compiler::{CompileOptions, CompilerHost, compile_body};
 use pug_error::{ErrorOptions, PugError};
+use pug_lexer::{LexerOptions, lex};
+use pug_strip_comments::{StripCommentsOptions, strip_comments_json};
 use serde_json::Value;
 
 #[napi(object)]
@@ -87,6 +89,95 @@ pub fn make_error_dto(
 #[napi]
 pub fn runtime_build(functions: Vec<String>) -> String {
     pug_runtime::build(&functions)
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct NapiLexerOptions {
+    pub filename: Option<String>,
+    pub interpolated: Option<bool>,
+    pub starting_line: Option<i64>,
+    pub starting_column: Option<i64>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NapiJsonOutcome {
+    pub ok: bool,
+    pub data: Option<Value>,
+    pub error: Option<NapiPugErrorDto>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct NapiStripCommentsOptions {
+    pub strip_unbuffered: Option<bool>,
+    pub strip_buffered: Option<bool>,
+    pub filename: Option<String>,
+}
+
+#[napi]
+pub fn lex_sync(source: String, options: Option<NapiLexerOptions>) -> Result<NapiJsonOutcome> {
+    let opts = options.unwrap_or_default();
+    let lex_opts = LexerOptions {
+        filename: opts.filename,
+        interpolated: opts.interpolated.unwrap_or(false),
+        starting_line: opts.starting_line.map(|n| n as usize),
+        starting_column: opts.starting_column.map(|n| n as usize),
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lex(&source, &lex_opts)
+    }));
+    match outcome {
+        Ok(Ok(tokens)) => {
+            let val = serde_json::to_value(tokens)
+                .map_err(|e| napi::Error::from_reason(format!("Failed to serialize tokens: {e}")))?;
+            Ok(NapiJsonOutcome {
+                ok: true,
+                data: Some(val),
+                error: None,
+            })
+        }
+        Ok(Err(pug_err)) => Ok(NapiJsonOutcome {
+            ok: false,
+            data: None,
+            error: Some(NapiPugErrorDto::from(pug_err)),
+        }),
+        Err(_panic) => Err(napi::Error::from_reason(
+            "Internal Rust panic caught at FFI boundary in lex_sync",
+        )),
+    }
+}
+
+#[napi]
+pub fn strip_comments_sync(
+    tokens: Vec<Value>,
+    options: Option<NapiStripCommentsOptions>,
+) -> Result<NapiJsonOutcome> {
+    let opts = options.unwrap_or_default();
+    let strip_opts = StripCommentsOptions::new(
+        opts.strip_unbuffered.unwrap_or(true),
+        opts.strip_buffered.unwrap_or(false),
+        opts.filename,
+    );
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        strip_comments_json(tokens, strip_opts)
+    }));
+    match outcome {
+        Ok(Ok(stripped)) => Ok(NapiJsonOutcome {
+            ok: true,
+            data: Some(Value::Array(stripped)),
+            error: None,
+        }),
+        Ok(Err(pug_err)) => Ok(NapiJsonOutcome {
+            ok: false,
+            data: None,
+            error: Some(NapiPugErrorDto::from(pug_err)),
+        }),
+        Err(_panic) => Err(napi::Error::from_reason(
+            "Internal Rust panic caught at FFI boundary in strip_comments_sync",
+        )),
+    }
 }
 
 struct NodeHostAdapter<'env> {

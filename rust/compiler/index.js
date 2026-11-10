@@ -71,6 +71,70 @@ exports._runtimeBuild = function(fns) {
 };
 exports._runtimeBuildJs = runtimeBuild;
 
+function dtoToJsError(dto) {
+  const err = new Error(dto.message);
+  err.code = dto.code;
+  err.msg = dto.msg;
+  err.line = dto.line;
+  err.column = dto.column === null ? undefined : dto.column;
+  err.filename = dto.filename === null ? undefined : dto.filename;
+  err.src = dto.src === null ? undefined : dto.src;
+  err.toJSON = function() {
+    return {
+      code: this.code,
+      msg: this.msg,
+      line: this.line,
+      column: this.column,
+      filename: this.filename,
+    };
+  };
+  return err;
+}
+
+function lex(str, options) {
+  if (typeof str !== 'string') {
+    throw new Error(
+      'Expected source code to be a string but got "' + typeof str + '"'
+    );
+  }
+  if (options !== undefined && (typeof options !== 'object' || options === null)) {
+    throw new Error(
+      'Expected "options" to be an object but got "' + typeof options + '"'
+    );
+  }
+  options = options || {};
+  const outcome = native.lexSync(str, {
+    filename: options.filename,
+    interpolated: Boolean(options.interpolated),
+    startingLine:
+      options.startingLine === undefined ? undefined : Number(options.startingLine),
+    startingColumn:
+      options.startingColumn === undefined ? undefined : Number(options.startingColumn),
+  });
+  if (!outcome.ok && outcome.error) {
+    throw dtoToJsError(outcome.error);
+  }
+  return outcome.data;
+}
+
+function stripComments(input, options) {
+  options = options || {};
+  const outcome = native.stripCommentsSync(input, {
+    stripUnbuffered: options.stripUnbuffered !== false,
+    stripBuffered: options.stripBuffered === true,
+    filename: options.filename,
+  });
+  if (!outcome.ok && outcome.error) {
+    throw dtoToJsError(outcome.error);
+  }
+  return outcome.data;
+}
+
+exports._lex = lex;
+exports.lex = lex;
+exports._stripComments = stripComments;
+exports.stripComments = stripComments;
+
 function applyPlugins(value, options, plugins, name) {
   return plugins.reduce(function(val, plugin) {
     return plugin[name] ? plugin[name](val, options) : val;

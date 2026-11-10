@@ -259,17 +259,135 @@ require('pug/register')
 
 ### Step 2：Lexer、註解與 JS 邊界
 
-- [ ] 完成 `pug_js` 的 `scan.rs`（對應 `character-parser`）與 `expression.rs`（對應 `is-expression`）。
-- [ ] 移植 `pug_lexer`、`pug_strip_comments`，核對 buffered／unbuffered 註解預設值與選項。
-- [ ] 跑通 `raw/compiler/packages/pug-lexer/test/` 與 `pug-strip-comments/test/` 所有 Token 快照與錯誤案例；加入 regex、template literal、巢狀括號及 Unicode 案例。
-- [ ] 新支援的基本語法同步加入 Node render 差異測試。
+- [x] 完成 `pug_js` 的 `scan.rs`（對應 `character-parser`）與 `expression.rs`（對應 `is-expression`）。
+- [x] 移植 `pug_lexer`、`pug_strip_comments`，核對 buffered／unbuffered 註解預設值與選項。
+- [x] 跑通 `raw/compiler/packages/pug-lexer/test/` 與 `pug-strip-comments/test/` 所有 Token 快照與錯誤案例；加入 regex、template literal、巢狀括號及 Unicode 案例。
+- [x] 新支援的基本語法同步加入 Node render 差異測試。
 
 ### Step 3：Parser、Walk、控制流程與 locals
 
-- [ ] 移植 `pug_walk` 與 `pug_parser`（含 `inline-tags`），跑通 `pug-walk/test/` 與 `pug-parser/test/` AST 快照、走訪順序、節點陣列替換及停止子樹行為。
-- [ ] 建立最小 `pug_attrs`／`pug_code_gen`，讓新增 AST 節點可執行驗收。
-- [ ] 在完整 JS 執行上下文整合 Oxc `scope.rs` 與 `locals.rs`（相容 `with` 套件轉換）。
-- [ ] 測試變數遮蔽、getter、原型鏈、賦值、`this`、`return`、控制流程片段與無效語法。
+本階段拆成 **3A：Parser／Walk → 3B：最小 Codegen → 3C：Scope／locals**，分段實作與驗收。保留現有 crate 分工，不新增另一套編譯架構。
+
+**相容基準沿用 Step 0 固定的本機 `raw/compiler` 快照與實際解析依賴。所有新增項目均為待辦，不代表已完成實作或通過測試。**
+
+#### 開始條件與階段邊界
+
+- [ ] 確認 Step 2 的 Token、註解處理與錯誤測試已有可重現結果；失敗、跳過、不支援及已核准差異分開記錄。
+- [ ] 確認 Token 類型、欄位、缺欄位與 `null`、位置資訊及 `eos` 等契約穩定；Parser 不自行修補不符合契約的 Lexer 輸出。
+- [ ] 重跑 Step 1 的 Node → NAPI → Rust → JS render 路徑，確認原生模組與函式型 locals 仍正常，locals 不經 JSON 序列化。
+- [ ] 沿用 `compat/baseline.json` 與既有 serializers，不在本階段順便升級基準依賴或自動更新預期快照。
+
+Step 2 若有已隔離的未完成案例，可先開發不受影響的 Parser／Walk 功能，但必須記錄依賴關係；受阻案例不得列為通過。本階段不以完成 Loader、Filters、Linker 或全部 Codegen 選項為前提。
+
+#### Step 3A：Parser 與 AST Walk
+
+**目標：先確認 AST 資料與走訪行為，再擴充執行能力。**
+
+- [ ] 盤點本機 `raw/compiler/packages/pug-parser/test/`、`pug-walk/test/` 的案例與節點種類，建立對應測試清單；擴充外掛案例單獨標記。
+- [ ] 移植 `pug_parser`（含 `lib/inline-tags.js` 規則），覆蓋基準的節點、巢狀關係、屬性、插值、JS code、控制流程與語法錯誤。
+- [ ] 為 `include`、`extends`、`block`、Mixin 與 Filters 建立相容 AST；本階段的 Parser 不執行讀檔、模板連結、Mixin 展開或 filter。
+- [ ] 保留 JS 片段與來源資訊，不在 Parser 中任意改寫表達式、執行常數求值，或把 unbuffered code 當成獨立完整 JS 程式驗證。
+- [ ] 分開內部 AST 與對外相容 DTO；比對缺欄位、`null`、空陣列、預設值、節點順序與來源位置，不輸出額外內部欄位。
+- [ ] 移植 `pug_walk`，核對 `before`／`after` 順序、`before` 回傳 `false` 時的停止範圍，以及是否呼叫對應 `after`；預期行為取自本機基準。
+- [ ] 核對 `parents` 的內容、最近父節點的位置與 callback 執行時點，保存每次 callback 的觀察紀錄。
+- [ ] 核對單節點與陣列 `replace` 的合法位置、展開順序、非法替換錯誤，以及替換後節點是否再次走訪；不能只比較最後 AST。
+- [ ] 核對 `includeDependencies` 對既有依賴 AST 的走訪規則；Walker 不自行載入檔案。
+- [ ] 保留 Parser 擴充介面邊界。完整 Node plugin 擴充相容仍依 Step 6 驗收；相關未完成案例須明列，不得略過後宣稱整套 Parser 測試全數通過。
+
+**測試分成兩層：**
+
+```text
+單階段差異測試：
+同一份獨立 Tokens → 原版 Parser / Rust Parser → AST 或錯誤比對
+同一份獨立 AST    → 原版 Walk / Rust Walk     → callback 紀錄、結果與錯誤比對
+
+整條前端管線測試：
+同一份 Pug → 原版 Lexer → StripComments → Parser
+同一份 Pug → Rust Lexer → StripComments → Parser
+                                          ↓
+                                    AST 或錯誤比對
+```
+
+兩邊使用相同內容、互不共享可變狀態的輸入。保留中文、emoji、BOM、CRLF、tab 等位置案例，並依 Step 0 的規則比對；不得藉由刪除位置欄位或重新排序節點隱藏差異。
+
+#### Step 3B：最小 Attrs／Codegen 與控制流程
+
+**目標：以明確限定的功能範圍，讓 Parser 產物接回既有 Node 執行路徑。**
+
+- [ ] 在 `compat/matrix.md` 列出本階段支援的節點與編譯選項，區分「可解析」「可走訪」「可產生 JS」「可渲染」四種能力。
+- [ ] 建立最小 `pug_attrs`／`pug_code_gen`：一般標籤、文字、靜態 ID／Class／字串屬性、buffered／unbuffered 輸出與插值；escaping 依既有 runtime 契約處理。
+- [ ] 加入用來驗證控制流程的 `if`／`else`／`unless`、`each`（含替代區塊）、`while` 與 unbuffered JS code；依本機基準核對其接受、拒絕與輸出行為。
+- [ ] 將 JS 控制流程片段與其 Pug 子節點組成完整的函式／區塊結構，不逐行獨立編譯，並保留回原始 Pug 的位置資訊。
+- [ ] 保持編譯與渲染分離：Rust 回傳 JS，Node 建構函式並傳入原始 locals；不得在編譯時提前執行模板中的動態 JS。
+- [ ] 測試 fixture 明確記錄入口、選項與 locals 建立方式，同時保留公開 API 預設選項的回歸案例；不得暗中關閉 `compileDebug` 或更改 runtime 模式來通過測試。
+- [ ] 對尚未支援的節點或選項明確回報，標示為本實作未完成；不得忽略節點、輸出空字串、偽裝成基準語法錯誤，或回退原版 Pug 後算成 Rust 通過。
+- [ ] 分開比對 HTML／回傳值／錯誤與生成 JS 文字。已納入本階段的產物契約沿用 Step 0 的兩層比對；不能以 HTML 相同掩蓋未核准的 codegen 字串差異。
+
+3B 可先以模板內自行宣告變數、常值與既有最小整合案例驗證；需要完整自由變數綁定的案例接到 3C 後驗收。不得為了先跑通 3B，新增直接將識別字替換成 `locals.xxx` 的暫時實作。
+
+完整 `pug-attrs`／`pug-code-gen` 測試集與全部選項仍在 Step 5 收斂；本階段只驗收明列範圍，不宣稱整套 Codegen 已完成。
+
+#### Step 3C：Oxc Scope 與 locals 相容轉換
+
+**目標：在完整 JS 上下文中分析作用域，並保留指定基準 `with` 的執行語意。**
+
+```text
+Pug AST
+    ↓
+建立必要的 JS 宣告、函式與區塊上下文
+    ↓
+Oxc Parser + Semantic Analysis
+    ↓
+依基準辨識自由變數與排除名稱
+    ↓
+locals 相容包裝、綁定與控制流程處理
+    ↓
+最終 JS → Node 執行 → 語意及副作用差異測試
+```
+
+- [ ] 在 `pug_js::scope.rs` 整合 Oxc Parser／Semantic Analysis，檢查診斷結果、宣告與引用解析；不能僅以取得 AST 判定合法。
+- [ ] 在 `pug_js::locals.rs` 對照已鎖定的 `with` 實作完成轉換，不直接依賴 Oxc 預設行為，也不以字串替換或 `locals.xxx` 全域改寫代替。
+- [ ] 按基準處理局部宣告、生成程式使用的內部名稱、`globals` 排除與 `self` 分支；先完成本階段語意測試所需範圍，完整選項組合在 Step 5 收斂。
+- [ ] 核對自由變數輸出與 locals 讀取的順序，不依賴 Rust 無序集合的迭代順序，避免改變 getter 副作用或產物文字。
+- [ ] 處理函式／區塊邊界、外層與巢狀 `return`、`this`、`arguments` 及暫存名稱碰撞；結果以本機基準建立預期值。
+- [ ] 新增的作用域與控制流程案例同時執行直接 JS 轉換測試及 Pug 端到端測試，避免只有其中一層通過。
+- [ ] Oxc 主要用於解析與分析；要求原始 JS 文字一致的路徑，不任意重新列印整份程式。所有文字差異依既有相容契約獨立追蹤。
+
+**必要測試矩陣：**
+
+| 測試組 | 應驗證內容 |
+|---|---|
+| 宣告與遮蔽 | `var`／`let`／`const`、函式參數、解構、閉包及同名變數；接受／拒絕以基準語法能力為準 |
+| locals 取值 | 自有屬性、原型鏈、不存在的屬性、存在但值為 `undefined`、全域名稱回退 |
+| 讀取副作用 | getter 呼叫次數、順序、讀取時點與拋出例外，不只比較最終 HTML |
+| 賦值 | `=`、`+=`、`++` 對區域值與原始 locals 的影響 |
+| 執行上下文 | `this`、`arguments`、外層 `return`、巢狀函式的 `return` 與丟出例外 |
+| 生成名稱 | 使用者名稱與內部暫存名稱、runtime 名稱或參數衝突 |
+| 控制流程與錯誤 | 多層條件／迴圈、JS 片段上下文、無效語法，以及錯誤發生於編譯或執行階段 |
+
+具有 getter、函式、原型或可變狀態的 locals，應由同一 fixture factory 分別建立兩份等價實例。不得以 JSON 複製，也不得先執行原版後，把已受副作用影響的同一物件交給 Rust 產物。
+
+#### 與 Step 4～6 的責任分界
+
+| 功能 | Step 3 必須完成 | 後續完成事項 |
+|---|---|---|
+| `include`／`extends` | AST、錯誤與既有依賴 AST 的 Walk 規則 | Step 4 讀檔、遞迴載入與連結 |
+| `block`／`append`／`prepend` | 節點與關係 | Step 4 繼承合併 |
+| Filters | 節點、屬性與走訪 | Step 4 編譯期求值及執行 |
+| Mixin | 定義／呼叫 AST 與 Walk | Step 4 接上遞迴、動態名稱及 block 案例，Step 5 補齊 Codegen |
+| 完整 attrs／runtime／選項 | 明列範圍的最小支援與語意驗證 | Step 5 全面補齊 |
+| Parser plugins | 介面邊界與受影響案例清單 | Step 6 完整 Node 擴充相容驗收 |
+
+#### Step 3 完成條件與交付結果
+
+- [ ] 3A：交付 Parser AST／錯誤差異結果、Walk callback 日誌與替換／停止／依賴走訪結果。
+- [ ] 3B：交付支援範圍清單、最小渲染案例，以及 HTML、回傳值、錯誤與生成 JS 差異結果。
+- [ ] 3C：交付 scope／locals 測試矩陣結果，包含原始 locals 變化、getter 日誌與控制流程語意。
+- [ ] 重跑 Step 1～2 回歸測試，確認既有端到端路徑、Token、註解與來源位置沒有退步。
+- [ ] 更新 `compat/matrix.md`，報告總數、通過、失敗、跳過、不支援及已核准差異；範圍內不得有未處理或未核准的差異。
+- [ ] 延後項目逐一連到 Step 4、5 或 6，不計入本階段通過數；新增排除項目不得用來掩蓋原已承諾功能的失敗。
+
+**只有 AST／Walk 通過時，僅能標記 3A 完成；3A、3B、3C 的已承諾範圍與回歸驗收都通過，才可標記整個 Step 3 完成。**
 
 ### Step 4：Loader、Filters、Linker
 

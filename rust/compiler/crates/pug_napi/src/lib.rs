@@ -6,6 +6,7 @@ use pug_compiler::{CompileOptions, CompilerHost, FileCtx, LoadedFile, compile_bo
 use pug_error::{ErrorOptions, PugError};
 use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
 use pug_lexer::{LexerOptions, lex};
+use pug_linker::link;
 use pug_load::{LoadHost, annotate_load_error, load_ast};
 use pug_parser::{ParserOptions, parse_json_tokens};
 use pug_strip_comments::{StripCommentsOptions, strip_comments_json};
@@ -1045,6 +1046,46 @@ pub fn handle_filters_sync(
         }
         Err(_panic) => Err(napi::Error::from_reason(
             "Internal Rust panic caught at FFI boundary in handle_filters_sync",
+        )),
+    }
+}
+
+#[napi]
+pub fn link_sync(ast: Value) -> Result<NapiJsonOutcome> {
+    let block: BlockNode = match serde_json::from_value(ast) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(NapiJsonOutcome {
+                ok: false,
+                data: None,
+                error: None,
+                plain_error: Some(format!("Invalid AST passed to link_sync: {e}")),
+            });
+        }
+    };
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| link(block)));
+
+    match outcome {
+        Ok(Ok(linked)) => {
+            let data = serde_json::to_value(linked).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to serialize linked AST: {e}"))
+            })?;
+            Ok(NapiJsonOutcome {
+                ok: true,
+                data: Some(data),
+                error: None,
+                plain_error: None,
+            })
+        }
+        Ok(Err(pug_err)) => Ok(NapiJsonOutcome {
+            ok: false,
+            data: None,
+            error: Some(NapiPugErrorDto::from(pug_err)),
+            plain_error: None,
+        }),
+        Err(_panic) => Err(napi::Error::from_reason(
+            "Internal Rust panic caught at FFI boundary in link_sync",
         )),
     }
 }

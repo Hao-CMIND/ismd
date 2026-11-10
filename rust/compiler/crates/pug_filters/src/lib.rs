@@ -112,7 +112,7 @@ pub fn handle_filters<H: FilterHost + ?Sized>(
 
                 Ok(Some(Node::Text(TextNode {
                     val: rendered,
-                    line: f.line,
+                    line: Some(f.line),
                     column: f.column,
                     filename: f.filename,
                     is_html: None,
@@ -193,7 +193,7 @@ pub fn handle_filters<H: FilterHost + ?Sized>(
 
                 Ok(Some(Node::Text(TextNode {
                     val,
-                    line: raw_inc.line,
+                    line: Some(raw_inc.line),
                     column: raw_inc.column,
                     filename: raw_inc.filename,
                     is_html: None,
@@ -410,7 +410,7 @@ mod tests {
                 4,
                 vec![Node::Text(TextNode {
                     val: String::from("code"),
-                    line: 4,
+                    line: Some(4),
                     column: Some(1),
                     filename: Some(String::from("dir/test.pug")),
                     is_html: None,

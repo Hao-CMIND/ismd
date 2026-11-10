@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -15,20 +17,128 @@ pub struct Attribute {
     pub filename: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AttributeBlock {
-    #[serde(rename = "type")]
     pub node_type: String,
     pub val: String,
     pub line: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+}
+
+impl Serialize for AttributeBlock {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if self.node_type.is_empty() {
+            return serializer.serialize_str(&self.val);
+        }
+        let mut count = 3;
+        if self.column.is_some() {
+            count += 1;
+        }
+        if self.filename.is_some() {
+            count += 1;
+        }
+        let mut map = serializer.serialize_map(Some(count))?;
+        map.serialize_entry("type", &self.node_type)?;
+        map.serialize_entry("val", &self.val)?;
+        map.serialize_entry("line", &self.line)?;
+        if let Some(col) = self.column {
+            map.serialize_entry("column", &col)?;
+        }
+        if let Some(ref f) = self.filename {
+            map.serialize_entry("filename", f)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AttributeBlock {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct FullAttrBlock {
+            #[serde(rename = "type")]
+            node_type: String,
+            val: String,
+            line: usize,
+            column: Option<usize>,
+            filename: Option<String>,
+        }
+
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(s) => Ok(AttributeBlock {
+                node_type: String::new(),
+                val: s,
+                line: 0,
+                column: None,
+                filename: None,
+            }),
+            other => {
+                let full: FullAttrBlock =
+                    serde_json::from_value(other).map_err(serde::de::Error::custom)?;
+                Ok(AttributeBlock {
+                    node_type: full.node_type,
+                    val: full.val,
+                    line: full.line,
+                    column: full.column,
+                    filename: full.filename,
+                })
+            }
+        }
+    }
 }
 
 fn default_block_type() -> String {
     String::from("Block")
+}
+
+mod typed_named_block {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    #[derive(Serialize)]
+    #[serde(tag = "type")]
+    enum TypedRef<'a> {
+        NamedBlock(&'a NamedBlockNode),
+    }
+
+    pub fn serialize_map<S: Serializer>(
+        val: &Option<BTreeMap<String, Vec<NamedBlockNode>>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let Some(map) = val else {
+            return serializer.serialize_none();
+        };
+        let typed: BTreeMap<&String, Vec<TypedRef<'_>>> = map
+            .iter()
+            .map(|(k, list)| (k, list.iter().map(TypedRef::NamedBlock).collect()))
+            .collect();
+        typed.serialize(serializer)
+    }
+
+    pub fn deserialize_map<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<BTreeMap<String, Vec<NamedBlockNode>>>, D::Error> {
+        Option::<BTreeMap<String, Vec<NamedBlockNode>>>::deserialize(deserializer)
+    }
+
+    pub fn serialize_vec<S: Serializer>(
+        val: &Option<Vec<NamedBlockNode>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let Some(list) = val else {
+            return serializer.serialize_none();
+        };
+        let typed: Vec<TypedRef<'_>> = list.iter().map(TypedRef::NamedBlock).collect();
+        typed.serialize(serializer)
+    }
+
+    pub fn deserialize_vec<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<NamedBlockNode>>, D::Error> {
+        Option::<Vec<NamedBlockNode>>::deserialize(deserializer)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,12 +146,22 @@ pub struct BlockNode {
     #[serde(rename = "type", default = "default_block_type")]
     pub node_type: String,
     pub nodes: Vec<Node>,
-    #[serde(default)]
-    pub line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    #[serde(
+        rename = "declaredBlocks",
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "typed_named_block::serialize_map",
+        deserialize_with = "typed_named_block::deserialize_map"
+    )]
+    pub declared_blocks: Option<BTreeMap<String, Vec<NamedBlockNode>>>,
+    #[serde(rename = "hasExtends", default, skip_serializing_if = "Option::is_none")]
+    pub has_extends: Option<bool>,
 }
 
 impl BlockNode {
@@ -49,9 +169,23 @@ impl BlockNode {
         Self {
             node_type: String::from("Block"),
             nodes,
-            line,
+            line: Some(line),
             column: None,
             filename,
+            declared_blocks: None,
+            has_extends: None,
+        }
+    }
+
+    pub fn synthetic(nodes: Vec<Node>) -> Self {
+        Self {
+            node_type: String::from("Block"),
+            nodes,
+            line: None,
+            column: None,
+            filename: None,
+            declared_blocks: None,
+            has_extends: None,
         }
     }
 
@@ -70,6 +204,15 @@ pub struct NamedBlockNode {
     pub column: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "typed_named_block::serialize_vec",
+        deserialize_with = "typed_named_block::deserialize_vec"
+    )]
+    pub parents: Option<Vec<NamedBlockNode>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,7 +262,8 @@ pub struct InterpolatedTagNode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextNode {
     pub val: String,
-    pub line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]

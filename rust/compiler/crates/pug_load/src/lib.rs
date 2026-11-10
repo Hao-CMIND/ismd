@@ -159,7 +159,7 @@ mod tests {
                 1,
                 vec![Node::Text(TextNode {
                     val: src.to_string(),
-                    line: 1,
+                    line: Some(1),
                     column: Some(1),
                     filename: Some(filename.to_string()),
                     is_html: None,

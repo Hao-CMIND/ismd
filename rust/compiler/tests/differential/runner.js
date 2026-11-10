@@ -62,28 +62,33 @@ function isTargetBlocked(rustTarget) {
   return !rustTarget || Boolean(rustTarget.__loadError);
 }
 
-const STEP4_5_NODE_TYPES = new Set([
-  'Include',
-  'Extends',
-  'NamedBlock',
-  'YieldBlock',
-  'Mixin',
-  'MixinBlock',
-]);
+const STEP4_5_NODE_TYPES = new Set(['Mixin', 'MixinBlock']);
 
-function findDeferredAstNodes(raw, src, filename) {
+function findDeferredAstNodes(raw, src, filename, opts) {
   try {
-    const tokens = raw.stripComments(raw.lex(src, { filename }), { filename });
-    const ast = raw.parse(tokens, { filename, src });
+    const parseTokens = (tokens, o) => {
+      const cleaned = raw.stripComments(tokens, o).map((tok) => {
+        if (tok.type === 'path' && path.extname(tok.val) === '') {
+          return { ...tok, val: `${tok.val}.pug` };
+        }
+        return tok;
+      });
+      return raw.parse(cleaned, o);
+    };
+    let ast = parseTokens(raw.lex(src, { filename }), { filename, src });
+    ast = raw.load(ast, {
+      lex: raw.lex,
+      parse: parseTokens,
+      basedir: opts && opts.basedir,
+    });
+    if (opts && opts.filters) {
+      ast = raw.filters.handleFilters(ast, opts.filters, opts.filterOptions, opts.filterAliases);
+    }
+    ast = raw.link(ast);
     const found = new Set();
     raw.walk(ast, (node) => {
       if (STEP4_5_NODE_TYPES.has(node.type)) {
         found.add(node.type);
-      } else if (
-        node.type === 'RawInclude' &&
-        (!Array.isArray(node.filters) || node.filters.length === 0)
-      ) {
-        found.add('RawInclude');
       }
     });
     return Array.from(found);
@@ -984,23 +989,47 @@ function runPugLinkerSuite(raw, rustTarget, results) {
   const snaps = parseJestSnapFile(
     path.join(testDir, '__snapshots__/index.test.js.snap')
   );
+  const targetBlocked = isTargetBlocked(rustTarget);
+  const rustLink = !targetBlocked ? rustTarget._link : null;
 
   for (const file of fs.readdirSync(path.join(testDir, 'cases')).sort()) {
     if (!file.endsWith('.input.json')) continue;
     const input = JSON.parse(
       fs.readFileSync(path.join(testDir, 'cases', file), 'utf8')
     );
-    const out = raw.link(input);
+    const out = raw.link(JSON.parse(JSON.stringify(input)));
     const baseOk =
       formatForSnapshot(out) === snaps[`cases from pug ${file} 1`];
+
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let targetNote = '';
+    if (rustLink) {
+      try {
+        const rustOut = rustLink(JSON.parse(JSON.stringify(input)));
+        const snapOk =
+          formatForSnapshot(rustOut) === snaps[`cases from pug ${file} 1`];
+        const cmp = compareStructured(out, rustOut);
+        if (cmp.ok && snapOk) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = `Mismatch on cases/${file} (cmp=${cmp.ok}, snap=${snapOk})`;
+        }
+      } catch (err) {
+        targetStatus = 'FAIL';
+        targetNote = err.message;
+      }
+    } else if (!targetBlocked) {
+      targetNote = 'Missing rustTarget._link export';
+    }
     recordCase(
       results,
       'pug-linker',
       'Token/AST',
       `cases/${file}`,
       baseOk ? 'PASS' : 'FAIL',
-      'DEFERRED',
-      'PLAN.md §五 Step 4 (pug_linker): include/extends linking'
+      targetStatus,
+      targetNote
     );
   }
 
@@ -1009,17 +1038,39 @@ function runPugLinkerSuite(raw, rustTarget, results) {
     const input = JSON.parse(
       fs.readFileSync(path.join(testDir, 'special-cases', file), 'utf8')
     );
-    const out = raw.link(input);
+    const out = raw.link(JSON.parse(JSON.stringify(input)));
     const baseOk =
       formatForSnapshot(out) === snaps[`special cases ${file} 1`];
+
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let targetNote = '';
+    if (rustLink) {
+      try {
+        const rustOut = rustLink(JSON.parse(JSON.stringify(input)));
+        const snapOk =
+          formatForSnapshot(rustOut) === snaps[`special cases ${file} 1`];
+        const cmp = compareStructured(out, rustOut);
+        if (cmp.ok && snapOk) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = `Mismatch on special-cases/${file} (cmp=${cmp.ok}, snap=${snapOk})`;
+        }
+      } catch (err) {
+        targetStatus = 'FAIL';
+        targetNote = err.message;
+      }
+    } else if (!targetBlocked) {
+      targetNote = 'Missing rustTarget._link export';
+    }
     recordCase(
       results,
       'pug-linker',
       'Token/AST',
       `special-cases/${file}`,
       baseOk ? 'PASS' : 'FAIL',
-      'DEFERRED',
-      'PLAN.md §五 Step 4 (pug_linker): special cases linking'
+      targetStatus,
+      targetNote
     );
   }
 
@@ -1030,20 +1081,44 @@ function runPugLinkerSuite(raw, rustTarget, results) {
     );
     let err = null;
     try {
-      raw.link(input);
+      raw.link(JSON.parse(JSON.stringify(input)));
     } catch (ex) {
       err = { msg: ex.msg, code: ex.code, line: ex.line };
     }
     const baseOk =
       err && formatForSnapshot(err) === snaps[`error handling ${file} 1`];
+
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let targetNote = '';
+    if (rustLink) {
+      let rustErr = null;
+      try {
+        rustLink(JSON.parse(JSON.stringify(input)));
+        targetStatus = 'FAIL';
+        targetNote = 'Expected linker error, got AST';
+      } catch (ex) {
+        rustErr = { msg: ex.msg, code: ex.code, line: ex.line };
+        const snapOk =
+          formatForSnapshot(rustErr) === snaps[`error handling ${file} 1`];
+        const cmp = compareStructured(err, rustErr);
+        if (cmp.ok && snapOk) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = `Error mismatch on errors/${file}`;
+        }
+      }
+    } else if (!targetBlocked) {
+      targetNote = 'Missing rustTarget._link export';
+    }
     recordCase(
       results,
       'pug-linker',
       'Error',
       `errors/${file}`,
       baseOk ? 'PASS' : 'FAIL',
-      'DEFERRED',
-      'PLAN.md §五 Step 4 (pug_linker): linker error cases'
+      targetStatus,
+      targetNote
     );
   }
 }
@@ -1157,7 +1232,7 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     }
     const baseOk = compareHtml(cmpExpected, actualHtml).ok;
 
-    const deferredNodes = findDeferredAstNodes(raw, str, pugPath);
+    const deferredNodes = findDeferredAstNodes(raw, str, pugPath, opts);
     if (deferredNodes.length > 0) {
       recordCase(
         results,

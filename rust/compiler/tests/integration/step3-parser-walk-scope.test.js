@@ -524,11 +524,10 @@ test('Step 3B: Control flow (if/else/unless, each with else, each-of, while, cas
   }
 });
 
-test('Step 3B: Unsupported AST nodes in Step 3B explicitly report UNSUPPORTED_NODE error', () => {
+test('Step 3B: Unsupported AST nodes in Step 3B (remaining pre-Step 4D Mixin nodes) explicitly report UNSUPPORTED_NODE error', () => {
   const unsupportedTemplates = [
-    { src: 'include other.pug', opts: { filename: 'unsupported.pug', plugins: [{ read: () => '' }] } },
-    { src: 'extends base.pug', opts: { filename: 'unsupported.pug', plugins: [{ read: () => '' }] } },
     { src: 'mixin myMixin()\n  p hi\n+myMixin()', opts: { filename: 'unsupported.pug' } },
+    { src: 'mixin wrap()\n  block', opts: { filename: 'unsupported.pug' } },
   ];
 
   for (const tc of unsupportedTemplates) {

@@ -535,6 +535,16 @@ exports._handleFilters = function(ast, filters, filterOptions, filterAliases) {
   return reviveAstBuffers(outcome.data);
 };
 
+exports._link = function(ast) {
+  const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
+  const outcome = native.linkSync(inputAst);
+  if (!outcome.ok) {
+    if (outcome.plainError) throw new Error(outcome.plainError);
+    if (outcome.error) throw dtoToJsError(outcome.error);
+  }
+  return reviveAstBuffers(outcome.data);
+};
+
 function applyPlugins(value, options, plugins, name) {
   return plugins.reduce(function(val, plugin) {
     return plugin[name] ? plugin[name](val, options) : val;

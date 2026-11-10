@@ -376,7 +376,7 @@ impl Parser {
                     let tok = self.advance()?;
                     tags.push(Node::Text(TextNode {
                         val: token_str_val(&tok),
-                        line: tok.loc.start.line,
+                        line: Some(tok.loc.start.line),
                         column: Some(tok.loc.start.column),
                         filename: self.filename.clone(),
                         is_html: None,
@@ -405,7 +405,7 @@ impl Parser {
                     if next_after == "text" || next_after == "interpolated-code" {
                         tags.push(Node::Text(TextNode {
                             val: String::from("\n"),
-                            line: tok.loc.start.line,
+                            line: Some(tok.loc.start.line),
                             column: Some(tok.loc.start.column),
                             filename: self.filename.clone(),
                             is_html: None,
@@ -447,7 +447,7 @@ impl Parser {
                         nodes.push(Node::Text(TextNode {
                             val: text_val,
                             filename: self.filename.clone(),
-                            line: text.loc.start.line,
+                            line: Some(text.loc.start.line),
                             column: Some(text.loc.start.column),
                             is_html: Some(true),
                         }));
@@ -778,7 +778,7 @@ impl Parser {
                 text_token.loc.start.line,
                 vec![Node::Text(TextNode {
                     val: token_str_val(&text_token),
-                    line: text_token.loc.start.line,
+                    line: Some(text_token.loc.start.line),
                     column: Some(text_token.loc.start.column),
                     filename: self.filename.clone(),
                     is_html: None,
@@ -871,6 +871,8 @@ impl Parser {
             line: tok.loc.start.line,
             column: Some(tok.loc.start.column),
             filename: self.filename.clone(),
+            parents: None,
+            ignore: None,
         }))
     }
 
@@ -1032,7 +1034,7 @@ impl Parser {
                 "text" => {
                     block.nodes.push(Node::Text(TextNode {
                         val: token_str_val(&inner),
-                        line: inner.loc.start.line,
+                        line: Some(inner.loc.start.line),
                         column: Some(inner.loc.start.column),
                         filename: self.filename.clone(),
                         is_html: None,
@@ -1041,7 +1043,7 @@ impl Parser {
                 "newline" => {
                     block.nodes.push(Node::Text(TextNode {
                         val: String::from("\n"),
-                        line: inner.loc.start.line,
+                        line: Some(inner.loc.start.line),
                         column: Some(inner.loc.start.column),
                         filename: self.filename.clone(),
                         is_html: None,

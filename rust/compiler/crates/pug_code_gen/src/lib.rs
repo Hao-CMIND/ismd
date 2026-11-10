@@ -272,6 +272,8 @@ impl<'a> CodeGenerator<'a> {
     fn visit_node(&mut self, node: &Node) -> Result<(), PugError> {
         match node {
             Node::Block(b) => self.visit_block(b),
+            Node::NamedBlock(nb) => self.visit_nodes(&nb.nodes),
+            Node::YieldBlock(_) => Ok(()),
             Node::Tag(tag) => self.visit_tag(tag),
             Node::InterpolatedTag(tag) => self.visit_interpolated_tag(tag),
             Node::Text(text) => {
@@ -310,21 +312,25 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn visit_block(&mut self, block: &BlockNode) -> Result<(), PugError> {
+        self.visit_nodes(&block.nodes)
+    }
+
+    fn visit_nodes(&mut self, nodes: &[Node]) -> Result<(), PugError> {
         let has_pp = self.options.pretty.is_some();
         if has_pp
-            && block.nodes.len() > 1
+            && nodes.len() > 1
             && !self.escape_pretty_mode
-            && matches!(block.nodes.first(), Some(Node::Text(_)))
-            && matches!(block.nodes.get(1), Some(Node::Text(_)))
+            && matches!(nodes.first(), Some(Node::Text(_)))
+            && matches!(nodes.get(1), Some(Node::Text(_)))
         {
             self.pretty_indent(1, true);
         }
 
-        for (i, node) in block.nodes.iter().enumerate() {
+        for (i, node) in nodes.iter().enumerate() {
             if has_pp
                 && i > 0
                 && !self.escape_pretty_mode
-                && let (Some(Node::Text(prev)), Node::Text(_)) = (block.nodes.get(i - 1), node)
+                && let (Some(Node::Text(prev)), Node::Text(_)) = (nodes.get(i - 1), node)
                 && prev.val.ends_with('\n')
             {
                 self.pretty_indent(1, false);
@@ -772,11 +778,11 @@ fn tag_can_inline(block: &BlockNode) -> bool {
 
 fn node_line_and_filename(node: &Node) -> (usize, Option<&str>) {
     match node {
-        Node::Block(n) => (n.line, n.filename.as_deref()),
+        Node::Block(n) => (n.line.unwrap_or(0), n.filename.as_deref()),
         Node::NamedBlock(n) => (n.line, n.filename.as_deref()),
         Node::Tag(n) => (n.line, n.filename.as_deref()),
         Node::InterpolatedTag(n) => (n.line, n.filename.as_deref()),
-        Node::Text(n) => (n.line, n.filename.as_deref()),
+        Node::Text(n) => (n.line.unwrap_or(0), n.filename.as_deref()),
         Node::Code(n) => (n.line, n.filename.as_deref()),
         Node::Comment(n) => (n.line, n.filename.as_deref()),
         Node::BlockComment(n) => (n.line, n.filename.as_deref()),

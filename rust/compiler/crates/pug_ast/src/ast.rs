@@ -5,7 +5,7 @@ use serde_json::Value;
 pub struct Attribute {
     pub name: String,
     pub val: Value,
-    #[serde(rename = "mustEscape")]
+    #[serde(rename = "mustEscape", alias = "escaped", default)]
     pub must_escape: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
@@ -36,6 +36,7 @@ pub struct BlockNode {
     #[serde(rename = "type", default = "default_block_type")]
     pub node_type: String,
     pub nodes: Vec<Node>,
+    #[serde(default)]
     pub line: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
@@ -131,7 +132,7 @@ pub struct TextNode {
 pub struct CodeNode {
     pub val: String,
     pub buffer: bool,
-    #[serde(rename = "mustEscape")]
+    #[serde(rename = "mustEscape", alias = "escape", default)]
     pub must_escape: bool,
     #[serde(rename = "isInline")]
     pub is_inline: bool,

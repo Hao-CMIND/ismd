@@ -430,6 +430,111 @@ exports._addWith = function(obj, src, exclude) {
   );
 };
 
+function requireFilterDep(name) {
+  try {
+    return require(name);
+  } catch (_) {
+    return require(path.join(__dirname, '../../raw/compiler/node_modules', name));
+  }
+}
+
+function runJstransformerFilter(name, str, options, currentDirectory, funcName) {
+  funcName = funcName || 'render';
+  const resolveMod = requireFilterDep('resolve');
+  const jstransformer = requireFilterDep('jstransformer');
+  let trPath;
+  try {
+    try {
+      trPath = resolveMod.sync('jstransformer-' + name, {
+        basedir: currentDirectory || process.cwd(),
+      });
+    } catch (_) {
+      try {
+        trPath = require.resolve('jstransformer-' + name);
+      } catch (_2) {
+        trPath = require.resolve('jstransformer-' + name, {
+          paths: [path.join(__dirname, '../../raw/compiler/node_modules')],
+        });
+      }
+    }
+  } catch (_) {
+    return {
+      ok: false,
+      unknownFilter: 'unknown filter ":' + name + '"',
+    };
+  }
+  const tr = jstransformer(require(trPath));
+  let result = tr[funcName](str, options, options).body;
+  if (options && options.minify) {
+    const minifyName =
+      tr.outputFormat === 'js'
+        ? 'uglify-js'
+        : tr.outputFormat === 'css'
+          ? 'clean-css'
+          : null;
+    if (minifyName) {
+      try {
+        const minRes = runJstransformerFilter(
+          minifyName,
+          result,
+          null,
+          currentDirectory,
+          'render'
+        );
+        if (minRes.ok) {
+          result = minRes.value;
+        }
+      } catch (_) {}
+    }
+  }
+  if (typeof result !== 'string') {
+    throw new TypeError(
+      'Expected filter ":' + name + '" to return a string, got ' + typeof result
+    );
+  }
+  return { ok: true, value: result };
+}
+
+function makeFilterHostCallback(filtersSet) {
+  return function(filterName, mode, text, fullPath, rawVal, attrsObj, dir) {
+    if (filtersSet && filtersSet[filterName]) {
+      const custom = filtersSet[filterName];
+      const out =
+        mode === 'rawFile' && custom.renderBuffer
+          ? custom.renderBuffer(rawVal, attrsObj)
+          : custom(text, attrsObj);
+      if (typeof out !== 'string') {
+        throw new TypeError(
+          'Expected filter ":' + filterName + '" to return a string, got ' + typeof out
+        );
+      }
+      return { ok: true, value: out };
+    }
+    return runJstransformerFilter(
+      filterName,
+      mode === 'rawFile' ? fullPath : text,
+      attrsObj,
+      dir,
+      mode === 'rawFile' ? 'renderFile' : 'render'
+    );
+  };
+}
+
+exports._handleFilters = function(ast, filters, filterOptions, filterAliases) {
+  const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
+  const outcome = native.handleFiltersSync(
+    inputAst,
+    filterOptions || null,
+    filterAliases || undefined,
+    { filter: makeFilterHostCallback(filters || {}) }
+  );
+  if (!outcome.ok) {
+    if (outcome.plainError) throw new Error(outcome.plainError);
+    if (outcome.error) throw dtoToJsError(outcome.error);
+  }
+  return reviveAstBuffers(outcome.data);
+};
+
 function applyPlugins(value, options, plugins, name) {
   return plugins.reduce(function(val, plugin) {
     return plugin[name] ? plugin[name](val, options) : val;
@@ -555,26 +660,7 @@ function compileBody(str, options) {
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'preFilters')
       );
     },
-    filter: function(name, text, filterAttrs) {
-      const mergedOpts = Object.assign(
-        {},
-        options.filterOptions && options.filterOptions[name],
-        filterAttrs
-      );
-      const targetName =
-        (options.filterAliases && options.filterAliases[name]) || name;
-      if (typeof filtersSet[name] === 'function') {
-        return String(filtersSet[name](text, mergedOpts));
-      }
-      if (typeof filtersSet[targetName] === 'function') {
-        return String(filtersSet[targetName](text, mergedOpts));
-      }
-      throw makeError('UNKNOWN_FILTER', 'unknown filter ":' + name + '"', {
-        line: 1,
-        filename: options.filename,
-        src: str,
-      });
-    },
+    filter: makeFilterHostCallback(filtersSet),
     postFilters: function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'postFilters')
@@ -627,6 +713,8 @@ function compileBody(str, options) {
       useSelf: Boolean(options.self),
       includeSources: Boolean(options.includeSources),
       templateName: options.templateName || 'template',
+      filterOptions: options.filterOptions || null,
+      filterAliases: options.filterAliases || undefined,
     },
     hostCallbacks
   );

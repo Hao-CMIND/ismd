@@ -6,7 +6,7 @@ use oxc::ast::ast::{
 use oxc::parser::Parser;
 use oxc::span::SourceType;
 
-/// Compile-time constant value matching `constantinople@3.1.2` with `{ pug: runtime, pug_interp: undefined }`.
+/// Compile-time constant value matching `constantinople@3.1.2`/`4.0.1`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstVal {
     Undefined,
@@ -14,10 +14,19 @@ pub enum ConstVal {
     Bool(bool),
     Number(f64),
     String(String),
+    RegExp { pattern: String, flags: String },
     Array(Vec<ConstVal>),
     Object(Vec<(String, ConstVal)>),
     PugRuntime,
     PugMethod(&'static str),
+}
+
+/// Outcome of evaluating a filter option expression against `constantinople@4.0.1`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstEvalOutcome {
+    Constant(ConstVal),
+    NotConstant,
+    Unsupported(String),
 }
 
 impl ConstVal {
@@ -29,6 +38,7 @@ impl ConstVal {
             ConstVal::String(s) => !s.is_empty(),
             ConstVal::Array(_)
             | ConstVal::Object(_)
+            | ConstVal::RegExp { .. }
             | ConstVal::PugRuntime
             | ConstVal::PugMethod(_) => true,
         }
@@ -54,7 +64,10 @@ impl ConstVal {
                 [single] => single.to_js_string().parse::<f64>().unwrap_or(f64::NAN),
                 _ => f64::NAN,
             },
-            ConstVal::Object(_) | ConstVal::PugRuntime | ConstVal::PugMethod(_) => f64::NAN,
+            ConstVal::Object(_)
+            | ConstVal::RegExp { .. }
+            | ConstVal::PugRuntime
+            | ConstVal::PugMethod(_) => f64::NAN,
         }
     }
 
@@ -66,6 +79,7 @@ impl ConstVal {
             ConstVal::Bool(false) => String::from("false"),
             ConstVal::Number(n) => format_js_number(*n),
             ConstVal::String(s) => s.clone(),
+            ConstVal::RegExp { pattern, flags } => format!("/{pattern}/{flags}"),
             ConstVal::Array(arr) => arr
                 .iter()
                 .map(|v| match v {
@@ -112,7 +126,7 @@ impl ConstVal {
                 }
                 serde_json::Value::Object(map)
             }
-            ConstVal::PugRuntime | ConstVal::PugMethod(_) => {
+            ConstVal::RegExp { .. } | ConstVal::PugRuntime | ConstVal::PugMethod(_) => {
                 serde_json::Value::Object(serde_json::Map::new())
             }
         }
@@ -147,7 +161,9 @@ impl ConstVal {
                 }
                 format!("{{{}}}", parts.join(","))
             }
-            ConstVal::PugRuntime | ConstVal::PugMethod(_) => String::from("{}"),
+            ConstVal::RegExp { .. } | ConstVal::PugRuntime | ConstVal::PugMethod(_) => {
+                String::from("{}")
+            }
         }
     }
 }
@@ -341,61 +357,111 @@ pub fn eval_constant(src: &str) -> Option<ConstVal> {
     let expr = Parser::new(&allocator, src, SourceType::script())
         .parse_expression()
         .ok()?;
-    eval_expr(&expr)
+    match eval_expr(&expr, true) {
+        ConstEvalOutcome::Constant(v) => Some(v),
+        _ => None,
+    }
 }
 
-fn eval_expr(expr: &Expression<'_>) -> Option<ConstVal> {
+/// Evaluates a filter option expression without `{ pug, pug_interp }`, distinguishing
+/// `NotConstant` from `Unsupported` constant constructs.
+pub fn eval_filter_constant(src: &str) -> ConstEvalOutcome {
+    if crate::expression::validate_expression(
+        src,
+        crate::expression::ExpressionOptions {
+            strict: false,
+            line_comment: true,
+        },
+    )
+    .is_err()
+    {
+        return ConstEvalOutcome::NotConstant;
+    }
+    let allocator = Allocator::default();
+    let Ok(expr) = Parser::new(&allocator, src, SourceType::cjs()).parse_expression() else {
+        return ConstEvalOutcome::NotConstant;
+    };
+    eval_expr(&expr, false)
+}
+
+fn eval_expr(expr: &Expression<'_>, allow_pug_constants: bool) -> ConstEvalOutcome {
+    use ConstEvalOutcome::*;
+    macro_rules! eval_sub {
+        ($e:expr) => {
+            match eval_expr($e, allow_pug_constants) {
+                Constant(v) => v,
+                other => return other,
+            }
+        };
+    }
+
     match expr {
-        Expression::BooleanLiteral(b) => Some(ConstVal::Bool(b.value)),
-        Expression::NullLiteral(_) => Some(ConstVal::Null),
-        Expression::NumericLiteral(n) => Some(ConstVal::Number(n.value)),
-        Expression::StringLiteral(s) => Some(ConstVal::String(s.value.as_str()?.to_string())),
-        Expression::ParenthesizedExpression(p) => eval_expr(&p.expression),
+        Expression::BooleanLiteral(b) => Constant(ConstVal::Bool(b.value)),
+        Expression::NullLiteral(_) => Constant(ConstVal::Null),
+        Expression::NumericLiteral(n) => Constant(ConstVal::Number(n.value)),
+        Expression::StringLiteral(s) => match s.value.as_str() {
+            Some(v) => Constant(ConstVal::String(v.to_string())),
+            None => NotConstant,
+        },
+        Expression::RegExpLiteral(re) => Constant(ConstVal::RegExp {
+            pattern: re.regex.pattern.text.to_string(),
+            flags: re.regex.flags.to_string(),
+        }),
+        Expression::BigIntLiteral(_) => {
+            Unsupported(String::from("BigInt constant evaluation is not supported"))
+        }
+        Expression::ParenthesizedExpression(p) => eval_expr(&p.expression, allow_pug_constants),
         Expression::SequenceExpression(seq) => {
             let mut last = ConstVal::Undefined;
             for sub in &seq.expressions {
-                last = eval_expr(sub)?;
+                last = eval_sub!(sub);
             }
-            Some(last)
+            Constant(last)
         }
         Expression::TemplateLiteral(tpl) => {
             let mut result = String::new();
             for (i, quasi) in tpl.quasis.iter().enumerate() {
-                let cooked = quasi.value.cooked.as_ref()?;
-                result.push_str(cooked.as_str()?);
+                let Some(cooked) = quasi.value.cooked.as_ref().and_then(|c| c.as_str()) else {
+                    return NotConstant;
+                };
+                result.push_str(cooked);
                 if let Some(sub) = tpl.expressions.get(i) {
-                    let v = eval_expr(sub)?;
+                    let v = eval_sub!(sub);
                     result.push_str(&v.to_js_string());
                 }
             }
-            Some(ConstVal::String(result))
+            Constant(ConstVal::String(result))
         }
+        Expression::TaggedTemplateExpression(_) => Unsupported(String::from(
+            "TaggedTemplateExpression constant evaluation is not supported",
+        )),
         Expression::Identifier(id) => match id.name.as_str() {
-            "pug_interp" => Some(ConstVal::Undefined),
-            "pug" => Some(ConstVal::PugRuntime),
-            _ => None,
+            "pug_interp" if allow_pug_constants => Constant(ConstVal::Undefined),
+            "pug" if allow_pug_constants => Constant(ConstVal::PugRuntime),
+            _ => NotConstant,
         },
         Expression::ArrayExpression(arr) => {
             let mut out = Vec::new();
             for elem in &arr.elements {
                 match elem {
-                    ArrayExpressionElement::SpreadElement(spread) => {
-                        match eval_expr(&spread.argument)? {
-                            ConstVal::Array(items) => out.extend(items),
-                            ConstVal::String(s) => {
-                                out.extend(s.chars().map(|c| ConstVal::String(c.to_string())));
-                            }
-                            _ => return None,
+                    ArrayExpressionElement::SpreadElement(spread) => match eval_sub!(&spread.argument)
+                    {
+                        ConstVal::Array(items) => out.extend(items),
+                        ConstVal::String(s) => {
+                            out.extend(s.chars().map(|c| ConstVal::String(c.to_string())));
                         }
-                    }
-                    ArrayExpressionElement::Elision(_) => return None,
+                        _ => return NotConstant,
+                    },
+                    ArrayExpressionElement::Elision(_) => return NotConstant,
                     other => {
-                        let e = other.as_expression()?;
-                        out.push(eval_expr(e)?);
+                        let Some(e) = other.as_expression() else {
+                            return NotConstant;
+                        };
+                        out.push(eval_sub!(e));
                     }
                 }
             }
-            Some(ConstVal::Array(out))
+            Constant(ConstVal::Array(out))
         }
         Expression::ObjectExpression(obj) => {
             let mut entries: Vec<(String, ConstVal)> = Vec::new();
@@ -403,103 +469,112 @@ fn eval_expr(expr: &Expression<'_>) -> Option<ConstVal> {
                 match prop {
                     ObjectPropertyKind::ObjectProperty(p) => {
                         if p.shorthand || p.method {
-                            return None;
+                            return NotConstant;
                         }
                         let key = if p.computed {
-                            let kv = eval_expr(p.key.as_expression()?)?;
+                            let kv = eval_sub!(p.key.as_expression().unwrap_or(&p.value));
                             kv.to_js_string()
                         } else {
                             match &p.key {
                                 PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-                                PropertyKey::StringLiteral(s) => s.value.as_str()?.to_string(),
-                                _ => return None,
+                                PropertyKey::StringLiteral(s) => match s.value.as_str() {
+                                    Some(v) => v.to_string(),
+                                    None => return NotConstant,
+                                },
+                                PropertyKey::NumericLiteral(n) => format_js_number(n.value),
+                                _ => return NotConstant,
                             }
                         };
                         if key.is_empty() || key.starts_with('_') {
-                            return None;
+                            return NotConstant;
                         }
-                        let val = eval_expr(&p.value)?;
+                        let val = eval_sub!(&p.value);
                         if let Some(existing) = entries.iter_mut().find(|(k, _)| k == &key) {
                             existing.1 = val;
                         } else {
                             entries.push((key, val));
                         }
                     }
-                    ObjectPropertyKind::SpreadProperty(spread) => {
-                        match eval_expr(&spread.argument)? {
-                            ConstVal::Object(other_entries) => {
-                                for (k, v) in other_entries {
-                                    if let Some(existing) =
-                                        entries.iter_mut().find(|(ek, _)| ek == &k)
-                                    {
-                                        existing.1 = v;
-                                    } else {
-                                        entries.push((k, v));
-                                    }
+                    ObjectPropertyKind::SpreadProperty(spread) => match eval_sub!(&spread.argument)
+                    {
+                        ConstVal::Object(other_entries) => {
+                            for (k, v) in other_entries {
+                                if let Some(existing) =
+                                    entries.iter_mut().find(|(ek, _)| ek == &k)
+                                {
+                                    existing.1 = v;
+                                } else {
+                                    entries.push((k, v));
                                 }
                             }
-                            _ => return None,
                         }
-                    }
+                        _ => return NotConstant,
+                    },
                 }
             }
-            Some(ConstVal::Object(entries))
+            Constant(ConstVal::Object(entries))
         }
         Expression::UnaryExpression(u) => {
-            let arg = eval_expr(&u.argument)?;
+            let arg = eval_sub!(&u.argument);
             match u.operator {
-                UnaryOperator::UnaryNegation => Some(ConstVal::Number(-arg.to_js_number())),
-                UnaryOperator::UnaryPlus => Some(ConstVal::Number(arg.to_js_number())),
-                UnaryOperator::LogicalNot => Some(ConstVal::Bool(!arg.is_truthy())),
+                UnaryOperator::UnaryNegation => Constant(ConstVal::Number(-arg.to_js_number())),
+                UnaryOperator::UnaryPlus => Constant(ConstVal::Number(arg.to_js_number())),
+                UnaryOperator::LogicalNot => Constant(ConstVal::Bool(!arg.is_truthy())),
                 UnaryOperator::BitwiseNot => {
                     let n = arg.to_js_number() as i64 as i32;
-                    Some(ConstVal::Number((!n) as f64))
+                    Constant(ConstVal::Number((!n) as f64))
                 }
                 UnaryOperator::Typeof => {
                     let t = match arg {
                         ConstVal::Undefined => "undefined",
-                        ConstVal::Null | ConstVal::Array(_) | ConstVal::Object(_) | ConstVal::PugRuntime => "object",
+                        ConstVal::Null
+                        | ConstVal::Array(_)
+                        | ConstVal::Object(_)
+                        | ConstVal::RegExp { .. }
+                        | ConstVal::PugRuntime => "object",
                         ConstVal::Bool(_) => "boolean",
                         ConstVal::Number(_) => "number",
                         ConstVal::String(_) => "string",
                         ConstVal::PugMethod(_) => "function",
                     };
-                    Some(ConstVal::String(String::from(t)))
+                    Constant(ConstVal::String(String::from(t)))
                 }
-                UnaryOperator::Void => Some(ConstVal::Undefined),
-                UnaryOperator::Delete => None,
+                UnaryOperator::Void => Constant(ConstVal::Undefined),
+                UnaryOperator::Delete => NotConstant,
             }
         }
         Expression::BinaryExpression(bin) => {
-            let left = eval_expr(&bin.left)?;
-            let right = eval_expr(&bin.right)?;
+            let left = eval_sub!(&bin.left);
+            let right = eval_sub!(&bin.right);
             eval_binary(bin.operator, left, right)
         }
         Expression::LogicalExpression(log) => {
-            let left = eval_expr(&log.left)?;
-            let right = eval_expr(&log.right)?;
+            let left = eval_sub!(&log.left);
+            let right = eval_sub!(&log.right);
             match log.operator {
-                LogicalOperator::And => Some(if left.is_truthy() { right } else { left }),
-                LogicalOperator::Or => Some(if left.is_truthy() { left } else { right }),
-                LogicalOperator::Coalesce => None,
+                LogicalOperator::And => Constant(if left.is_truthy() { right } else { left }),
+                LogicalOperator::Or => Constant(if left.is_truthy() { left } else { right }),
+                LogicalOperator::Coalesce => Unsupported(String::from(
+                    "Nullish coalescing constant evaluation is not supported",
+                )),
             }
         }
         Expression::ConditionalExpression(cond) => {
-            let test = eval_expr(&cond.test)?;
+            let test = eval_sub!(&cond.test);
             if test.is_truthy() {
-                eval_expr(&cond.consequent)
+                eval_expr(&cond.consequent, allow_pug_constants)
             } else {
-                eval_expr(&cond.alternate)
+                eval_expr(&cond.alternate, allow_pug_constants)
             }
         }
         Expression::StaticMemberExpression(mem) => {
-            let obj = eval_expr(&mem.object)?;
+            let obj = eval_sub!(&mem.object);
             let prop = mem.property.name.as_str();
             eval_member(obj, prop)
         }
         Expression::ComputedMemberExpression(mem) => {
-            let obj = eval_expr(&mem.object)?;
-            let prop_val = eval_expr(&mem.expression)?;
+            let obj = eval_sub!(&mem.object);
+            let prop_val = eval_sub!(&mem.expression);
             let prop = prop_val.to_js_string();
             eval_member(obj, &prop)
         }
@@ -507,132 +582,228 @@ fn eval_expr(expr: &Expression<'_>) -> Option<ConstVal> {
             let mut args = Vec::new();
             for arg in &call.arguments {
                 match arg {
-                    Argument::SpreadElement(spread) => match eval_expr(&spread.argument)? {
+                    Argument::SpreadElement(spread) => match eval_sub!(&spread.argument) {
                         ConstVal::Array(items) => args.extend(items),
                         ConstVal::String(s) => {
                             args.extend(s.chars().map(|c| ConstVal::String(c.to_string())));
                         }
-                        _ => return None,
+                        _ => return NotConstant,
                     },
                     other => {
-                        let e = other.as_expression()?;
-                        args.push(eval_expr(e)?);
+                        let Some(e) = other.as_expression() else {
+                            return NotConstant;
+                        };
+                        args.push(eval_sub!(e));
                     }
                 }
             }
             match &call.callee {
                 Expression::StaticMemberExpression(mem) => {
-                    let obj = eval_expr(&mem.object)?;
+                    let obj = eval_sub!(&mem.object);
                     let method = mem.property.name.as_str();
                     eval_method_call(obj, method, &args)
                 }
                 Expression::ComputedMemberExpression(mem) => {
-                    let obj = eval_expr(&mem.object)?;
-                    let method_val = eval_expr(&mem.expression)?;
+                    let obj = eval_sub!(&mem.object);
+                    let method_val = eval_sub!(&mem.expression);
                     let method = method_val.to_js_string();
                     eval_method_call(obj, &method, &args)
                 }
                 other_callee => {
-                    let callee = eval_expr(other_callee)?;
+                    let callee = eval_sub!(other_callee);
                     if let ConstVal::PugMethod(m) = callee {
-                        eval_pug_method(m, &args)
+                        match eval_pug_method(m, &args) {
+                            Some(v) => Constant(v),
+                            None => NotConstant,
+                        }
                     } else {
-                        None
+                        NotConstant
                     }
                 }
             }
         }
-        _ => None,
+        _ => NotConstant,
     }
 }
 
-fn eval_member(obj: ConstVal, prop: &str) -> Option<ConstVal> {
+fn eval_member(obj: ConstVal, prop: &str) -> ConstEvalOutcome {
     if prop.starts_with('_') {
-        return None;
+        return ConstEvalOutcome::NotConstant;
     }
     match obj {
         ConstVal::PugRuntime => match prop {
-            "escape" => Some(ConstVal::PugMethod("escape")),
-            "attr" => Some(ConstVal::PugMethod("attr")),
-            "attrs" => Some(ConstVal::PugMethod("attrs")),
-            "classes" => Some(ConstVal::PugMethod("classes")),
-            "style" => Some(ConstVal::PugMethod("style")),
-            _ => None,
+            "escape" => ConstEvalOutcome::Constant(ConstVal::PugMethod("escape")),
+            "attr" => ConstEvalOutcome::Constant(ConstVal::PugMethod("attr")),
+            "attrs" => ConstEvalOutcome::Constant(ConstVal::PugMethod("attrs")),
+            "classes" => ConstEvalOutcome::Constant(ConstVal::PugMethod("classes")),
+            "style" => ConstEvalOutcome::Constant(ConstVal::PugMethod("style")),
+            _ => ConstEvalOutcome::NotConstant,
         },
-        ConstVal::Object(entries) => entries
-            .into_iter()
-            .find(|(k, _)| k == prop)
-            .map(|(_, v)| v),
+        ConstVal::Object(entries) => match entries.into_iter().find(|(k, _)| k == prop) {
+            Some((_, v)) => ConstEvalOutcome::Constant(v),
+            None => ConstEvalOutcome::NotConstant,
+        },
         ConstVal::Array(items) => {
             if prop == "length" {
-                Some(ConstVal::Number(items.len() as f64))
+                ConstEvalOutcome::Constant(ConstVal::Number(items.len() as f64))
             } else if let Ok(idx) = prop.parse::<usize>() {
-                items.get(idx).cloned()
+                match items.get(idx).cloned() {
+                    Some(v) => ConstEvalOutcome::Constant(v),
+                    None => ConstEvalOutcome::NotConstant,
+                }
             } else {
-                None
+                ConstEvalOutcome::NotConstant
             }
         }
         ConstVal::String(s) => {
             if prop == "length" {
-                Some(ConstVal::Number(s.encode_utf16().count() as f64))
+                ConstEvalOutcome::Constant(ConstVal::Number(s.encode_utf16().count() as f64))
             } else if let Ok(idx) = prop.parse::<usize>() {
                 let units: Vec<u16> = s.encode_utf16().collect();
-                units
+                match units
                     .get(idx)
                     .map(|&u| ConstVal::String(String::from_utf16_lossy(&[u])))
+                {
+                    Some(v) => ConstEvalOutcome::Constant(v),
+                    None => ConstEvalOutcome::NotConstant,
+                }
             } else {
-                None
+                ConstEvalOutcome::NotConstant
             }
         }
-        _ => None,
+        _ => ConstEvalOutcome::NotConstant,
     }
 }
 
-fn eval_method_call(obj: ConstVal, method: &str, args: &[ConstVal]) -> Option<ConstVal> {
+fn eval_method_call(obj: ConstVal, method: &str, args: &[ConstVal]) -> ConstEvalOutcome {
+    use ConstEvalOutcome::*;
     match obj {
-        ConstVal::PugRuntime => eval_pug_method(method, args),
+        ConstVal::PugRuntime => match eval_pug_method(method, args) {
+            Some(v) => Constant(v),
+            None => NotConstant,
+        },
         ConstVal::String(s) => match method {
-            "trim" => Some(ConstVal::String(s.trim().to_string())),
-            "toLowerCase" => Some(ConstVal::String(s.to_lowercase())),
-            "toUpperCase" => Some(ConstVal::String(s.to_uppercase())),
+            "trim" => Constant(ConstVal::String(s.trim().to_string())),
+            "toLowerCase" => Constant(ConstVal::String(s.to_lowercase())),
+            "toUpperCase" => Constant(ConstVal::String(s.to_uppercase())),
             "concat" => {
                 let mut out = s;
                 for a in args {
                     out.push_str(&a.to_js_string());
                 }
-                Some(ConstVal::String(out))
+                Constant(ConstVal::String(out))
             }
             "repeat" => {
-                let count = args.first().map(ConstVal::to_js_number).unwrap_or(0.0) as usize;
-                Some(ConstVal::String(s.repeat(count)))
+                let count = args.first().map(ConstVal::to_js_number).unwrap_or(0.0).max(0.0) as usize;
+                Constant(ConstVal::String(s.repeat(count)))
             }
             "startsWith" => {
                 let pat = args.first().map(ConstVal::to_js_string).unwrap_or_default();
-                Some(ConstVal::Bool(s.starts_with(&pat)))
+                Constant(ConstVal::Bool(s.starts_with(&pat)))
             }
             "endsWith" => {
                 let pat = args.first().map(ConstVal::to_js_string).unwrap_or_default();
-                Some(ConstVal::Bool(s.ends_with(&pat)))
+                Constant(ConstVal::Bool(s.ends_with(&pat)))
             }
             "includes" => {
                 let pat = args.first().map(ConstVal::to_js_string).unwrap_or_default();
-                Some(ConstVal::Bool(s.contains(&pat)))
+                Constant(ConstVal::Bool(s.contains(&pat)))
+            }
+            "indexOf" => {
+                let pat = args.first().map(ConstVal::to_js_string).unwrap_or_default();
+                let pos = args.get(1).map(|a| a.to_js_number().max(0.0) as usize).unwrap_or(0);
+                let byte_idx = s.char_indices().nth(pos).map(|(i, _)| i).unwrap_or(s.len());
+                let res = s[byte_idx..]
+                    .find(&pat)
+                    .map(|off| s[..byte_idx + off].encode_utf16().count() as f64)
+                    .unwrap_or(-1.0);
+                Constant(ConstVal::Number(res))
+            }
+            "replace" => {
+                let Some(first) = args.first() else {
+                    return Constant(ConstVal::String(s));
+                };
+                if matches!(first, ConstVal::RegExp { .. }) {
+                    return Unsupported(String::from(
+                        "String.prototype.replace with RegExp is not supported",
+                    ));
+                }
+                let pat = first.to_js_string();
+                let rep = args.get(1).map(ConstVal::to_js_string).unwrap_or_else(|| String::from("undefined"));
+                Constant(ConstVal::String(s.replacen(&pat, &rep, 1)))
+            }
+            "slice" | "substring" | "substr" => {
+                let units: Vec<u16> = s.encode_utf16().collect();
+                let len = units.len() as isize;
+                let norm = |raw: f64, _default: isize| -> isize {
+                    if raw.is_nan() {
+                        0
+                    } else if method == "slice" {
+                        let i = raw as isize;
+                        if i < 0 { (len + i).max(0) } else { i.min(len) }
+                    } else {
+                        (raw as isize).clamp(0, len)
+                    }
+                };
+                let start = args.first().map(|a| norm(a.to_js_number(), 0)).unwrap_or(0);
+                let end = if method == "substr" {
+                    let count = args
+                        .get(1)
+                        .map(|a| (a.to_js_number() as isize).max(0))
+                        .unwrap_or(len - start);
+                    (start + count).min(len)
+                } else {
+                    args.get(1).map(|a| norm(a.to_js_number(), len)).unwrap_or(len)
+                };
+                let (lo, hi) = if method == "substring" && start > end {
+                    (end as usize, start as usize)
+                } else {
+                    (start as usize, end.max(start) as usize)
+                };
+                Constant(ConstVal::String(String::from_utf16_lossy(&units[lo..hi])))
             }
             "split" => {
-                let sep = args.first().map(ConstVal::to_js_string)?;
+                let Some(first) = args.first() else {
+                    return Constant(ConstVal::Array(vec![ConstVal::String(s)]));
+                };
+                if matches!(first, ConstVal::RegExp { .. }) {
+                    return Unsupported(String::from(
+                        "String.prototype.split with RegExp is not supported",
+                    ));
+                }
+                let sep = first.to_js_string();
                 let parts = s
                     .split(&sep)
                     .map(|p| ConstVal::String(p.to_string()))
                     .collect();
-                Some(ConstVal::Array(parts))
+                Constant(ConstVal::Array(parts))
             }
-            _ => None,
+            "match" | "search" | "normalize" | "padStart" | "padEnd" | "charAt" | "charCodeAt"
+            | "codePointAt" | "lastIndexOf" => {
+                Unsupported(format!("String.prototype.{method} constant evaluation is not supported"))
+            }
+            _ => NotConstant,
         },
-        ConstVal::Bool(b) if method == "toString" => Some(ConstVal::String(b.to_string())),
-        ConstVal::Number(n) if method == "toString" => {
-            Some(ConstVal::String(format_js_number(n)))
-        }
-        _ => None,
+        ConstVal::RegExp { .. } => match method {
+            "test" | "exec" => Unsupported(format!("RegExp.prototype.{method} constant evaluation is not supported")),
+            _ => NotConstant,
+        },
+        ConstVal::Bool(b) if method == "toString" => Constant(ConstVal::String(b.to_string())),
+        ConstVal::Number(n) => match method {
+            "toString" => Constant(ConstVal::String(format_js_number(n))),
+            "toFixed" => {
+                let digits = args
+                    .first()
+                    .map(|a| (a.to_js_number() as isize).clamp(0, 20) as usize)
+                    .unwrap_or(0);
+                Constant(ConstVal::String(format!("{n:.digits$}")))
+            }
+            "toExponential" | "toPrecision" => Unsupported(format!(
+                "Number.prototype.{method} constant evaluation is not supported"
+            )),
+            _ => NotConstant,
+        },
+        _ => NotConstant,
     }
 }
 
@@ -673,7 +844,8 @@ fn eval_pug_method(method: &str, args: &[ConstVal]) -> Option<ConstVal> {
     }
 }
 
-fn eval_binary(op: BinaryOperator, left: ConstVal, right: ConstVal) -> Option<ConstVal> {
+fn eval_binary(op: BinaryOperator, left: ConstVal, right: ConstVal) -> ConstEvalOutcome {
+    use ConstEvalOutcome::*;
     match op {
         BinaryOperator::Addition => {
             if matches!(
@@ -683,81 +855,99 @@ fn eval_binary(op: BinaryOperator, left: ConstVal, right: ConstVal) -> Option<Co
                 right,
                 ConstVal::String(_) | ConstVal::Array(_) | ConstVal::Object(_)
             ) {
-                Some(ConstVal::String(format!(
+                Constant(ConstVal::String(format!(
                     "{}{}",
                     left.to_js_string(),
                     right.to_js_string()
                 )))
             } else {
-                Some(ConstVal::Number(left.to_js_number() + right.to_js_number()))
+                Constant(ConstVal::Number(left.to_js_number() + right.to_js_number()))
             }
         }
         BinaryOperator::Subtraction => {
-            Some(ConstVal::Number(left.to_js_number() - right.to_js_number()))
+            Constant(ConstVal::Number(left.to_js_number() - right.to_js_number()))
         }
         BinaryOperator::Multiplication => {
-            Some(ConstVal::Number(left.to_js_number() * right.to_js_number()))
+            Constant(ConstVal::Number(left.to_js_number() * right.to_js_number()))
         }
         BinaryOperator::Division => {
-            Some(ConstVal::Number(left.to_js_number() / right.to_js_number()))
+            Constant(ConstVal::Number(left.to_js_number() / right.to_js_number()))
         }
         BinaryOperator::Remainder => {
-            Some(ConstVal::Number(left.to_js_number() % right.to_js_number()))
+            Constant(ConstVal::Number(left.to_js_number() % right.to_js_number()))
         }
-        BinaryOperator::Exponential => Some(ConstVal::Number(
+        BinaryOperator::Exponential => Constant(ConstVal::Number(
             left.to_js_number().powf(right.to_js_number()),
         )),
-        BinaryOperator::StrictEquality => Some(ConstVal::Bool(strict_eq(&left, &right))),
-        BinaryOperator::StrictInequality => Some(ConstVal::Bool(!strict_eq(&left, &right))),
-        BinaryOperator::Equality => Some(ConstVal::Bool(abstract_eq(&left, &right))),
-        BinaryOperator::Inequality => Some(ConstVal::Bool(!abstract_eq(&left, &right))),
-        BinaryOperator::LessThan => Some(ConstVal::Bool(match (&left, &right) {
+        BinaryOperator::StrictEquality => Constant(ConstVal::Bool(strict_eq(&left, &right))),
+        BinaryOperator::StrictInequality => Constant(ConstVal::Bool(!strict_eq(&left, &right))),
+        BinaryOperator::Equality => Constant(ConstVal::Bool(abstract_eq(&left, &right))),
+        BinaryOperator::Inequality => Constant(ConstVal::Bool(!abstract_eq(&left, &right))),
+        BinaryOperator::LessThan => Constant(ConstVal::Bool(match (&left, &right) {
             (ConstVal::String(a), ConstVal::String(b)) => a.encode_utf16().lt(b.encode_utf16()),
             _ => left.to_js_number() < right.to_js_number(),
         })),
-        BinaryOperator::LessEqualThan => Some(ConstVal::Bool(match (&left, &right) {
+        BinaryOperator::LessEqualThan => Constant(ConstVal::Bool(match (&left, &right) {
             (ConstVal::String(a), ConstVal::String(b)) => a.encode_utf16().le(b.encode_utf16()),
             _ => left.to_js_number() <= right.to_js_number(),
         })),
-        BinaryOperator::GreaterThan => Some(ConstVal::Bool(match (&left, &right) {
+        BinaryOperator::GreaterThan => Constant(ConstVal::Bool(match (&left, &right) {
             (ConstVal::String(a), ConstVal::String(b)) => a.encode_utf16().gt(b.encode_utf16()),
             _ => left.to_js_number() > right.to_js_number(),
         })),
-        BinaryOperator::GreaterEqualThan => Some(ConstVal::Bool(match (&left, &right) {
+        BinaryOperator::GreaterEqualThan => Constant(ConstVal::Bool(match (&left, &right) {
             (ConstVal::String(a), ConstVal::String(b)) => a.encode_utf16().ge(b.encode_utf16()),
             _ => left.to_js_number() >= right.to_js_number(),
         })),
         BinaryOperator::BitwiseOR => {
             let a = left.to_js_number() as i64 as i32;
             let b = right.to_js_number() as i64 as i32;
-            Some(ConstVal::Number((a | b) as f64))
+            Constant(ConstVal::Number((a | b) as f64))
         }
         BinaryOperator::BitwiseAnd => {
             let a = left.to_js_number() as i64 as i32;
             let b = right.to_js_number() as i64 as i32;
-            Some(ConstVal::Number((a & b) as f64))
+            Constant(ConstVal::Number((a & b) as f64))
         }
         BinaryOperator::BitwiseXOR => {
             let a = left.to_js_number() as i64 as i32;
             let b = right.to_js_number() as i64 as i32;
-            Some(ConstVal::Number((a ^ b) as f64))
+            Constant(ConstVal::Number((a ^ b) as f64))
         }
         BinaryOperator::ShiftLeft => {
             let a = left.to_js_number() as i64 as i32;
             let b = (right.to_js_number() as i64 as u32) & 0x1f;
-            Some(ConstVal::Number((a << b) as f64))
+            Constant(ConstVal::Number((a << b) as f64))
         }
         BinaryOperator::ShiftRight => {
             let a = left.to_js_number() as i64 as i32;
             let b = (right.to_js_number() as i64 as u32) & 0x1f;
-            Some(ConstVal::Number((a >> b) as f64))
+            Constant(ConstVal::Number((a >> b) as f64))
         }
         BinaryOperator::ShiftRightZeroFill => {
             let a = left.to_js_number() as i64 as u32;
             let b = (right.to_js_number() as i64 as u32) & 0x1f;
-            Some(ConstVal::Number((a >> b) as f64))
+            Constant(ConstVal::Number((a >> b) as f64))
         }
-        BinaryOperator::In | BinaryOperator::Instanceof => None,
+        BinaryOperator::In => {
+            let key = left.to_js_string();
+            match right {
+                ConstVal::Object(entries) => {
+                    Constant(ConstVal::Bool(entries.iter().any(|(k, _)| k == &key)))
+                }
+                ConstVal::Array(items) => {
+                    let found = key == "length"
+                        || key
+                            .parse::<usize>()
+                            .is_ok_and(|idx| idx < items.len());
+                    Constant(ConstVal::Bool(found))
+                }
+                _ => NotConstant,
+            }
+        }
+        BinaryOperator::Instanceof => {
+            Unsupported(String::from("instanceof constant evaluation is not supported"))
+        }
     }
 }
 

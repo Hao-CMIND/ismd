@@ -1,7 +1,7 @@
 use pug_ast::{BlockNode, RawContent, Token};
 use pug_code_gen::{CodeGenOptions, generate_code};
 use pug_error::PugError;
-use pug_filters::handle_filters;
+use pug_filters::{FilterInvocation, handle_filters};
 use pug_lexer::{LexerOptions, lex};
 use pug_linker::link;
 pub use pug_load::LoadedFile;
@@ -10,6 +10,7 @@ use pug_parser::{ParserOptions, parse};
 use pug_strip_comments::{StripCommentsOptions, strip_comments};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompileOptions {
@@ -23,6 +24,8 @@ pub struct CompileOptions {
     pub use_self: bool,
     pub include_sources: bool,
     pub template_name: String,
+    pub filter_options: Value,
+    pub filter_aliases: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,20 +104,12 @@ pub trait CompilerHost {
         Ok(ast)
     }
 
-    fn run_filter(
-        &mut self,
-        name: &str,
-        text: &str,
-        attrs: &Value,
-        line: usize,
-        filename: Option<&str>,
-    ) -> Result<String, PugError> {
-        let _ = (text, attrs);
+    fn run_filter(&mut self, call: &FilterInvocation<'_>) -> Result<String, PugError> {
         Err(pug_filters::unknown_filter_error(
-            name,
-            line,
-            None,
-            filename.map(String::from),
+            call.filter_name,
+            call.line,
+            call.column,
+            call.node_filename.map(String::from),
             None,
         ))
     }
@@ -410,9 +405,12 @@ pub fn compile_body<H: CompilerHost>(
 
     // 2. preFilters -> handleFilters -> postFilters
     ast = host.pre_filters(ast)?;
-    ast = handle_filters(ast, |name, text, attrs, line, file| {
-        host.run_filter(name, text, attrs, line, file)
-    })?;
+    ast = handle_filters(
+        ast,
+        &options.filter_options,
+        &options.filter_aliases,
+        &mut |call: &FilterInvocation<'_>| host.run_filter(call),
+    )?;
     ast = host.post_filters(ast)?;
 
     // 3. preLink -> Linker -> postLink

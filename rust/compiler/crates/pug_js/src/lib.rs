@@ -5,8 +5,8 @@ pub mod scan;
 pub mod scope;
 
 pub use constant::{
-    ConstVal, escape_js_stringify_chars, eval_constant, is_constant, js_stringify_str,
-    js_stringify_val, pug_attr, pug_classes, pug_escape, pug_style,
+    ConstEvalOutcome, ConstVal, escape_js_stringify_chars, eval_constant, eval_filter_constant,
+    is_constant, js_stringify_str, js_stringify_val, pug_attr, pug_classes, pug_escape, pug_style,
 };
 pub use expression::{ExpressionError, ExpressionOptions, is_expression, validate_expression};
 pub use locals::{add_with, add_with_checked};

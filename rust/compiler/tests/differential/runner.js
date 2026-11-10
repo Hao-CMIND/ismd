@@ -64,13 +64,11 @@ function isTargetBlocked(rustTarget) {
 
 const STEP4_5_NODE_TYPES = new Set([
   'Include',
-  'RawInclude',
   'Extends',
   'NamedBlock',
   'YieldBlock',
   'Mixin',
   'MixinBlock',
-  'Filter',
 ]);
 
 function findDeferredAstNodes(raw, src, filename) {
@@ -81,6 +79,11 @@ function findDeferredAstNodes(raw, src, filename) {
     raw.walk(ast, (node) => {
       if (STEP4_5_NODE_TYPES.has(node.type)) {
         found.add(node.type);
+      } else if (
+        node.type === 'RawInclude' &&
+        (!Array.isArray(node.filters) || node.filters.length === 0)
+      ) {
+        found.add('RawInclude');
       }
     });
     return Array.from(found);
@@ -701,6 +704,30 @@ function runPugLoadSuite(raw, rustTarget, results) {
   );
 }
 
+function normalizeFilterTextValTree(node) {
+  if (Array.isArray(node)) return node.map(normalizeFilterTextValTree);
+  if (node && typeof node === 'object') {
+    if (node.type === 'Text') {
+      const out = { type: 'Text', val: node.val };
+      if (node.line !== undefined) out.line = node.line;
+      if (node.column !== undefined) out.column = node.column;
+      if (node.filename !== undefined) out.filename = node.filename;
+      return out;
+    }
+    const out = {};
+    for (const k of Object.keys(node).sort()) {
+      const v = node[k];
+      // Legacy pug-filters .input.json fixtures omit `line: 0` on Block and `key: null` on Each
+      if (v === undefined) continue;
+      if (k === 'key' && v === null && node.type === 'Each') continue;
+      if (k === 'line' && v === 0 && node.type === 'Block') continue;
+      out[k] = normalizeFilterTextValTree(v);
+    }
+    return out;
+  }
+  return node;
+}
+
 function runPugFiltersSuite(raw, rustTarget, results) {
   const pkgDir = path.join(RAW_COMPILER_ROOT, 'packages/pug-filters');
   const testDir = path.join(pkgDir, 'test');
@@ -708,6 +735,15 @@ function runPugFiltersSuite(raw, rustTarget, results) {
   const errorsDir = path.join(testDir, 'errors');
   const snaps = parseJestSnapFile(
     path.join(testDir, '__snapshots__/index.test.js.snap')
+  );
+  const aliasSnaps = parseJestSnapFile(
+    path.join(testDir, '__snapshots__/filter-aliases.test.js.snap')
+  );
+  const nestedOptsSnaps = parseJestSnapFile(
+    path.join(
+      testDir,
+      '__snapshots__/per-filter-options-applied-to-nested-filters.test.js.snap'
+    )
   );
   if (typeof global.expect === 'undefined') {
     global.expect = (actual) => ({
@@ -727,20 +763,44 @@ function runPugFiltersSuite(raw, rustTarget, results) {
     for (const file of fs.readdirSync(casesDir).sort()) {
       if (!file.endsWith('.input.json')) continue;
       const input = JSON.parse(fs.readFileSync(path.join(casesDir, file), 'utf8'));
-      const actualAst = JSON.stringify(
-        raw.filters.handleFilters(input, customFilters),
-        null,
-        '  '
+      const rawOut = raw.filters.handleFilters(
+        JSON.parse(JSON.stringify(input)),
+        customFilters
       );
+      const actualAst = JSON.stringify(rawOut, null, '  ');
       const baseOk = formatForSnapshot(actualAst) === snaps[`cases/${file} 1`];
+
+      let targetStatus = 'FAIL';
+      let targetNote = '';
+      if (rustTarget && typeof rustTarget._handleFilters === 'function') {
+        try {
+          const rustOut = rustTarget._handleFilters(
+            JSON.parse(JSON.stringify(input)),
+            customFilters
+          );
+          const cmp = compareStructured(
+            normalizeFilterTextValTree(rawOut),
+            normalizeFilterTextValTree(rustOut)
+          );
+          if (cmp.ok) {
+            targetStatus = 'PASS';
+          } else {
+            targetStatus = 'FAIL';
+            targetNote = `Filtered AST mismatch for ${file}`;
+          }
+        } catch (err) {
+          targetStatus = 'FAIL';
+          targetNote = err.message;
+        }
+      }
       recordCase(
         results,
         'pug-filters',
         'Filters/Plugins',
         `cases/${file}`,
         baseOk ? 'PASS' : 'FAIL',
-        'DEFERRED',
-        'PLAN.md §五 Step 4 (pug_filters): compile-time filter evaluation'
+        targetStatus,
+        targetNote
       );
     }
 
@@ -749,40 +809,172 @@ function runPugFiltersSuite(raw, rustTarget, results) {
       const input = JSON.parse(fs.readFileSync(path.join(errorsDir, file), 'utf8'));
       let rawErr = null;
       try {
-        raw.filters.handleFilters(input, customFilters);
+        raw.filters.handleFilters(
+          JSON.parse(JSON.stringify(input)),
+          customFilters
+        );
       } catch (ex) {
         rawErr = { msg: ex.msg, code: ex.code, line: ex.line };
       }
       const baseOk =
         rawErr && formatForSnapshot(rawErr) === snaps[`errors/${file} 1`];
+
+      let targetStatus = 'FAIL';
+      let targetNote = '';
+      if (rustTarget && typeof rustTarget._handleFilters === 'function') {
+        let rustErr = null;
+        try {
+          rustTarget._handleFilters(
+            JSON.parse(JSON.stringify(input)),
+            customFilters
+          );
+        } catch (ex) {
+          rustErr = { msg: ex.msg, code: ex.code, line: ex.line };
+        }
+        if (rustErr && formatForSnapshot(rustErr) === snaps[`errors/${file} 1`]) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = `Error mismatch: ${JSON.stringify(rustErr)}`;
+        }
+      }
       recordCase(
         results,
         'pug-filters',
         'Error',
         `errors/${file}`,
         baseOk ? 'PASS' : 'FAIL',
-        'DEFERRED',
-        'PLAN.md §五 Step 4 (pug_filters): filter error handling'
+        targetStatus,
+        targetNote
       );
     }
   } finally {
     process.chdir(prevCwd);
   }
 
-  for (const name of [
-    'filter-aliases > filters can be aliased',
-    'filter-aliases > we do not support chains of aliases',
-    'filter-aliases > options are applied before aliases',
-    'per-filter-options-applied-to-nested-filters',
-  ]) {
+  // Filter aliases & per-filter nested options (4 tests)
+  const aliasTestFile = path.join(testDir, 'filter-aliases.test.js');
+  const nestedTestFile = path.join(
+    testDir,
+    'per-filter-options-applied-to-nested-filters.test.js'
+  );
+  const aliasCases = [
+    {
+      name: 'filter-aliases > filters can be aliased',
+      cat: 'Filters/Plugins',
+      fn(engine, isRaw) {
+        const src = '\nscript\n  :cdata:minify\n    function myFunc(foo) {\n      return foo;\n    }\n  ';
+        const lexFn = isRaw ? engine.lex : engine.lex;
+        const parseFn = isRaw ? engine.parse : engine.parse;
+        const ast = parseFn(lexFn(src, { filename: aliasTestFile }), {
+          filename: aliasTestFile,
+          src,
+        });
+        return isRaw
+          ? engine.filters.handleFilters(ast, {}, {}, { minify: 'uglify-js' })
+          : engine._handleFilters(ast, {}, {}, { minify: 'uglify-js' });
+      },
+      snap: aliasSnaps['filters can be aliased 1'],
+    },
+    {
+      name: 'filter-aliases > we do not support chains of aliases',
+      cat: 'Error',
+      fn(engine, isRaw) {
+        const src = '\nscript\n  :cdata:minify-js\n    function myFunc(foo) {\n      return foo;\n    }\n  ';
+        const ast = engine.parse(engine.lex(src, { filename: aliasTestFile }), {
+          filename: aliasTestFile,
+          src,
+        });
+        try {
+          if (isRaw) {
+            engine.filters.handleFilters(
+              ast,
+              {},
+              {},
+              { 'minify-js': 'minify', minify: 'uglify-js' }
+            );
+          } else {
+            engine._handleFilters(
+              ast,
+              {},
+              {},
+              { 'minify-js': 'minify', minify: 'uglify-js' }
+            );
+          }
+          throw new Error('Expected an exception');
+        } catch (ex) {
+          return { code: ex.code, message: ex.message };
+        }
+      },
+      snap: aliasSnaps['we do not support chains of aliases 1'],
+    },
+    {
+      name: 'filter-aliases > options are applied before aliases',
+      cat: 'Filters/Plugins',
+      fn(engine, isRaw) {
+        const src =
+          '\nscript\n  :cdata:minify\n    function myFunc(foo) {\n      return foo;\n    }\n  :cdata:uglify-js\n    function myFunc(foo) {\n      return foo;\n    }\n  ';
+        const ast = engine.parse(engine.lex(src, { filename: aliasTestFile }), {
+          filename: aliasTestFile,
+          src,
+        });
+        const opts = { minify: { output: { beautify: true } } };
+        const aliases = { minify: 'uglify-js' };
+        return isRaw
+          ? engine.filters.handleFilters(ast, {}, opts, aliases)
+          : engine._handleFilters(ast, {}, opts, aliases);
+      },
+      snap: aliasSnaps['options are applied before aliases 1'],
+    },
+    {
+      name: 'per-filter-options-applied-to-nested-filters',
+      cat: 'Filters/Plugins',
+      fn(engine, isRaw) {
+        const src = '\nscript\n  :cdata:uglify-js\n    function myFunc(foo) {\n      return foo;\n    }\n  ';
+        const ast = engine.parse(engine.lex(src, { filename: nestedTestFile }), {
+          filename: nestedTestFile,
+          src,
+        });
+        const opts = { 'uglify-js': { output: { beautify: true } } };
+        return isRaw
+          ? engine.filters.handleFilters(ast, {}, opts)
+          : engine._handleFilters(ast, {}, opts);
+      },
+      snap: nestedOptsSnaps['per filter options are applied, even to nested filters 1'],
+    },
+  ];
+
+  for (const tc of aliasCases) {
+    const rawOut = tc.fn(raw, true);
+    const baseOk = formatForSnapshot(rawOut) === tc.snap;
+    let targetStatus = 'FAIL';
+    let targetNote = '';
+    if (rustTarget && typeof rustTarget._handleFilters === 'function') {
+      try {
+        const rustOut = tc.fn(rustTarget, false);
+        const cmp = compareStructured(
+          normalizeFilterTextValTree(rawOut),
+          normalizeFilterTextValTree(rustOut)
+        );
+        if (cmp.ok) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = `Mismatch on ${tc.name}`;
+        }
+      } catch (err) {
+        targetStatus = 'FAIL';
+        targetNote = err.message;
+      }
+    }
     recordCase(
       results,
       'pug-filters',
-      'Filters/Plugins',
-      name,
-      'PASS',
-      'DEFERRED',
-      'PLAN.md §五 Step 4 (pug_filters): filterAliases & filterOptions'
+      tc.cat,
+      tc.name,
+      baseOk ? 'PASS' : 'FAIL',
+      targetStatus,
+      targetNote
     );
   }
 }
@@ -1018,9 +1210,7 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     if (rustPug && typeof rustPug.compileClient === 'function') {
       try {
         const clientOpts = {
-          filename: `${tc}.pug`,
-          pretty: opts.pretty,
-          doctype: opts.doctype,
+          ...opts,
           compileDebug: false,
         };
         const rawClient = raw.pug.compileClient(str, clientOpts);

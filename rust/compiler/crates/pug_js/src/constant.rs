@@ -481,7 +481,6 @@ fn eval_expr(expr: &Expression<'_>, allow_pug_constants: bool) -> ConstEvalOutco
                                     Some(v) => v.to_string(),
                                     None => return NotConstant,
                                 },
-                                PropertyKey::NumericLiteral(n) => format_js_number(n.value),
                                 _ => return NotConstant,
                             }
                         };
@@ -778,8 +777,128 @@ fn eval_method_call(obj: ConstVal, method: &str, args: &[ConstVal]) -> ConstEval
                     .collect();
                 Constant(ConstVal::Array(parts))
             }
-            "match" | "search" | "normalize" | "padStart" | "padEnd" | "charAt" | "charCodeAt"
-            | "codePointAt" | "lastIndexOf" => {
+            "lastIndexOf" => {
+                let pat = args.first().map(ConstVal::to_js_string).unwrap_or_default();
+                let units_s: Vec<u16> = s.encode_utf16().collect();
+                let units_p: Vec<u16> = pat.encode_utf16().collect();
+                let max_pos = args
+                    .get(1)
+                    .map(|a| {
+                        let n = a.to_js_number();
+                        if n.is_nan() {
+                            units_s.len()
+                        } else if n < 0.0 {
+                            0
+                        } else {
+                            (n as usize).min(units_s.len())
+                        }
+                    })
+                    .unwrap_or(units_s.len());
+                let res = if units_p.is_empty() {
+                    Some(max_pos)
+                } else if units_p.len() > units_s.len() {
+                    None
+                } else {
+                    let upper = max_pos.min(units_s.len() - units_p.len());
+                    (0..=upper)
+                        .rev()
+                        .find(|&idx| units_s[idx..idx + units_p.len()] == units_p[..])
+                };
+                Constant(ConstVal::Number(res.map(|i| i as f64).unwrap_or(-1.0)))
+            }
+            "charAt" => {
+                let n = args.first().map(ConstVal::to_js_number).unwrap_or(0.0);
+                let out = if n.is_nan() {
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    units
+                        .first()
+                        .map(|&u| String::from_utf16_lossy(&[u]))
+                        .unwrap_or_default()
+                } else if n < 0.0 {
+                    String::new()
+                } else {
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    units
+                        .get(n as usize)
+                        .map(|&u| String::from_utf16_lossy(&[u]))
+                        .unwrap_or_default()
+                };
+                Constant(ConstVal::String(out))
+            }
+            "charCodeAt" => {
+                let n = args.first().map(ConstVal::to_js_number).unwrap_or(0.0);
+                let units: Vec<u16> = s.encode_utf16().collect();
+                let code = if n.is_nan() {
+                    units.first().map(|&u| u as f64).unwrap_or(f64::NAN)
+                } else if n < 0.0 {
+                    f64::NAN
+                } else {
+                    units
+                        .get(n as usize)
+                        .map(|&u| u as f64)
+                        .unwrap_or(f64::NAN)
+                };
+                Constant(ConstVal::Number(code))
+            }
+            "codePointAt" => {
+                let n = args.first().map(ConstVal::to_js_number).unwrap_or(0.0);
+                let units: Vec<u16> = s.encode_utf16().collect();
+                let idx = if n.is_nan() {
+                    Some(0usize)
+                } else if n < 0.0 {
+                    None
+                } else {
+                    Some(n as usize)
+                };
+                match idx.and_then(|i| units.get(i).map(|&u| (i, u))) {
+                    None => Constant(ConstVal::Undefined),
+                    Some((i, first)) => {
+                        let cp = if (0xD800..=0xDBFF).contains(&first)
+                            && let Some(&second) = units.get(i + 1)
+                            && (0xDC00..=0xDFFF).contains(&second)
+                        {
+                            0x10000 + (((first as u32 - 0xD800) << 10) | (second as u32 - 0xDC00))
+                        } else {
+                            first as u32
+                        };
+                        Constant(ConstVal::Number(cp as f64))
+                    }
+                }
+            }
+            "padStart" | "padEnd" => {
+                let target_len = args
+                    .first()
+                    .map(|a| a.to_js_number().max(0.0) as usize)
+                    .unwrap_or(0);
+                let pad_str = args
+                    .get(1)
+                    .filter(|a| !matches!(a, ConstVal::Undefined))
+                    .map(ConstVal::to_js_string)
+                    .unwrap_or_else(|| String::from(" "));
+                let s_units: Vec<u16> = s.encode_utf16().collect();
+                if target_len <= s_units.len() || pad_str.is_empty() {
+                    return Constant(ConstVal::String(s));
+                }
+                let need = target_len - s_units.len();
+                let pad_units: Vec<u16> = pad_str.encode_utf16().collect();
+                let mut filler = Vec::with_capacity(need);
+                while filler.len() < need {
+                    let rem = need - filler.len();
+                    let take = rem.min(pad_units.len());
+                    filler.extend_from_slice(&pad_units[..take]);
+                }
+                let out = if method == "padStart" {
+                    let mut combined = filler;
+                    combined.extend_from_slice(&s_units);
+                    String::from_utf16_lossy(&combined)
+                } else {
+                    let mut combined = s_units;
+                    combined.extend_from_slice(&filler);
+                    String::from_utf16_lossy(&combined)
+                };
+                Constant(ConstVal::String(out))
+            }
+            "match" | "search" | "normalize" => {
                 Unsupported(format!("String.prototype.{method} constant evaluation is not supported"))
             }
             _ => NotConstant,
@@ -1031,7 +1150,18 @@ mod tests {
         assert!(!is_constant("undefined"));
         assert!(!is_constant("Infinity"));
         assert!(!is_constant("NaN"));
+        assert!(!is_constant("({ 1: 'a' })"));
+        assert!(!is_constant("({ '': 'a' })"));
+        assert!(!is_constant("({ _a: 1 })"));
         assert!(is_constant("void 0"));
         assert!(is_constant("pug_interp"));
+        assert_eq!(eval_constant("'abc'.charAt(1)"), Some(ConstVal::String("b".into())));
+        assert_eq!(eval_constant("'abc'.charCodeAt(1)"), Some(ConstVal::Number(98.0)));
+        assert_eq!(eval_constant("'a'.padStart(3, '0')"), Some(ConstVal::String("00a".into())));
+        assert_eq!(eval_constant("'a'.padEnd(3, '0')"), Some(ConstVal::String("a00".into())));
+        assert_eq!(eval_constant("'abcb'.lastIndexOf('b')"), Some(ConstVal::Number(3.0)));
+        assert_eq!(eval_filter_constant("null ?? 1"), ConstEvalOutcome::Unsupported("Nullish coalescing constant evaluation is not supported".into()));
+        assert_eq!(eval_filter_constant("dynamicIdent"), ConstEvalOutcome::NotConstant);
+        assert_eq!(eval_filter_constant("(1 +"), ConstEvalOutcome::NotConstant);
     }
 }

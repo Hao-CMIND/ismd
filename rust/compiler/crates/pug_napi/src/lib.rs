@@ -1,7 +1,8 @@
 use napi::bindgen_prelude::*;
 use napi::{Env, JsValue};
 use napi_derive::napi;
-use pug_ast::{BlockNode, RawContent, Token};
+use pug_ast::{Attribute, BlockNode, RawContent, Token};
+use pug_attrs::{AttrsFormat, compile_attrs};
 use pug_compiler::{CompileOptions, CompilerHost, FileCtx, LoadedFile, compile_body, default_resolve};
 use pug_error::{ErrorOptions, PugError};
 use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
@@ -1157,4 +1158,64 @@ pub fn compile_body_sync(
             "Internal Rust panic caught at FFI boundary in compile_body_sync",
         )),
     }
+}
+
+#[napi]
+pub fn compile_attrs_sync(
+    attrs: Value,
+    terse: bool,
+    format: String,
+    runtime_cb: Function<String, String>,
+) -> Result<NapiJsonOutcome> {
+    let parsed_attrs: Vec<Attribute> = match serde_json::from_value(attrs) {
+        Ok(a) => a,
+        Err(e) => {
+            return Ok(NapiJsonOutcome {
+                ok: false,
+                data: None,
+                error: None,
+                plain_error: Some(format!("Invalid attrs passed to compile_attrs_sync: {e}")),
+            });
+        }
+    };
+
+    let attrs_format = match format.as_str() {
+        "html" => AttrsFormat::Html,
+        "object" => AttrsFormat::Object,
+        other => {
+            return Ok(NapiJsonOutcome {
+                ok: false,
+                data: None,
+                error: None,
+                plain_error: Some(format!(
+                    "Options.format should be \"html\" or \"object\", got \"{other}\""
+                )),
+            });
+        }
+    };
+
+    let mut pending_js_error: Option<napi::Error> = None;
+    let code = compile_attrs(&parsed_attrs, terse, attrs_format, |name| {
+        if pending_js_error.is_some() {
+            return format!("pug.{name}");
+        }
+        match runtime_cb.call(name.to_string()) {
+            Ok(s) => s,
+            Err(e) => {
+                pending_js_error = Some(e);
+                format!("pug.{name}")
+            }
+        }
+    });
+
+    if let Some(err) = pending_js_error {
+        return Err(err);
+    }
+
+    Ok(NapiJsonOutcome {
+        ok: true,
+        data: Some(Value::String(code)),
+        error: None,
+        plain_error: None,
+    })
 }

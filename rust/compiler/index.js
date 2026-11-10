@@ -552,6 +552,52 @@ export function _link(ast) {
   return reviveAstBuffers(outcome.data);
 }
 
+export function _compileAttrs(attrs, options) {
+  if (!Array.isArray(attrs)) {
+    throw new Error('Attrs should be an array');
+  }
+  const validAttrs = attrs.every(function(attr) {
+    return (
+      attr &&
+      typeof attr === 'object' &&
+      typeof attr.name === 'string' &&
+      (typeof attr.val === 'string' || typeof attr.val === 'boolean') &&
+      typeof attr.mustEscape === 'boolean'
+    );
+  });
+  if (!validAttrs) {
+    throw new Error(
+      'All attributes should be supplied as an object of the form {name, val, mustEscape}'
+    );
+  }
+  if (!options || typeof options !== 'object') {
+    throw new Error('Options should be an object');
+  }
+  if (typeof options.terse !== 'boolean') {
+    throw new Error('Options.terse should be a boolean');
+  }
+  if (typeof options.runtime !== 'function') {
+    throw new Error(
+      'Options.runtime should be a function that takes a runtime function name and returns the source code that will evaluate to that function at runtime'
+    );
+  }
+  if (options.format !== 'html' && options.format !== 'object') {
+    throw new Error('Options.format should be "html" or "object"');
+  }
+
+  const outcome = native.compileAttrsSync(
+    attrs,
+    options.terse,
+    options.format,
+    options.runtime
+  );
+  if (!outcome.ok) {
+    if (outcome.plainError) throw new Error(outcome.plainError);
+    if (outcome.error) throw dtoToJsError(outcome.error);
+  }
+  return outcome.data;
+}
+
 function applyPlugins(value, options, plugins, name) {
   return plugins.reduce(function(val, plugin) {
     return plugin[name] ? plugin[name](val, options) : val;
@@ -947,6 +993,7 @@ export default {
   _addWith,
   _handleFilters,
   _link,
+  _compileAttrs,
   compile,
   compileClientWithDependenciesTracked,
   compileClient,

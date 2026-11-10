@@ -1125,26 +1125,151 @@ function runPugLinkerSuite(raw, rustTarget, results) {
   }
 }
 
+function collectPugAttrsCases(raw) {
+  const attrsTestSrc = fs.readFileSync(
+    path.join(RAW_COMPILER_ROOT, 'packages/pug-attrs/test/index.test.js'),
+    'utf8'
+  );
+  const groups = [];
+  let currentGroup = null;
+  const expectStub = (actual) => ({
+    toBe(expected) {
+      assert.strictEqual(actual, expected);
+    },
+    toEqual(expected) {
+      assert.deepStrictEqual(actual, expected);
+    },
+  });
+
+  // Intercept calls to attrs(...) so we capture exact (input, opts, expected, locals) tuples
+  const capturedCalls = [];
+  let currentOpts = null;
+  let capturedInput = null;
+  const capturingAttrs = function (input, opts) {
+    capturedInput = JSON.parse(JSON.stringify(input));
+    currentOpts = opts;
+    return raw.attrs(input, opts);
+  };
+  const evalLocalsShim = function (fnBody, locals) {
+    const keys = Object.keys(locals || {}).sort();
+    // eslint-disable-next-line no-new-func
+    return Function(keys.join(', '), fnBody).apply(
+      null,
+      keys.map((k) => locals[k])
+    );
+  };
+  void evalLocalsShim;
+
+  const customRequire = (id) => {
+    if (id === '../') return capturingAttrs;
+    if (id === 'pug-runtime') return raw.runtime;
+    if (id === 'assert') return assert;
+    if (id === 'util') return require('util');
+    throw new Error(`Unexpected require in pug-attrs test: ${id}`);
+  };
+  const describeFn = (title, fn) => {
+    currentGroup = { title, cases: [] };
+    groups.push(currentGroup);
+    fn();
+    currentGroup = null;
+  };
+  const itFn = (label, fn) => {
+    capturedInput = null;
+    fn();
+    currentGroup.cases.push({
+      label,
+      input: capturedInput,
+      opts: currentOpts,
+      runBaseline: fn,
+    });
+  };
+  // Note: pug-attrs test evaluates expected via closure, so run fn() with BOTH raw & rust!
+  // We capture input+opts during describe() pass, and execute with swapped capturing/rust runtime below.
+  let activeAttrsImpl = capturingAttrs;
+  const proxyAttrs = function (input, opts) {
+    capturedInput = JSON.parse(JSON.stringify(input));
+    currentOpts = opts;
+    return activeAttrsImpl(input, opts);
+  };
+  const runRequire = (id) => (id === '../' ? proxyAttrs : customRequire(id));
+
+  // eslint-disable-next-line no-new-func
+  const runnerFn = Function('require', 'describe', 'it', 'expect', attrsTestSrc);
+  const collected = [];
+  runnerFn(
+    runRequire,
+    (title, fn) => {
+      currentGroup = { title, idx: 0 };
+      fn();
+      currentGroup = null;
+    },
+    (label, fn) => {
+      currentGroup.idx++;
+      collected.push({
+        groupTitle: currentGroup.title,
+        idx: currentGroup.idx,
+        label,
+        runWithImpl(impl) {
+          activeAttrsImpl = impl;
+          return fn();
+        },
+      });
+    },
+    expectStub
+  );
+  return collected;
+}
+
 function runPugAttrsAndRuntimeSuite(raw, rustTarget, results) {
-  // pug-attrs has 52 standalone cases across 4 option groups (Step 5)
-  const attrGroups = [
-    { group: 'terse: true, format: html', count: 20 },
-    { group: 'terse: false, format: html', count: 6 },
-    { group: 'terse: true, format: object', count: 20 },
-    { group: 'terse: false, format: object', count: 6 },
-  ];
-  for (const g of attrGroups) {
-    for (let i = 1; i <= g.count; i++) {
-      recordCase(
-        results,
-        'pug-attrs',
-        'JS Artifact',
-        `${g.group} #${i}`,
-        'PASS',
-        'DEFERRED',
-        'PLAN.md §五 Step 5 (pug_attrs): standalone 52-case JS artifact convergence'
-      );
+  const targetBlocked = isTargetBlocked(rustTarget);
+  const rustCompileAttrs = !targetBlocked ? rustTarget._compileAttrs : null;
+  const attrsCases = collectPugAttrsCases(raw);
+
+  for (const tc of attrsCases) {
+    let rawCode = null;
+    let baseOk = false;
+    try {
+      tc.runWithImpl((input, opts) => {
+        rawCode = raw.attrs(input, opts);
+        return rawCode;
+      });
+      baseOk = true;
+    } catch (_) {
+      baseOk = false;
     }
+
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let targetNote = '';
+    if (rustCompileAttrs) {
+      let rustCode = null;
+      try {
+        tc.runWithImpl((input, opts) => {
+          rustCode = rustCompileAttrs(input, opts);
+          return rustCode;
+        });
+        if (rustCode === rawCode) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          targetNote = `JS output mismatch: expected ${rawCode}, got ${rustCode}`;
+        }
+      } catch (err) {
+        targetStatus = 'FAIL';
+        targetNote = err && err.message ? err.message : String(err);
+      }
+    } else if (!targetBlocked) {
+      targetNote = 'Missing rustTarget._compileAttrs export';
+    }
+
+    recordCase(
+      results,
+      'pug-attrs',
+      'JS Artifact',
+      `${tc.groupTitle} #${tc.idx}`,
+      baseOk ? 'PASS' : 'FAIL',
+      targetStatus,
+      targetNote
+    );
   }
 
   const runtimeFns = ['attr', 'attrs', 'classes', 'escape', 'merge', 'style'];
@@ -1772,7 +1897,27 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     });
   }
 
-  // 7. Explicitly deferred Step 5/6 API & integration cases (individually listed, NOT virtual counts)
+  runBehavioralCase('HTML', 'eachOf/index.test.js', (p) => {
+    for (const bad of ['left-side.pug', 'right-side.pug', 'one-val.pug', 'no-brackets.pug']) {
+      assert.throws(
+        () => p.compileFile(path.join(testDir, 'eachOf/error', bad)),
+        /The value variable for each must either be a valid identifier/
+      );
+    }
+    const users = new Map([
+      ['a', 'b'],
+      ['foo', 'bar'],
+    ]);
+    for (const good of ['brackets.pug', 'no-brackets.pug']) {
+      const actual = p.renderFile(path.join(testDir, 'eachOf/passing', good), { users });
+      if (p !== raw.pug) {
+        const expected = raw.pug.renderFile(path.join(testDir, 'eachOf/passing', good), { users });
+        assert.strictEqual(actual, expected);
+      }
+    }
+  });
+
+  // 7. Explicitly deferred Step 6 API & integration cases (individually listed, NOT virtual counts)
   const deferredApiAndPluginCases = [
     ['API', 'pug.test.js > .compileFile() > issue-1593', 'PLAN.md §五 Step 6 (compileFile & file warnings)'],
     ['API', 'pug.test.js > .compileFile() > caching (pass 1)', 'PLAN.md §五 Step 6 (compileFile & file cache)'],
@@ -1783,14 +1928,13 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     ['API', 'pug.test.js > .renderFile() > callback with error', 'PLAN.md §五 Step 6 (renderFile & callback)'],
     ['API', 'pug.test.js > .renderFile() > caching (pass 1)', 'PLAN.md §五 Step 6 (renderFile & file cache)'],
     ['API', 'pug.test.js > .renderFile() > caching (pass 2)', 'PLAN.md §五 Step 6 (renderFile & file cache)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > returns template string', 'PLAN.md §五 Step 5/6 (compileFileClient)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > name option', 'PLAN.md §五 Step 5/6 (compileFileClient)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 1)', 'PLAN.md §五 Step 5/6 (compileFileClient & cache)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 2)', 'PLAN.md §五 Step 5/6 (compileFileClient & cache)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > returns template string', 'PLAN.md §五 Step 6 (compileFileClient)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > name option', 'PLAN.md §五 Step 6 (compileFileClient)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 1)', 'PLAN.md §五 Step 6 (compileFileClient & cache)'],
+    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 2)', 'PLAN.md §五 Step 6 (compileFileClient & cache)'],
     ['Filters/Plugins', 'plugins.test.js > #3295 lexer plugins in tag interpolation', 'PLAN.md §五 Step 6 (plugin.lex internal extension)'],
-    ['HTML', 'eachOf/index.test.js', 'PLAN.md §五 Step 5/6 (compileFile/renderFile integration)'],
-    ['Filters/Plugins', 'markdown-it/index.test.js', 'PLAN.md §五 Step 5/6 (markdown-it JSTransformer package check)'],
-    ['Execution Semantics', 'examples.test.js', 'PLAN.md §五 Step 5-6 (full examples suite)'],
+    ['Filters/Plugins', 'markdown-it/index.test.js', 'PLAN.md §五 Step 6 (markdown-it JSTransformer package check)'],
+    ['Execution Semantics', 'examples.test.js', 'PLAN.md §五 Step 6 (full examples suite)'],
   ];
   for (const [cat, name, note] of deferredApiAndPluginCases) {
     recordCase(results, 'pug', cat, name, 'PASS', 'DEFERRED', note);
@@ -1927,17 +2071,17 @@ ${catRows}
 |---|---|---|---|---|
 | 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
 | 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`PARTIAL (Step 4 範圍)\` | Step 4 / Step 6 |
-| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
-| 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`DEFERRED (Step 5/6)\` | Step 5 / Step 6 |
-| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
-| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
-| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`PARTIAL (Step 4 範圍)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PASS (Step 5 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
+| 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`PARTIAL (Step 5 已實作，cache 測試待 Step 6)\` | Step 5 / Step 6 |
+| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PASS (Step 5 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
+| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PARTIAL (Step 5 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
+| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`PARTIAL (Step 5 範圍)\` | Step 4 / Step 6 |
 | 公開 API | \`pug.__express(path, options, fn)\` | \`NODE_ENV === 'production'\` 且未指定 \`compileDebug\` 時預設 \`false\` | \`DEFERRED (Step 6)\` | Step 6 |
 | 公開 API | \`pug.cache\` / \`pug.filters\` / \`pug.runtime\` / \`pug.name\` | 外部可直接讀寫 \`cache\` 與 \`filters\`；\`name === 'Pug'\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
 | 公開 API | \`require('pug/register')\` | 註冊 \`require.extensions['.pug'] = pug.compileFile\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
-| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 4 範圍)\` | Step 3 / Step 5 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`PASS (Step 4 範圍)\` | Step 3 / Step 5 / Step 6 |
-| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 4 範圍)\` | Step 1 / Step 3 / Step 5 |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 5 範圍)\` | Step 3 / Step 5 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`PASS (Step 5 範圍)\` | Step 3 / Step 5 / Step 6 |
+| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 5 範圍)\` | Step 1 / Step 3 / Step 5 |
 | 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`PASS (Step 4 範圍)\` | Step 4 |
 | 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`PASS (Step 4 範圍)\` | Step 1 / Step 4 / Step 6 |
 | 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`PASS (Step 4 範圍)\` | Step 4 / Step 6 |
@@ -1946,7 +2090,7 @@ ${catRows}
 
 ---
 
-## 5. Step 4 節點與編譯選項支援矩陣（四種能力分界）
+## 5. Step 5 節點與編譯選項支援矩陣（四種能力分界）
 
 | 類別 | AST 節點 / 編譯選項 | 可解析 (\`pug_parser\`) | 可走訪 (\`pug_walk\`) | 可產生 JS (\`pug_code_gen\`) | 可渲染 (\`Node VM + locals\`) | 延後完成階段與說明 |
 |---|---|:---:|:---:|:---:|:---:|---|
@@ -1956,13 +2100,13 @@ ${catRows}
 | AST 節點 | \`Conditional\` (\`if\` / \`else if\` / \`else\` / \`unless\`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
 | AST 節點 | \`Each\`（含 \`key\` 與 \`else\` 替代區塊）/ \`EachOf\` / \`While\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
 | AST 節點 | \`Case\` / \`When\` (\`default\` / \`block\`) | ✅ | ✅ | ✅ | ✅ | Step 3 已完成 |
-| AST 節點 | \`AttributeBlock\` (\`&attributes\`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 3–4 已支援基本與 Mixin 屬性合併；完整 \`pug-attrs\` 52 筆獨立快照於 Step 5 收斂 |
+| AST 節點 | \`AttributeBlock\` (\`&attributes\`) 與靜態/動態屬性 | ✅ | ✅ | ✅ | ✅ | Step 5 已完成 \`pug_attrs\` 52 筆獨立快照與執行等價收斂 |
 | AST 節點 | \`Filter\` / \`IncludeFilter\` | ✅ | ✅ | ✅ | ✅ | Step 4B 已完成（\`pug_filters\` 編譯期常數選項、filter 執行與 JSTransformer 橋接） |
 | AST 節點 | \`Include\` / \`RawInclude\` / \`Extends\` / \`FileReference\` | ✅ | ✅ | ✅ | ✅ | Step 4A/4C 已完成（\`pug_load\` 遞迴讀檔與 \`pug_linker\` 模板連結） |
 | AST 節點 | \`NamedBlock\` (\`block\` / \`append\` / \`prepend\`) / \`YieldBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4C 已完成（\`pug_linker\` 繼承合併、\`yield\` 替換與 \`Codegen\` 走訪） |
-| AST 節點 | \`Mixin\`（定義與呼叫）/ \`MixinBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4D 已完成（定義、參數/rest、動態名稱、繼承位置與 block/attributes 傳遞）；完整選項與 attrs 收斂於 Step 5 |
-| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | ✅ | ✅ | ✅ | ✅ | Step 3–4 已完成基本與語意支援；全組合於 Step 5 收斂 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 3–4 已完成（保留 \`compile\` 預設 \`compileDebug !== false\` 與 \`compileClient\` 預設 \`false\`） |
+| AST 節點 | \`Mixin\`（定義與呼叫）/ \`MixinBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4D/5 已完成（定義、參數/rest、動態名稱、繼承位置與 block/attributes 合併傳遞） |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | ✅ | ✅ | ✅ | ✅ | Step 5 已完成多選項組合、void-elements 與 terse/xml 收斂 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 5 已完成全部選項與 Runtime helper 依賴展開組合 |
 | 編譯選項 | \`filename\` / \`basedir\`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ✅ | ✅ | Step 4A 已完成（\`pug_load\` 跨檔案依賴解析） |
 | 外掛擴充 | \`plugin.parse\` / \`plugin.lex\` | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 6（完整 Node Plugin 相容驗收） |
 

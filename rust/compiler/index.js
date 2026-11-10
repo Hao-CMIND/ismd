@@ -111,6 +111,9 @@ function lex(str, options) {
     startingColumn:
       options.startingColumn === undefined ? undefined : Number(options.startingColumn),
   });
+  if (!outcome.ok && outcome.plainError) {
+    throw new Error(outcome.plainError);
+  }
   if (!outcome.ok && outcome.error) {
     throw dtoToJsError(outcome.error);
   }
@@ -124,6 +127,9 @@ function stripComments(input, options) {
     stripBuffered: options.stripBuffered === true,
     filename: options.filename,
   });
+  if (!outcome.ok && outcome.plainError) {
+    throw new Error(outcome.plainError);
+  }
   if (!outcome.ok && outcome.error) {
     throw dtoToJsError(outcome.error);
   }
@@ -151,6 +157,9 @@ function parse(tokens, options) {
     filename: options.filename,
     src: options.src,
   });
+  if (!outcome.ok && outcome.plainError) {
+    throw new Error(outcome.plainError);
+  }
   if (!outcome.ok && outcome.error) {
     throw dtoToJsError(outcome.error);
   }
@@ -174,7 +183,7 @@ function walkAST(ast, before, after, options) {
     before: function(step) {
       let replaced = false;
       let replacement = undefined;
-      const nodeObj = step.node;
+      const nodeObj = reviveAstBuffers(step.node);
       parents.splice(0, parents.length, ...jsStack, ...initialParentsSnapshot);
 
       let res;
@@ -201,12 +210,12 @@ function walkAST(ast, before, after, options) {
       return {
         cont: res !== false,
         replaced: true,
-        replacement: finalNode,
+        replacement: dehydrateAstBuffers(finalNode),
       };
     },
     after: function(step) {
       const origNode = jsStack.shift();
-      let nodeObj = step.node;
+      let nodeObj = reviveAstBuffers(step.node);
       if (origNode && typeof origNode === 'object' && nodeObj && typeof nodeObj === 'object') {
         Object.assign(origNode, nodeObj);
         nodeObj = origNode;
@@ -236,23 +245,181 @@ function walkAST(ast, before, after, options) {
       return {
         cont: true,
         replaced,
-        replacement,
+        replacement: dehydrateAstBuffers(replacement),
       };
     },
   };
 
   const result = native.walkSync(
-    ast,
+    dehydrateAstBuffers(ast),
     Boolean(options.includeDependencies),
-    initialParentsSnapshot,
+    dehydrateAstBuffers(initialParentsSnapshot),
     callbacks
   );
   parents.splice(0, parents.length, ...initialParentsSnapshot);
-  return result;
+  return reviveAstBuffers(result);
+}
+
+function reviveAstBuffers(val) {
+  if (Array.isArray(val)) {
+    for (let i = 0; i < val.length; i++) {
+      reviveAstBuffers(val[i]);
+    }
+    return val;
+  }
+  if (val && typeof val === 'object' && !Buffer.isBuffer(val)) {
+    if (
+      val.type === 'FileReference' &&
+      val.raw &&
+      typeof val.raw === 'object' &&
+      !Buffer.isBuffer(val.raw) &&
+      val.raw.type === 'Buffer' &&
+      Array.isArray(val.raw.data)
+    ) {
+      val.raw = Buffer.from(val.raw.data);
+    }
+    const keys = Object.keys(val);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (k !== 'raw') {
+        reviveAstBuffers(val[k]);
+      }
+    }
+  }
+  return val;
+}
+
+function dehydrateAstBuffers(val) {
+  if (Array.isArray(val)) {
+    return val.map(dehydrateAstBuffers);
+  }
+  if (val && typeof val === 'object' && !Buffer.isBuffer(val)) {
+    const out = {};
+    const keys = Object.keys(val);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (k === 'raw' && val.type === 'FileReference' && Buffer.isBuffer(val.raw)) {
+        out.raw = { type: 'Buffer', data: Array.from(val.raw) };
+      } else {
+        out[k] = dehydrateAstBuffers(val[k]);
+      }
+    }
+    return out;
+  }
+  return val;
+}
+
+function load(ast, options) {
+  options = getLoadOptions(options);
+  const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
+  const outcome = native.loadSync(inputAst, options.basedir, {
+    resolve: function(targetPath, source, nodeFilename, nodeLine) {
+      try {
+        return String(options.resolve(targetPath, source, options));
+      } catch (ex) {
+        if (ex && typeof ex === 'object' && 'message' in ex) {
+          ex.message += '\n    at ' + nodeFilename + ' line ' + nodeLine;
+        }
+        throw ex;
+      }
+    },
+    read: function(fullPath, nodeFilename, nodeLine) {
+      try {
+        const raw = options.read(fullPath, options);
+        if (Buffer.isBuffer(raw) || typeof raw === 'string') {
+          return raw;
+        }
+        return raw.toString('utf8');
+      } catch (ex) {
+        if (ex && typeof ex === 'object' && 'message' in ex) {
+          ex.message += '\n    at ' + nodeFilename + ' line ' + nodeLine;
+        }
+        throw ex;
+      }
+    },
+    parseSource: function(src, filename) {
+      const childOpts = Object.assign({}, options, {
+        filename: filename,
+        src: src,
+      });
+      const tokens = childOpts.lex(src, childOpts);
+      return dehydrateAstBuffers(childOpts.parse(tokens, childOpts));
+    },
+  });
+  if (!outcome.ok) {
+    if (outcome.plainError) throw new Error(outcome.plainError);
+    if (outcome.error) throw dtoToJsError(outcome.error);
+  }
+  return reviveAstBuffers(outcome.data);
+}
+
+load.string = function loadString(src, options) {
+  options = Object.assign(getLoadOptions(options), {
+    src: src,
+  });
+  const tokens = options.lex(src, options);
+  const ast = options.parse(tokens, options);
+  return load(ast, options);
+};
+
+load.file = function loadFile(filename, options) {
+  options = Object.assign(getLoadOptions(options), {
+    filename: filename,
+  });
+  const str = options.read(filename).toString('utf8');
+  return load.string(str, options);
+};
+
+load.resolve = function resolve(filename, source, options) {
+  const outcome = native.defaultResolveSync(
+    String(filename),
+    source === undefined || source === null ? undefined : String(source),
+    options && options.basedir !== undefined && options.basedir !== null
+      ? String(options.basedir)
+      : undefined
+  );
+  if (!outcome.ok) {
+    throw new Error(outcome.plainError || 'Failed to resolve path');
+  }
+  return outcome.data;
+};
+
+load.read = function read(filename) {
+  return fs.readFileSync(filename);
+};
+
+load.validateOptions = function validateOptions(options) {
+  if (typeof options !== 'object' || options === null) {
+    throw new TypeError('options must be an object');
+  }
+  if (typeof options.lex !== 'function') {
+    throw new TypeError('options.lex must be a function');
+  }
+  if (typeof options.parse !== 'function') {
+    throw new TypeError('options.parse must be a function');
+  }
+  if (options.resolve && typeof options.resolve !== 'function') {
+    throw new TypeError('options.resolve must be a function');
+  }
+  if (options.read && typeof options.read !== 'function') {
+    throw new TypeError('options.read must be a function');
+  }
+};
+
+function getLoadOptions(options) {
+  load.validateOptions(options);
+  return Object.assign(
+    {
+      resolve: load.resolve,
+      read: load.read,
+    },
+    options
+  );
 }
 
 exports._parse = parse;
 exports.parse = parse;
+exports._load = load;
 exports._walk = walkAST;
 exports.walk = walkAST;
 exports._addWith = function(obj, src, exclude) {
@@ -299,34 +466,94 @@ function compileBody(str, options) {
     });
   }
 
+  const customResolve = findReplacementFunc(plugins, 'resolve');
+  const customRead = findReplacementFunc(plugins, 'read');
   const customGenerateCode = findReplacementFunc(plugins, 'generateCode');
 
+  function fileOpts(filename, src) {
+    const o = Object.assign({}, options);
+    if (filename !== null && filename !== undefined) o.filename = filename;
+    if (src !== null && src !== undefined) o.src = src;
+    return o;
+  }
+
   const hostCallbacks = {
-    preLex: function(s) {
+    preLex: function(s, filename) {
       return applyPlugins(
         s,
-        { filename: options.filename },
+        {
+          filename:
+            filename === null || filename === undefined
+              ? options.filename
+              : filename,
+        },
         plugins,
         'preLex'
       );
     },
-    postLex: function(tokens) {
-      return applyPlugins(tokens, options, plugins, 'postLex');
+    postLex: function(tokens, filename, src) {
+      return applyPlugins(tokens, fileOpts(filename, src), plugins, 'postLex');
     },
-    preParse: function(tokens) {
-      return applyPlugins(tokens, options, plugins, 'preParse');
+    preParse: function(tokens, filename, src) {
+      return applyPlugins(tokens, fileOpts(filename, src), plugins, 'preParse');
     },
-    postParse: function(ast) {
-      return applyPlugins(ast, options, plugins, 'postParse');
+    postParse: function(ast, filename, src) {
+      return dehydrateAstBuffers(
+        applyPlugins(
+          reviveAstBuffers(ast),
+          fileOpts(filename, src),
+          plugins,
+          'postParse'
+        )
+      );
     },
-    preLoad: function(ast) {
-      return applyPlugins(ast, options, plugins, 'preLoad');
+    preLoad: function(ast, filename, src) {
+      return dehydrateAstBuffers(
+        applyPlugins(
+          reviveAstBuffers(ast),
+          fileOpts(filename, src),
+          plugins,
+          'preLoad'
+        )
+      );
+    },
+    resolve: customResolve
+      ? function(targetPath, source, nodeFilename, nodeLine) {
+          try {
+            return String(customResolve(targetPath, source, options));
+          } catch (ex) {
+            if (ex && typeof ex === 'object' && 'message' in ex) {
+              ex.message += '\n    at ' + nodeFilename + ' line ' + nodeLine;
+            }
+            throw ex;
+          }
+        }
+      : undefined,
+    read: function(fullPath, nodeFilename, nodeLine) {
+      try {
+        const contents = customRead
+          ? customRead(fullPath, options)
+          : fs.readFileSync(fullPath);
+        if (Buffer.isBuffer(contents) || typeof contents === 'string') {
+          return contents;
+        }
+        return contents.toString('utf8');
+      } catch (ex) {
+        if (ex && typeof ex === 'object' && 'message' in ex) {
+          ex.message += '\n    at ' + nodeFilename + ' line ' + nodeLine;
+        }
+        throw ex;
+      }
     },
     postLoad: function(ast) {
-      return applyPlugins(ast, options, plugins, 'postLoad');
+      return dehydrateAstBuffers(
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postLoad')
+      );
     },
     preFilters: function(ast) {
-      return applyPlugins(ast, options, plugins, 'preFilters');
+      return dehydrateAstBuffers(
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preFilters')
+      );
     },
     filter: function(name, text, filterAttrs) {
       const mergedOpts = Object.assign(
@@ -349,20 +576,28 @@ function compileBody(str, options) {
       });
     },
     postFilters: function(ast) {
-      return applyPlugins(ast, options, plugins, 'postFilters');
+      return dehydrateAstBuffers(
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postFilters')
+      );
     },
     preLink: function(ast) {
-      return applyPlugins(ast, options, plugins, 'preLink');
+      return dehydrateAstBuffers(
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preLink')
+      );
     },
     postLink: function(ast) {
-      return applyPlugins(ast, options, plugins, 'postLink');
+      return dehydrateAstBuffers(
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postLink')
+      );
     },
     preCodeGen: function(ast) {
-      return applyPlugins(ast, options, plugins, 'preCodeGen');
+      return dehydrateAstBuffers(
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preCodeGen')
+      );
     },
     generateCode: customGenerateCode
       ? function(ast) {
-          return customGenerateCode(ast, {
+          return customGenerateCode(reviveAstBuffers(ast), {
             pretty: options.pretty,
             compileDebug: options.compileDebug,
             doctype: options.doctype,
@@ -396,6 +631,9 @@ function compileBody(str, options) {
     hostCallbacks
   );
 
+  if (!outcome.ok && outcome.plainError) {
+    throw new Error(outcome.plainError);
+  }
   if (!outcome.ok && outcome.error) {
     const dto = outcome.error;
     const err = new Error(dto.message);

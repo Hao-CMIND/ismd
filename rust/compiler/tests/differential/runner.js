@@ -662,14 +662,42 @@ function runPugLoadSuite(raw, rustTarget, results) {
     { includeDependencies: true }
   );
   const baseOk = formatForSnapshot(ast) === snaps['pug-load 1'];
+
+  let targetStatus = 'FAIL';
+  let targetNote = '';
+  if (rustTarget && typeof rustTarget._load === 'function') {
+    try {
+      let rustAst = rustTarget._load.file(filename, {
+        lex: rustTarget.lex,
+        parse: rustTarget.parse,
+      });
+      rustAst = rustTarget.walk(
+        rustAst,
+        (node) => {
+          if (node.filename) node.filename = '<dirname>/' + path.basename(node.filename);
+          if (node.fullPath) node.fullPath = '<dirname>/' + path.basename(node.fullPath);
+        },
+        { includeDependencies: true }
+      );
+      if (formatForSnapshot(rustAst) === snaps['pug-load 1']) {
+        targetStatus = 'PASS';
+      } else {
+        targetStatus = 'FAIL';
+        targetNote = 'Snapshot mismatch vs raw pug-load';
+      }
+    } catch (err) {
+      targetStatus = 'FAIL';
+      targetNote = err.message;
+    }
+  }
   recordCase(
     results,
     'pug-load',
-    'Filters/Plugins',
+    'Token/AST',
     'pug-load recursive extends/include/Buffer',
     baseOk ? 'PASS' : 'FAIL',
-    'DEFERRED',
-    'PLAN.md §五 Step 4 (pug_load): recursive file loading & RawInclude'
+    targetStatus,
+    targetNote
   );
 }
 

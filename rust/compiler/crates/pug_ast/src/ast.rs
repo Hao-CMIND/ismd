@@ -212,6 +212,69 @@ fn default_file_ref_type() -> String {
     String::from("FileReference")
 }
 
+/// Raw content returned by a `read` callback and stored in `FileReference.raw`.
+///
+/// `Bytes` keeps the original bytes and serializes exactly like `JSON.stringify(Buffer)`
+/// (`{"type":"Buffer","data":[...]}`) so that the Node wrapper can revive a real `Buffer`.
+/// `Text` is used when a custom `read` returns a string (the baseline stores it unchanged).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawContent {
+    Bytes(Vec<u8>),
+    Text(String),
+}
+
+impl RawContent {
+    /// Equivalent to `raw.toString('utf8')` (lossy replacement for invalid sequences, like Node).
+    pub fn to_utf8_string(&self) -> String {
+        match self {
+            RawContent::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
+            RawContent::Text(s) => s.clone(),
+        }
+    }
+}
+
+impl Serialize for RawContent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            RawContent::Text(s) => serializer.serialize_str(s),
+            RawContent::Bytes(b) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "Buffer")?;
+                map.serialize_entry("data", b)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RawContent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(s) => Ok(RawContent::Text(s)),
+            Value::Object(map) if map.get("type").and_then(Value::as_str) == Some("Buffer") => {
+                let data = map
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| serde::de::Error::custom("Buffer.data must be an array"))?;
+                let mut bytes = Vec::with_capacity(data.len());
+                for v in data {
+                    let n = v
+                        .as_u64()
+                        .filter(|n| *n <= 255)
+                        .ok_or_else(|| serde::de::Error::custom("Buffer.data must contain bytes"))?;
+                    bytes.push(n as u8);
+                }
+                Ok(RawContent::Bytes(bytes))
+            }
+            _ => Err(serde::de::Error::custom(
+                "FileReference.raw must be a string or a Buffer",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileReferenceNode {
     #[serde(rename = "type", default = "default_file_ref_type")]
@@ -227,7 +290,7 @@ pub struct FileReferenceNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub str: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<Value>,
+    pub raw: Option<RawContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ast: Option<Box<BlockNode>>,
 }

@@ -919,6 +919,7 @@ dependencies = [
  "pug_ast",
  "pug_error",
  "pug_walk",
+ "serde_json",
 ]
 
 [[package]]

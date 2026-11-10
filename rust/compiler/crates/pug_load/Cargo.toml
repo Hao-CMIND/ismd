@@ -9,3 +9,6 @@ license.workspace = true
 pug_ast.workspace = true
 pug_error.workspace = true
 pug_walk.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

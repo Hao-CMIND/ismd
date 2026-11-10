@@ -526,14 +526,14 @@ test('Step 3B: Control flow (if/else/unless, each with else, each-of, while, cas
 
 test('Step 3B: Unsupported AST nodes in Step 3B explicitly report UNSUPPORTED_NODE error', () => {
   const unsupportedTemplates = [
-    'include other.pug',
-    'extends base.pug',
-    'mixin myMixin()\n  p hi\n+myMixin()',
+    { src: 'include other.pug', opts: { filename: 'unsupported.pug', plugins: [{ read: () => '' }] } },
+    { src: 'extends base.pug', opts: { filename: 'unsupported.pug', plugins: [{ read: () => '' }] } },
+    { src: 'mixin myMixin()\n  p hi\n+myMixin()', opts: { filename: 'unsupported.pug' } },
   ];
 
-  for (const src of unsupportedTemplates) {
+  for (const tc of unsupportedTemplates) {
     assert.throws(
-      () => rustPug.compile(src, { filename: 'unsupported.pug' }),
+      () => rustPug.compile(tc.src, tc.opts),
       (err) => {
         assert.equal(err.code, 'PUG:UNSUPPORTED_NODE');
         return true;

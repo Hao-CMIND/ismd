@@ -111,6 +111,90 @@ test('Step 6.1: Public APIs, options, __express, client modules & register.js pa
     `;
     const regOut = execFileSync(process.execPath, ['-e', regScript], { encoding: 'utf8' });
     assert.strictEqual(regOut, '<section class="card"><h1>Registered</h1><p data-ok="1">ok</p></section>');
+
+    // 4. Sync callback throwing exception (no double call, exact error propagation)
+    const cbFile = path.join(tmpDir, 'cb-ok.pug');
+    fs.writeFileSync(cbFile, 'p Callback ok');
+    for (const engine of [rawPug, rustPug]) {
+      let calls = 0;
+      const boom = new Error('cb-boom');
+      assert.throws(
+        () =>
+          engine.render('p hi', (err) => {
+            calls++;
+            assert.ifError(err);
+            throw boom;
+          }),
+        (e) => e === boom
+      );
+      assert.strictEqual(calls, 1);
+
+      let fileCalls = 0;
+      assert.throws(
+        () =>
+          engine.renderFile(cbFile, (err) => {
+            fileCalls++;
+            assert.ifError(err);
+            throw boom;
+          }),
+        (e) => e === boom
+      );
+      assert.strictEqual(fileCalls, 1);
+    }
+
+    // 5. Cache hit skips FS read & plugin hooks; cache delete invalidates; missing filename errors
+    assert.throws(
+      () => rustPug.render('p hi', { cache: true }),
+      /the "filename" option is required for caching/
+    );
+    const cacheFile = path.join(tmpDir, 'cached.pug');
+    fs.writeFileSync(cacheFile, 'p cached-v1');
+    let preLexHits = 0;
+    const cachePlugin = { preLex: (s) => { preLexHits++; return s; } };
+    delete rustPug.cache[cacheFile];
+    try {
+      assert.strictEqual(rustPug.renderFile(cacheFile, { cache: true, plugins: [cachePlugin] }), '<p>cached-v1</p>');
+      assert.strictEqual(preLexHits, 1);
+      fs.writeFileSync(cacheFile, 'p cached-v2');
+      assert.strictEqual(rustPug.renderFile(cacheFile, { cache: true, plugins: [cachePlugin] }), '<p>cached-v1</p>');
+      assert.strictEqual(preLexHits, 1);
+      delete rustPug.cache[cacheFile];
+      assert.strictEqual(rustPug.renderFile(cacheFile, { cache: true, plugins: [cachePlugin] }), '<p>cached-v2</p>');
+      assert.strictEqual(preLexHits, 2);
+    } finally {
+      delete rustPug.cache[cacheFile];
+    }
+
+    // 6. debug: true outputs ANSI formatted function to console.error identically to raw
+    const origConsoleErr = console.error;
+    const rawDebugLogs = [];
+    const rustDebugLogs = [];
+    try {
+      console.error = (...args) => rawDebugLogs.push(args);
+      rawPug.compile('p debug', { debug: true, compileDebug: false });
+      console.error = (...args) => rustDebugLogs.push(args);
+      rustPug.compile('p debug', { debug: true, compileDebug: false });
+    } finally {
+      console.error = origConsoleErr;
+    }
+    assert.strictEqual(rustDebugLogs.length, 1);
+    assert.strictEqual(rustDebugLogs[0][0], '\nCompiled Function:\n\n\u001b[90m%s\u001b[0m');
+    assert.deepStrictEqual(rustDebugLogs, rawDebugLogs);
+
+    // 7. index.d.ts declares all public exports & Options fields
+    const dts = fs.readFileSync(path.join(COMPILER_ROOT, 'index.d.ts'), 'utf8');
+    for (const sym of [
+      'name', 'cache', 'filters', 'runtime',
+      'compile', 'compileFile', 'compileClient',
+      'compileClientWithDependenciesTracked', 'compileFileClient',
+      'render', 'renderFile', '__express',
+    ]) {
+      assert.ok(sym in rustPug, `missing runtime export ${sym}`);
+      assert.ok(dts.includes(sym), `index.d.ts missing export ${sym}`);
+    }
+    for (const opt of ['filterOptions', 'filterAliases', 'includeSources']) {
+      assert.ok(dts.includes(opt), `index.d.ts Options missing ${opt}`);
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -238,6 +322,58 @@ test('Step 6.2: Full plugin pipeline hooks, replacement conflicts, Buffer read, 
       expectedMsg
     );
   }
+
+  // Re-entrancy inside lex.advance + AST mutation vs replacement + Buffer/fn options identity
+  const sentinelFn = () => 'kept';
+  const rawPayload = Buffer.from([0x00, 0x01, 0xfe]);
+  const reentrantOut = rustPug.compileClientWithDependenciesTracked('include bin.raw\np #[!]', {
+    filename: 'outer.pug',
+    filters: { marker: sentinelFn },
+    plugins: [
+      {
+        resolve(file) {
+          return file;
+        },
+        read(file, opts) {
+          assert.strictEqual(opts.filters.marker, sentinelFn);
+          return rawPayload;
+        },
+        lex: {
+          advance(lexer) {
+            if (lexer.input.charAt(0) === '!') {
+              const inner = rustPug.render('em= v', { v: 'reentrant-lex' });
+              assert.strictEqual(inner, '<em>reentrant-lex</em>');
+              lexer.tokens.push(lexer.tok('text', 'lex-ok'));
+              lexer.consume(1);
+              lexer.incrementColumn(1);
+              return true;
+            }
+          },
+        },
+        postLoad(ast) {
+          const rawNode = ast.nodes.find((n) => n.type === 'RawInclude');
+          assert.ok(Buffer.isBuffer(rawNode.file.raw));
+          assert.deepStrictEqual(rawNode.file.raw, rawPayload);
+          // Replace node explicitly
+          ast.nodes[1] = {
+            type: 'Tag',
+            name: 'div',
+            selfClosing: false,
+            block: { type: 'Block', nodes: [{ type: 'Text', val: 'replaced-ast', line: 2, filename: 'outer.pug' }], line: 2 },
+            attrs: [],
+            attributeBlocks: [],
+            isInline: false,
+            line: 2,
+            filename: 'outer.pug',
+          };
+          return ast;
+        },
+      },
+    ],
+  });
+  assert.deepStrictEqual(reentrantOut.dependencies, ['bin.raw']);
+  const fnAfterReplace = Function('pug', reentrantOut.body + '; return template;')(rustPug.runtime);
+  assert.strictEqual(fnAfterReplace({}), `${rawPayload.toString('utf8')}<div>replaced-ast</div>`);
 });
 
 test('Step 6.3: Worker threads concurrent addon load, sync callbacks, and isolation', async () => {
@@ -282,12 +418,21 @@ test('Step 6.3: Worker threads concurrent addon load, sync callbacks, and isolat
     } catch (err) {
       trappedErr = err.code;
     }
+    let hookErr = null;
+    try {
+      pug.render('p ok', { plugins: [{ preLex() { throw new Error('worker-hook-err'); } }] });
+    } catch (err) {
+      hookErr = err.message;
+    }
+    const recoveredHtml = pug.render('p= ok', { ok: 'after-err-' + id });
 
     parentPort.postMessage({
       id,
       html,
       cachedHtml,
       trappedErr,
+      hookErr,
+      recoveredHtml,
       cacheKeys: Object.keys(pug.cache),
       filterKeys: Object.keys(pug.filters),
     });
@@ -313,6 +458,15 @@ test('Step 6.3: Worker threads concurrent addon load, sync callbacks, and isolat
   assert.strictEqual(w2.cachedHtml, '<div class="from-cache">Cache-2</div>');
   assert.strictEqual(w1.trappedErr, 'PUG:NO_END_BRACKET');
   assert.strictEqual(w2.trappedErr, 'PUG:NO_END_BRACKET');
+  assert.strictEqual(w1.hookErr, 'worker-hook-err');
+  assert.strictEqual(w2.hookErr, 'worker-hook-err');
+  assert.strictEqual(w1.recoveredHtml, '<p>after-err-1</p>');
+  assert.strictEqual(w2.recoveredHtml, '<p>after-err-2</p>');
+
+  // Sequential worker termination & recreation works cleanly
+  const w3 = await runWorker(3);
+  assert.strictEqual(w3.recoveredHtml, '<p>after-err-3</p>');
+
   // Main thread cache & filters remain untouched by workers
   assert.strictEqual(rustPug.cache['worker-template.pug'], undefined);
   assert.strictEqual(rustPug.filters['wtag'], undefined);
@@ -433,7 +587,29 @@ test('Step 6.5: Separated performance measurements (cold start, compile, render,
   }
   const pluginCompileMs = (performance.now() - p0) / N;
 
-  // 6. Memory delta across N compilations
+  // 6. Cold vs Hot cache renderFile measurements
+  const cacheTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-step6-perf-cache-'));
+  let coldCacheMs = 0;
+  let hotCacheMs = 0;
+  try {
+    const cacheTplPath = path.join(cacheTmpDir, 'perf.pug');
+    fs.writeFileSync(cacheTplPath, perfTemplate);
+    delete rustPug.cache[cacheTplPath];
+    const cc0 = performance.now();
+    rustPug.renderFile(cacheTplPath, { cache: true, compileDebug: false });
+    coldCacheMs = performance.now() - cc0;
+
+    const hc0 = performance.now();
+    for (let i = 0; i < N; i++) {
+      rustPug.renderFile(cacheTplPath, { cache: true, compileDebug: false });
+    }
+    hotCacheMs = (performance.now() - hc0) / N;
+    delete rustPug.cache[cacheTplPath];
+  } finally {
+    fs.rmSync(cacheTmpDir, { recursive: true, force: true });
+  }
+
+  // 7. Memory delta across N compilations
   if (typeof global.gc === 'function') global.gc();
   const memBefore = process.memoryUsage();
   for (let i = 0; i < N; i++) {
@@ -448,6 +624,104 @@ test('Step 6.5: Separated performance measurements (cold start, compile, render,
   assert.ok(rssDeltaMb < 128, `unexpected rss growth: ${rssDeltaMb.toFixed(2)} MB`);
 
   t.diagnostic(
-    `Perf breakdown (${N}x mixins.pug): coldStart=${coldStartMs.toFixed(2)}ms, compile=${compileMs.toFixed(3)}ms/op, render=${renderMs.toFixed(4)}ms/op, napiLexParse=${napiLexParseMs.toFixed(3)}ms/op, pluginCompile=${pluginCompileMs.toFixed(3)}ms/op, heapDelta=${heapDeltaMb.toFixed(2)}MB, rssDelta=${rssDeltaMb.toFixed(2)}MB`
+    `Perf breakdown (${N}x mixins.pug): coldStart=${coldStartMs.toFixed(2)}ms, compile=${compileMs.toFixed(3)}ms/op, render=${renderMs.toFixed(4)}ms/op, napiLexParse=${napiLexParseMs.toFixed(3)}ms/op, pluginCompile=${pluginCompileMs.toFixed(3)}ms/op, coldCache=${coldCacheMs.toFixed(3)}ms, hotCache=${hotCacheMs.toFixed(4)}ms/op, heapDelta=${heapDeltaMb.toFixed(2)}MB, rssDelta=${rssDeltaMb.toFixed(2)}MB`
   );
+});
+
+test('Step 6.6: Packed tarball clean install verification in isolated project (ESM, register, runtime, plugins, worker)', () => {
+  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-step6-pack-'));
+  const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-step6-consumer-'));
+  try {
+    const tgzName = execFileSync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      ['pack', '--pack-destination', packDir, '--silent'],
+      { cwd: COMPILER_ROOT, encoding: 'utf8', shell: process.platform === 'win32' }
+    ).trim().split(/\r?\n/).pop();
+    const tgzPath = path.join(packDir, tgzName);
+    assert.ok(fs.existsSync(tgzPath), `missing packed tarball: ${tgzPath}`);
+
+    fs.writeFileSync(
+      path.join(consumerDir, 'package.json'),
+      JSON.stringify({ name: 'pug-clean-consumer', version: '1.0.0', private: true, type: 'module' }, null, 2)
+    );
+    execFileSync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      ['install', '--offline', '--no-audit', '--no-fund', tgzPath],
+      { cwd: consumerDir, stdio: 'pipe', shell: process.platform === 'win32' }
+    );
+
+    fs.writeFileSync(path.join(consumerDir, 'base.pug'), 'html\n  body\n    block content\n');
+    fs.writeFileSync(
+      path.join(consumerDir, 'view.pug'),
+      'extends base\nblock content\n  p= msg\n  p: :shout hello pkg\n  p #[~]\n'
+    );
+    fs.writeFileSync(
+      path.join(consumerDir, 'verify-esm.mjs'),
+      `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { createRequire } from 'node:module';
+      import { Worker } from 'node:worker_threads';
+      import pug from 'pug-rust-compiler';
+      import runtime from 'pug-rust-compiler/runtime';
+
+      const require = createRequire(import.meta.url);
+      const html = pug.renderFile(path.resolve('view.pug'), {
+        msg: 'isolated-ok',
+        filters: { shout: (s) => s.trim().toUpperCase() },
+        plugins: [{
+          lex: {
+            advance(lexer) {
+              if (lexer.input.charAt(0) === '~') {
+                lexer.tokens.push(lexer.tok('text', 'pkg-lex'));
+                lexer.consume(1);
+                lexer.incrementColumn(1);
+                return true;
+              }
+            }
+          }
+        }]
+      });
+      assert.strictEqual(html, '<html><body><p>isolated-ok</p><p>HELLO PKG</p><p>pkg-lex</p></body></html>');
+
+      const clientBody = pug.compileClient('p= x', { inlineRuntimeFunctions: false, compileDebug: false });
+      const clientFn = Function('pug', clientBody + '; return template;')(runtime);
+      assert.strictEqual(clientFn({ x: 'rt' }), '<p>rt</p>');
+
+      require('pug-rust-compiler/register');
+      fs.writeFileSync('reg-view.pug', 'span= label');
+      const regFn = require(path.resolve('reg-view.pug'));
+      assert.strictEqual(regFn({ label: 'reg-ok' }), '<span>reg-ok</span>');
+
+      const workerRes = await new Promise((resolve, reject) => {
+        const w = new Worker(\`
+          import { parentPort } from 'node:worker_threads';
+          import pug from 'pug-rust-compiler';
+          parentPort.postMessage(pug.render('b= v', { v: 'worker-pkg' }));
+        \`, { eval: true });
+        w.on('message', resolve);
+        w.on('error', reject);
+      });
+      assert.strictEqual(workerRes, '<b>worker-pkg</b>');
+
+      const loadedPaths = Object.keys(require.cache);
+      assert.strictEqual(loadedPaths.some((p) => p.toLowerCase().includes('raw')), false);
+      assert.strictEqual(
+        loadedPaths.filter((p) => p.endsWith('.node')).every((p) => p.startsWith(path.resolve('node_modules'))),
+        true
+      );
+      process.stdout.write('CLEAN_PKG_OK');
+      `
+    );
+
+    const out = execFileSync(process.execPath, ['verify-esm.mjs'], {
+      cwd: consumerDir,
+      encoding: 'utf8',
+    });
+    assert.strictEqual(out, 'CLEAN_PKG_OK');
+  } finally {
+    fs.rmSync(packDir, { recursive: true, force: true });
+    fs.rmSync(consumerDir, { recursive: true, force: true });
+  }
 });

@@ -10,6 +10,16 @@
     "./runtime": "./runtime/index.js"
   },
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "register.js",
+    "runtime/",
+    "pug-napi.win32-x64-msvc.node",
+    "README.md",
+    "compat/matrix.md",
+    "compat/expected-differences.json"
+  ],
   "license": "MIT",
   "private": true,
   "engines": {

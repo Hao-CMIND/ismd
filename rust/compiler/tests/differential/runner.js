@@ -1,6 +1,8 @@
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -1534,38 +1536,299 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     recordCase(results, 'pug', 'Error', label, check.status, targetStatus, note);
   }
 
-  const otherErrorReportingCases = [
-    'error.reporting > compile time > with no filename',
-    'error.reporting > compile time > with a filename',
-    'error.reporting > compile time > layout without block declaration (syntax)',
-    'error.reporting > compile time > layout without block declaration (locals)',
-    'error.reporting > compile time > with a include (syntax)',
-    'error.reporting > compile time > with a include (locals)',
-    'error.reporting > compile time > with a include (locals + compileDebug: true)',
-    'error.reporting > compile time > layout with include (syntax)',
-    'error.reporting > compile time > layout with include (locals)',
-    'error.reporting > compile time > block that is never actually used',
-    'error.reporting > compile time > Unexpected character',
-    'error.reporting > compile time > Include filtered',
-    'error.reporting > compile time > mixin block followed by blank lines',
-    'error.reporting > runtime > no filename and compileDebug undefined',
-    'error.reporting > runtime > no filename and compileDebug true',
-    'error.reporting > runtime > nonexistent filename and compileDebug undefined',
-    'error.reporting > runtime > real filename and compileDebug undefined',
-    'error.reporting > deprecated features > element-with-multiple-attributes',
-    'error.reporting > throw non-Error rethrows without modification',
-    'error.reporting > import without filename/basedir throws error',
+  const getRenderError = (p, str, options) => {
+    try {
+      p.render(str, options);
+    } catch (ex) {
+      return ex;
+    }
+    throw new Error('Input was supposed to result in an error.');
+  };
+  const getFileRenderError = (p, filePath, options) => {
+    try {
+      p.renderFile(filePath, options);
+    } catch (ex) {
+      return ex;
+    }
+    throw new Error('Input was supposed to result in an error.');
+  };
+  const errorReportingChecks = [
+    [
+      'error.reporting > compile time > with no filename',
+      (p) => {
+        const err = getRenderError(p, 'foo(');
+        assert.match(err.message, /Pug:1/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > with a filename',
+      (p) => {
+        const err = getRenderError(p, 'foo(', { filename: 'test.pug' });
+        assert.match(err.message, /test\.pug:1/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > layout without block declaration (syntax)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.layout.syntax.error.pug'),
+          {}
+        );
+        assert.match(err.message, /[\\/]layout\.syntax\.error\.pug:2/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > layout without block declaration (locals)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.layout.locals.error.pug'),
+          {}
+        );
+        assert.match(err.message, /[\\/]layout\.locals\.error\.pug:2/);
+        assert.match(err.message, /is not a function/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > with a include (syntax)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.include.syntax.error.pug'),
+          {}
+        );
+        assert.match(err.message, /[\\/]include\.syntax\.error\.pug:2/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > with a include (locals)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.include.locals.error.pug'),
+          {}
+        );
+        assert.match(err.message, /[\\/]include\.locals\.error\.pug:2/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > with a include (locals + compileDebug: true)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.include.locals.error.pug'),
+          { compileDebug: true }
+        );
+        assert.match(err.message, /[\\/]include\.locals\.error\.pug:2/);
+        assert.match(err.message, /foo is not a function/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > layout with include (syntax)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.layout.with.include.syntax.error.pug'),
+          {}
+        );
+        assert.match(err.message, /[\\/]include\.syntax\.error\.pug:2/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > layout with include (locals)',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/compile.with.layout.with.include.locals.error.pug'),
+          {}
+        );
+        assert.match(err.message, /[\\/]include\.locals\.error\.pug:2/);
+        assert.match(err.message, /foo\(/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > block that is never actually used',
+      (p) => {
+        const err = getFileRenderError(
+          p,
+          path.join(testDir, 'fixtures/invalid-block-in-extends.pug'),
+          {}
+        );
+        assert.match(err.message, /invalid-block-in-extends\.pug:6/);
+        assert.match(err.message, /content/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > Unexpected character',
+      (p) => {
+        const err = getRenderError(p, 'ul?', {});
+        assert.match(err.message, /unexpected text "\?"/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > compile time > Include filtered',
+      (p) => {
+        const err1 = getRenderError(p, 'include:verbatim()!', {});
+        assert.ok(err1.message.includes('unexpected text "!"'));
+        const err2 = getRenderError(p, 'include:verbatim ', {});
+        assert.ok(err2.message.includes('missing path for include'));
+        return err2;
+      },
+    ],
+    [
+      'error.reporting > compile time > mixin block followed by blank lines',
+      (p) => {
+        const err = getRenderError(p, 'mixin test\n    block\n\ndiv()Test');
+        const line = /Pug:(\d+)/.exec(err.message);
+        assert.ok(line, 'Line number must be included in error message');
+        assert.strictEqual(line[1], '4');
+        return err;
+      },
+    ],
+    [
+      'error.reporting > runtime > no filename and compileDebug undefined',
+      (p) => {
+        const sentinel = new Error('sentinel');
+        const err = getRenderError(p, '-foo()', {
+          foo() {
+            throw sentinel;
+          },
+        });
+        assert.match(err.message, /on line 1/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > runtime > no filename and compileDebug true',
+      (p) => {
+        const sentinel = new Error('sentinel');
+        const err = getRenderError(p, '-foo()', {
+          foo() {
+            throw sentinel;
+          },
+          compileDebug: true,
+        });
+        assert.match(err.message, /Pug:1/);
+        assert.match(err.message, /-foo\(\)/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > runtime > nonexistent filename and compileDebug undefined',
+      (p) => {
+        const sentinel = new Error('sentinel');
+        const err = getRenderError(p, '-foo()', {
+          foo() {
+            throw sentinel;
+          },
+          filename: 'fake.pug',
+        });
+        assert.match(err.message, /on line 1/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > runtime > real filename and compileDebug undefined',
+      (p) => {
+        const sentinel = new Error('sentinel');
+        const fixture = path.join(testDir, 'fixtures/runtime.error.pug');
+        const err = getRenderError(p, fs.readFileSync(fixture, 'utf8'), {
+          foo() {
+            throw sentinel;
+          },
+          filename: fixture,
+        });
+        assert.match(err.message, /fixtures[\\/]runtime\.error\.pug:1/);
+        assert.match(err.message, /-foo\(\)/);
+        return err;
+      },
+    ],
+    [
+      'error.reporting > deprecated features > element-with-multiple-attributes',
+      (p) => {
+        const origWarn = console.warn;
+        let log = '';
+        console.warn = (str) => {
+          log += String(str);
+        };
+        let res;
+        try {
+          res = p.renderFile(path.join(testDir, 'fixtures/element-with-multiple-attributes.pug'));
+        } finally {
+          console.warn = origWarn;
+        }
+        assert.match(log, /element-with-multiple-attributes\.pug, line 1:/);
+        assert.match(log, /You should not have pug tags with multiple attributes/);
+        assert.strictEqual(res, '<div attr="val" foo="bar"></div>');
+        return log;
+      },
+    ],
+    [
+      'error.reporting > throw non-Error rethrows without modification',
+      (p) => {
+        const err = getRenderError(p, '- throw "foo"');
+        assert.strictEqual(err, 'foo');
+        return err;
+      },
+    ],
+    [
+      'error.reporting > import without filename/basedir throws error',
+      (p) => {
+        const err1 = getRenderError(p, 'include foo.pug');
+        assert.match(err1.message, /the "filename" option is required to use/);
+        const err2 = getRenderError(p, 'include /foo.pug');
+        assert.match(err2.message, /the "basedir" option is required to use/);
+        return err2;
+      },
+    ],
   ];
-  for (const name of otherErrorReportingCases) {
-    recordCase(
-      results,
-      'pug',
-      'Error',
-      name,
-      'PASS',
-      'DEFERRED',
-      'PLAN.md §五 Step 4/6 (error.reporting integration suite)'
-    );
+  for (const [name, checkFn] of errorReportingChecks) {
+    let baseOk = false;
+    let baseOut = null;
+    try {
+      baseOut = checkFn(raw.pug);
+      baseOk = true;
+    } catch (_) {
+      baseOk = false;
+    }
+    let targetStatus = targetBlocked ? 'BLOCKED' : 'FAIL';
+    let note = '';
+    if (rustPug) {
+      try {
+        const targetOut = checkFn(rustPug);
+        if (baseOk && baseOut && targetOut && typeof baseOut === 'object' && typeof targetOut === 'object') {
+          if (baseOut.code !== undefined || targetOut.code !== undefined) {
+            assert.strictEqual(targetOut.code, baseOut.code);
+          }
+          if (baseOut.message !== undefined || targetOut.message !== undefined) {
+            assert.strictEqual(targetOut.message, baseOut.message);
+          }
+        }
+        targetStatus = 'PASS';
+      } catch (err) {
+        targetStatus = 'FAIL';
+        note = err && err.message ? err.message : String(err);
+      }
+    }
+    recordCase(results, 'pug', 'Error', name, baseOk ? 'PASS' : 'FAIL', targetStatus, note);
   }
 
   // 5. Export presence check (distinct from behavioral acceptance!)
@@ -1917,27 +2180,226 @@ function runPugIntegrationSuite(raw, rustTarget, results) {
     }
   });
 
-  // 7. Explicitly deferred Step 6 API & integration cases (individually listed, NOT virtual counts)
-  const deferredApiAndPluginCases = [
-    ['API', 'pug.test.js > .compileFile() > issue-1593', 'PLAN.md §五 Step 6 (compileFile & file warnings)'],
-    ['API', 'pug.test.js > .compileFile() > caching (pass 1)', 'PLAN.md §五 Step 6 (compileFile & file cache)'],
-    ['API', 'pug.test.js > .compileFile() > caching (pass 2)', 'PLAN.md §五 Step 6 (compileFile & file cache)'],
-    ['API', 'pug.test.js > .renderFile() > sync string return', 'PLAN.md §五 Step 6 (renderFile & file API)'],
-    ['API', 'pug.test.js > .renderFile() > callback with options', 'PLAN.md §五 Step 6 (renderFile & callback)'],
-    ['API', 'pug.test.js > .renderFile() > callback without options', 'PLAN.md §五 Step 6 (renderFile & callback)'],
-    ['API', 'pug.test.js > .renderFile() > callback with error', 'PLAN.md §五 Step 6 (renderFile & callback)'],
-    ['API', 'pug.test.js > .renderFile() > caching (pass 1)', 'PLAN.md §五 Step 6 (renderFile & file cache)'],
-    ['API', 'pug.test.js > .renderFile() > caching (pass 2)', 'PLAN.md §五 Step 6 (renderFile & file cache)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > returns template string', 'PLAN.md §五 Step 6 (compileFileClient)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > name option', 'PLAN.md §五 Step 6 (compileFileClient)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 1)', 'PLAN.md §五 Step 6 (compileFileClient & cache)'],
-    ['JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 2)', 'PLAN.md §五 Step 6 (compileFileClient & cache)'],
-    ['Filters/Plugins', 'plugins.test.js > #3295 lexer plugins in tag interpolation', 'PLAN.md §五 Step 6 (plugin.lex internal extension)'],
-    ['Filters/Plugins', 'markdown-it/index.test.js', 'PLAN.md §五 Step 6 (markdown-it JSTransformer package check)'],
-    ['Execution Semantics', 'examples.test.js', 'PLAN.md §五 Step 6 (full examples suite)'],
-  ];
-  for (const [cat, name, note] of deferredApiAndPluginCases) {
-    recordCase(results, 'pug', cat, name, 'PASS', 'DEFERRED', note);
+  // 7. Step 6 API, file cache, plugins, markdown-it & examples live checks
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-diff-step6-'));
+  try {
+    runBehavioralCase('API', 'pug.test.js > .compileFile() > issue-1593', (p) => {
+      const origWarn = console.warn;
+      let warnings = '';
+      console.warn = (s) => {
+        warnings += String(s);
+      };
+      try {
+        const fn = p.compileFile(path.join(testDir, 'fixtures/issue-1593/index.pug'));
+        assert.strictEqual(typeof fn, 'function');
+      } finally {
+        console.warn = origWarn;
+      }
+      assert.strictEqual(warnings, '');
+    });
+
+    const compileFileCacheInput = path.join(tempDir, 'input-compileFile.pug');
+    runBehavioralCase('API', 'pug.test.js > .compileFile() > caching (pass 1)', (p) => {
+      delete p.cache[compileFileCacheInput];
+      fs.writeFileSync(compileFileCacheInput, '.foo bar');
+      const fn = p.compileFile(compileFileCacheInput, { cache: true });
+      assert.strictEqual(fn(), '<div class="foo">bar</div>');
+    });
+    runBehavioralCase('API', 'pug.test.js > .compileFile() > caching (pass 2)', (p) => {
+      fs.writeFileSync(compileFileCacheInput, '.big fat hen');
+      const fn = p.compileFile(compileFileCacheInput, { cache: true });
+      assert.strictEqual(fn(), '<div class="foo">bar</div>');
+      delete p.cache[compileFileCacheInput];
+    });
+
+    const basicHtmlNorm = fs
+      .readFileSync(path.join(testDir, 'cases/basic.html'), 'utf8')
+      .replace(/\s/g, '');
+    const basicPugPath = path.join(testDir, 'cases/basic.pug');
+
+    runBehavioralCase('API', 'pug.test.js > .renderFile() > sync string return', (p) => {
+      const actual = p.renderFile(basicPugPath, { name: 'foo' }).replace(/\s/g, '');
+      assert.strictEqual(actual, basicHtmlNorm);
+    });
+    runBehavioralCase('API', 'pug.test.js > .renderFile() > callback with options', (p) => {
+      let called = false;
+      p.renderFile(basicPugPath, { name: 'foo' }, (err, html) => {
+        called = true;
+        assert.ok(!err);
+        assert.strictEqual(html.replace(/\s/g, ''), basicHtmlNorm);
+      });
+      assert.strictEqual(called, true);
+    });
+    runBehavioralCase('API', 'pug.test.js > .renderFile() > callback without options', (p) => {
+      let called = false;
+      p.renderFile(basicPugPath, (err, html) => {
+        called = true;
+        assert.ok(!err);
+        assert.strictEqual(typeof html, 'string');
+        assert.ok(html.includes('<html>'));
+      });
+      assert.strictEqual(called, true);
+    });
+    runBehavioralCase('API', 'pug.test.js > .renderFile() > callback with error', (p) => {
+      let called = false;
+      p.renderFile(path.join(testDir, 'fixtures/runtime.layout.error.pug'), {}, (err, html) => {
+        called = true;
+        assert.ok(err instanceof Error);
+        assert.strictEqual(html, undefined);
+      });
+      assert.strictEqual(called, true);
+    });
+
+    const renderFileCacheInput = path.join(tempDir, 'input-renderFile.pug');
+    runBehavioralCase('API', 'pug.test.js > .renderFile() > caching (pass 1)', (p) => {
+      delete p.cache[renderFileCacheInput];
+      fs.writeFileSync(renderFileCacheInput, '.foo bar');
+      const actual = p.renderFile(renderFileCacheInput, { cache: true });
+      assert.strictEqual(actual, '<div class="foo">bar</div>');
+    });
+    runBehavioralCase('API', 'pug.test.js > .renderFile() > caching (pass 2)', (p) => {
+      fs.writeFileSync(renderFileCacheInput, '.big fat hen');
+      const actual = p.renderFile(renderFileCacheInput, { cache: true });
+      assert.strictEqual(actual, '<div class="foo">bar</div>');
+      delete p.cache[renderFileCacheInput];
+    });
+
+    runBehavioralCase('JS Artifact', 'pug.test.js > .compileFileClient() > returns template string', (p) => {
+      const src = p.compileFileClient(basicPugPath);
+      const fn = Function('pug', src + '\nreturn template;')(p.runtime);
+      assert.strictEqual(fn({ name: 'foo' }).replace(/\s/g, ''), basicHtmlNorm);
+    });
+    runBehavioralCase('JS Artifact', 'pug.test.js > .compileFileClient() > name option', (p) => {
+      const src = p.compileFileClient(basicPugPath, { name: 'myCustomTemplate' });
+      const fn = Function('pug', src + '\nreturn myCustomTemplate;')(p.runtime);
+      assert.strictEqual(fn({ name: 'foo' }).replace(/\s/g, ''), basicHtmlNorm);
+    });
+
+    const clientCacheInput = path.join(tempDir, 'input-compileFileClient.pug');
+    runBehavioralCase('JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 1)', (p) => {
+      delete p.cache[clientCacheInput + ':client'];
+      fs.writeFileSync(clientCacheInput, '.foo bar');
+      const src = p.compileFileClient(clientCacheInput, { cache: true });
+      const fn = Function('pug', src + '\nreturn template;')(p.runtime);
+      assert.strictEqual(fn(), '<div class="foo">bar</div>');
+    });
+    runBehavioralCase('JS Artifact', 'pug.test.js > .compileFileClient() > caching (pass 2)', (p) => {
+      fs.writeFileSync(clientCacheInput, '.big fat hen');
+      const src = p.compileFileClient(clientCacheInput, { cache: true });
+      const fn = Function('pug', src + '\nreturn template;')(p.runtime);
+      assert.strictEqual(fn(), '<div class="foo">bar</div>');
+      delete p.cache[clientCacheInput + ':client'];
+    });
+
+    runBehavioralCase('Filters/Plugins', 'plugins.test.js > #3295 lexer plugins in tag interpolation', (p) => {
+      let called = false;
+      const lexPlugin = {
+        advance(lexer) {
+          called = true;
+          if ('~' === lexer.input.charAt(0)) {
+            lexer.tokens.push(lexer.tok('text', 'twiddle-dee-dee'));
+            lexer.consume(1);
+            lexer.incrementColumn(1);
+            return true;
+          }
+        },
+      };
+      const out = p.render('p Look at #[~]', { plugins: [{ lex: lexPlugin }] });
+      assert.strictEqual(called, true);
+      assert.strictEqual(out, '<p>Look at twiddle-dee-dee</p>');
+    });
+
+    runBehavioralCase('Filters/Plugins', 'markdown-it/index.test.js', (p) => {
+      const inlineOut = p.renderFile(path.join(testDir, 'markdown-it/layout-markdown-inline.pug'));
+      const includeOut = p.renderFile(path.join(testDir, 'markdown-it/layout-markdown-include.pug'));
+      assert.strictEqual(inlineOut, includeOut);
+      if (p !== raw.pug) {
+        const expected = raw.pug.renderFile(path.join(testDir, 'markdown-it/layout-markdown-inline.pug'));
+        assert.strictEqual(inlineOut, expected);
+      }
+    });
+
+    if (targetBlocked) {
+      recordCase(results, 'pug', 'Execution Semantics', 'examples.test.js', 'PASS', 'BLOCKED', 'Native module blocked');
+    } else {
+      const examplesDir = path.join(RAW_COMPILER_ROOT, 'packages/pug/examples');
+      const examplesScript = `
+        import fs from 'node:fs';
+        import path from 'node:path';
+        import { createRequire } from 'node:module';
+        import { pathToFileURL } from 'node:url';
+
+        const require = createRequire(import.meta.url);
+        const Module = require('node:module');
+        const examplesDir = ${JSON.stringify(examplesDir)};
+        const rawPug = require(${JSON.stringify(path.join(RAW_COMPILER_ROOT, 'packages/pug'))});
+        const rustPug = await import(pathToFileURL(${JSON.stringify(path.join(RUST_COMPILER_ROOT, 'index.js'))}).href);
+
+        let activePug = rawPug;
+        const origLoad = Module._load;
+        Module._load = function(request, parent, isMain) {
+          if (request === '..' && parent && parent.filename && parent.filename.startsWith(examplesDir)) {
+            return activePug;
+          }
+          return origLoad.apply(this, arguments);
+        };
+
+        const files = fs.readdirSync(examplesDir).filter((f) => f.endsWith('.js')).sort();
+        const runOne = (impl, file) => {
+          activePug = impl;
+          const logs = [];
+          const errs = [];
+          const origLog = console.log;
+          const origErr = console.error;
+          console.log = (...a) => logs.push(a.map(String).join(' '));
+          console.error = (...a) => errs.push(a.map(String).join(' '));
+          const fullPath = path.join(examplesDir, file);
+          delete require.cache[fullPath];
+          try {
+            require(fullPath);
+          } finally {
+            console.log = origLog;
+            console.error = origErr;
+            delete require.cache[fullPath];
+          }
+          return { stdout: logs.join('\\n'), stderr: errs.join('\\n') };
+        };
+
+        const diffs = [];
+        for (const file of files) {
+          const base = runOne(rawPug, file);
+          const rust = runOne(rustPug, file);
+          if (base.stdout !== rust.stdout || base.stderr !== rust.stderr) {
+            diffs.push(file);
+          }
+        }
+        process.stdout.write(JSON.stringify({ count: files.length, diffs }));
+      `;
+      let baseOk = false;
+      let targetStatus = 'FAIL';
+      let note = '';
+      try {
+        const rawJson = execFileSync(
+          process.execPath,
+          ['--input-type=module', '-e', examplesScript],
+          { encoding: 'utf8' }
+        );
+        const parsed = JSON.parse(rawJson.trim());
+        baseOk = parsed.count === 13;
+        if (parsed.count === 13 && parsed.diffs.length === 0) {
+          targetStatus = 'PASS';
+        } else {
+          targetStatus = 'FAIL';
+          note = `Examples mismatch (${parsed.diffs.join(', ')})`;
+        }
+      } catch (err) {
+        targetStatus = 'FAIL';
+        note = err && err.message ? err.message : String(err);
+      }
+      recordCase(results, 'pug', 'Execution Semantics', 'examples.test.js', baseOk ? 'PASS' : 'FAIL', targetStatus, note);
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -2069,30 +2531,30 @@ ${catRows}
 
 | 類別 | 項目 | 原版基準行為 | 目前目標狀態 | 預計完成階段 |
 |---|---|---|---|---|
-| 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`PARTIAL (Step 4 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
-| 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`PARTIAL (Step 4 範圍)\` | Step 4 / Step 6 |
-| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PASS (Step 5 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
-| 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`PARTIAL (Step 5 已實作，cache 測試待 Step 6)\` | Step 5 / Step 6 |
-| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PASS (Step 5 範圍)\` | Step 1 / Step 3 / Step 4 / Step 5 |
-| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PARTIAL (Step 5 範圍)\` | Step 1 / Step 3 / Step 4 / Step 6 |
-| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`PARTIAL (Step 5 範圍)\` | Step 4 / Step 6 |
-| 公開 API | \`pug.__express(path, options, fn)\` | \`NODE_ENV === 'production'\` 且未指定 \`compileDebug\` 時預設 \`false\` | \`DEFERRED (Step 6)\` | Step 6 |
-| 公開 API | \`pug.cache\` / \`pug.filters\` / \`pug.runtime\` / \`pug.name\` | 外部可直接讀寫 \`cache\` 與 \`filters\`；\`name === 'Pug'\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
-| 公開 API | \`require('pug/register')\` | 註冊 \`require.extensions['.pug'] = pug.compileFile\` | \`PASS (Step 1 骨架)\` | Step 1 / Step 6 |
-| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 5 範圍)\` | Step 3 / Step 5 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異 | \`PASS (Step 5 範圍)\` | Step 3 / Step 5 / Step 6 |
-| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 5 範圍)\` | Step 1 / Step 3 / Step 5 |
-| 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`PASS (Step 4 範圍)\` | Step 4 |
-| 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`PASS (Step 4 範圍)\` | Step 1 / Step 4 / Step 6 |
-| 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`PASS (Step 4 範圍)\` | Step 4 / Step 6 |
-| 外掛介面 | Replacement hooks (\`resolve\`, \`read\`, \`generateCode\`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 \`Buffer\` 回傳 | \`PASS (Step 4 範圍)\` | Step 4 / Step 6 |
-| 外掛介面 | 內部擴充 (\`plugin.lex\`, \`plugin.parse\`) | 如 \`#3295\` tag interpolation 中的 \`plugin.lex.advance\` | \`DEFERRED (Step 6)\` | Step 6 |
+| 公開 API | \`pug.compile(str, options)\` | 回傳附帶 \`.dependencies\` 的同步渲染函式 | \`PASS (Step 6)\` | Step 1–6 |
+| 公開 API | \`pug.compileFile(path, options)\` | 讀取檔案並支援 \`exports.cache[path]\` | \`PASS (Step 6)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.compileClient(str, options)\` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | \`PASS (Step 5/6)\` | Step 1–6 |
+| 公開 API | \`pug.compileFileClient(path, options)\` | 支援 \`exports.cache[path + ':client']\` 與 \`name\` | \`PASS (Step 6)\` | Step 5 / Step 6 |
+| 公開 API | \`pug.compileClientWithDependenciesTracked(str, options)\` | 回傳 \`{ body, dependencies }\` | \`PASS (Step 5/6)\` | Step 1–6 |
+| 公開 API | \`pug.render(str, options, fn)\` | 同步渲染或同步回呼 \`fn(err, html)\`；原始 \`locals\` 不經 JSON 序列化 | \`PASS (Step 6)\` | Step 1–6 |
+| 公開 API | \`pug.renderFile(path, options, fn)\` | 檔案同步渲染或同步回呼 \`fn(err, html)\` | \`PASS (Step 6)\` | Step 4 / Step 6 |
+| 公開 API | \`pug.__express(path, options, fn)\` | \`NODE_ENV === 'production'\` 且未指定 \`compileDebug\` 時預設 \`false\` | \`PASS (Step 6)\` | Step 6 |
+| 公開 API | \`pug.cache\` / \`pug.filters\` / \`pug.runtime\` / \`pug.name\` | 外部可直接讀寫 \`cache\` 與 \`filters\`；\`name === 'Pug'\` | \`PASS (Step 6)\` | Step 1 / Step 6 |
+| 公開 API | \`require('pug/register')\` | 註冊 \`require.extensions['.pug'] = compileTemplate\` | \`PASS (Step 6)\` | Step 1 / Step 6 |
+| 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | 縮排字串、DOCTYPE 模式、\`self\` 命名空間與全域變數白名單 | \`PASS (Step 5/6)\` | Step 3 / Step 5 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`debug\` | 保留 \`compile\` 與 \`compileClient\` 預設差異與警告/除錯輸出 | \`PASS (Step 5/6)\` | Step 3 / Step 5 / Step 6 |
+| 編譯選項 | \`inlineRuntimeFunctions\` / \`name\` / \`module\` | 內嵌 \`pug_*\` 依賴展開或 \`runtimeWrap\` / \`require("pug-runtime")\` | \`PASS (Step 5/6)\` | Step 1 / Step 3 / Step 5 |
+| 編譯選項 | \`filename\` / \`basedir\` | Node \`path\` 相容解析，不任意 \`fs::canonicalize\` | \`PASS (Step 4/6)\` | Step 4 |
+| 外掛介面 | \`preLex\` / \`postLex\` / \`preParse\` / \`postParse\` / \`preLoad\` / \`postLoad\` | 對入口與每個 \`include\`/\`extends\` 依賴檔案在主執行緒同步呼叫 | \`PASS (Step 6)\` | Step 1 / Step 4 / Step 6 |
+| 外掛介面 | \`preFilters\` / \`postFilters\` / \`preLink\` / \`postLink\` / \`preCodeGen\` / \`postCodeGen\` | 管線各階段 AST / Code 同步轉換 hook | \`PASS (Step 6)\` | Step 4 / Step 6 |
+| 外掛介面 | Replacement hooks (\`resolve\`, \`read\`, \`generateCode\`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 \`Buffer\` 回傳 | \`PASS (Step 6)\` | Step 4 / Step 6 |
+| 外掛介面 | 內部擴充 (\`plugin.lex\`, \`pug-parser\` plugin contexts) | 如 \`#3295\` tag interpolation 中的 \`plugin.lex.advance\` 已原生橋接；原版未測試之 \`pug-parser\` context hooks 尚未實作 | \`PASS (plugin.lex) / N/A (parser context 未使用)\` | Step 6 |
 
 ---
 
-## 5. Step 5 節點與編譯選項支援矩陣（四種能力分界）
+## 5. 節點、編譯選項與外掛支援矩陣（Step 6 完整狀態）
 
-| 類別 | AST 節點 / 編譯選項 | 可解析 (\`pug_parser\`) | 可走訪 (\`pug_walk\`) | 可產生 JS (\`pug_code_gen\`) | 可渲染 (\`Node VM + locals\`) | 延後完成階段與說明 |
+| 類別 | AST 節點 / 編譯選項 | 可解析 (\`pug_parser\`) | 可走訪 (\`pug_walk\`) | 可產生 JS (\`pug_code_gen\`) | 可渲染 (\`Node VM + locals\`) | 完成階段與說明 |
 |---|---|:---:|:---:|:---:|:---:|---|
 | AST 節點 | \`Block\` / \`Tag\` / \`InterpolatedTag\` / \`Text\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（含 inline tags、block expansion、text interpolation） |
 | AST 節點 | \`Comment\` / \`BlockComment\` / \`Doctype\` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（含 conditional comments 與 doctype 模式） |
@@ -2106,9 +2568,9 @@ ${catRows}
 | AST 節點 | \`NamedBlock\` (\`block\` / \`append\` / \`prepend\`) / \`YieldBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4C 已完成（\`pug_linker\` 繼承合併、\`yield\` 替換與 \`Codegen\` 走訪） |
 | AST 節點 | \`Mixin\`（定義與呼叫）/ \`MixinBlock\` | ✅ | ✅ | ✅ | ✅ | Step 4D/5 已完成（定義、參數/rest、動態名稱、繼承位置與 block/attributes 合併傳遞） |
 | 編譯選項 | \`pretty\` / \`doctype\` / \`self\` / \`globals\` | ✅ | ✅ | ✅ | ✅ | Step 5 已完成多選項組合、void-elements 與 terse/xml 收斂 |
-| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 5 已完成全部選項與 Runtime helper 依賴展開組合 |
+| 編譯選項 | \`compileDebug\` / \`includeSources\` / \`inlineRuntimeFunctions\` | ✅ | ✅ | ✅ | ✅ | Step 5/6 已完成全部選項與 Runtime helper 依賴展開組合 |
 | 編譯選項 | \`filename\` / \`basedir\`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ✅ | ✅ | Step 4A 已完成（\`pug_load\` 跨檔案依賴解析） |
-| 外掛擴充 | \`plugin.parse\` / \`plugin.lex\` | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | ❌ (\`DEFERRED\`) | Step 6（完整 Node Plugin 相容驗收） |
+| 外掛擴充 | \`plugin.lex\`（lexer method 擴充 + nested interpolation） | ✅ | ✅ | ✅ | ✅ | Step 6 已透過 \`LexerPluginHook\` / \`NapiLexBridge\` 完成 \`plugin.lex\` 全方法橋接 |
 
 ---
 

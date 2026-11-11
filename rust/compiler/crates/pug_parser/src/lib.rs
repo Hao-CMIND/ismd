@@ -27,8 +27,17 @@ pub struct ParserOptions {
 
 /// Parses a slice of `Token`s into a `BlockNode` AST, matching `pug-parser@5.0.1`.
 pub fn parse(tokens: &[Token], options: &ParserOptions) -> Result<BlockNode, PugError> {
+    Ok(parse_with_warnings(tokens, options)?.0)
+}
+
+/// Parses tokens and also returns any deprecation warnings emitted during parsing.
+pub fn parse_with_warnings(
+    tokens: &[Token],
+    options: &ParserOptions,
+) -> Result<(BlockNode, Vec<String>), PugError> {
     let mut parser = Parser::new(tokens.to_vec(), options);
-    parser.parse_root()
+    let ast = parser.parse_root()?;
+    Ok((ast, parser.warnings))
 }
 
 /// Parses raw JSON token objects (including legacy `line`/`col` tokens in `pug-parser/test/cases/*.tokens.json`)
@@ -37,11 +46,18 @@ pub fn parse_json_tokens(
     raw_tokens: &[Value],
     options: &ParserOptions,
 ) -> Result<BlockNode, PugError> {
+    Ok(parse_json_tokens_with_warnings(raw_tokens, options)?.0)
+}
+
+pub fn parse_json_tokens_with_warnings(
+    raw_tokens: &[Value],
+    options: &ParserOptions,
+) -> Result<(BlockNode, Vec<String>), PugError> {
     let mut converted = Vec::with_capacity(raw_tokens.len());
     for raw in raw_tokens {
         converted.push(json_value_to_token(raw, &options.filename)?);
     }
-    parse(&converted, options)
+    parse_with_warnings(&converted, options)
 }
 
 fn json_value_to_token(raw: &Value, default_filename: &Option<String>) -> Result<Token, PugError> {
@@ -202,6 +218,7 @@ pub struct Parser {
     pub filename: Option<String>,
     pub src: Option<String>,
     pub in_mixin: usize,
+    pub warnings: Vec<String>,
 }
 
 impl Parser {
@@ -211,6 +228,7 @@ impl Parser {
             filename: options.filename.clone(),
             src: options.src.clone(),
             in_mixin: 0,
+            warnings: Vec::new(),
         }
     }
 
@@ -923,6 +941,13 @@ impl Parser {
             } else {
                 self.empty_block(tok.loc.start.line)
             };
+            if path_str.ends_with(".jade") {
+                let fname = self.filename.as_deref().unwrap_or("undefined");
+                self.warnings.push(format!(
+                    "{fname}, line {}:\nThe .jade extension is deprecated, use .pug for \"{}\".",
+                    tok.loc.start.line, path_str
+                ));
+            }
             Ok(Node::Include(IncludeNode {
                 file: file_ref,
                 block,
@@ -1152,6 +1177,7 @@ impl Parser {
 
     fn tag(&mut self, tag: &mut TagLike, self_closing_allowed: bool) -> Result<(), PugError> {
         let mut attribute_names: Vec<String> = Vec::new();
+        let mut seen_attrs = false;
 
         loop {
             let next_type = self.peek()?.token_type.clone();
@@ -1179,6 +1205,14 @@ impl Parser {
                     });
                 }
                 "start-attributes" => {
+                    if seen_attrs {
+                        let line = self.peek()?.loc.start.line;
+                        let fname = self.filename.as_deref().unwrap_or("undefined");
+                        self.warnings.push(format!(
+                            "{fname}, line {line}:\nYou should not have pug tags with multiple attributes."
+                        ));
+                    }
+                    seen_attrs = true;
                     let new_attrs = self.attrs(Some(&mut attribute_names))?;
                     tag.attrs_mut().extend(new_attrs);
                 }

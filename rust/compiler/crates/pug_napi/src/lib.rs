@@ -6,10 +6,10 @@ use pug_attrs::{AttrsFormat, compile_attrs};
 use pug_compiler::{CompileOptions, CompilerHost, FileCtx, LoadedFile, compile_body, default_resolve};
 use pug_error::{ErrorOptions, PugError};
 use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
-use pug_lexer::{LexerOptions, lex};
+use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
 use pug_linker::link;
 use pug_load::{LoadHost, annotate_load_error, load_ast};
-use pug_parser::{ParserOptions, parse_json_tokens};
+use pug_parser::{ParserOptions, parse_json_tokens_with_warnings};
 use pug_strip_comments::{StripCommentsOptions, strip_comments_json};
 use pug_walk::walk_json_ast;
 use serde_json::Value;
@@ -65,6 +65,7 @@ pub struct NapiCompileOptions {
     pub template_name: Option<String>,
     pub filter_options: Option<Value>,
     pub filter_aliases: Option<HashMap<String, String>>,
+    pub lex_plugin_methods: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -118,6 +119,7 @@ pub struct NapiLexerOptions {
     pub interpolated: Option<bool>,
     pub starting_line: Option<i64>,
     pub starting_column: Option<i64>,
+    pub plugin_methods: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -137,17 +139,102 @@ pub struct NapiStripCommentsOptions {
     pub filename: Option<String>,
 }
 
+struct NapiLexBridge<'env> {
+    env: Env,
+    cb: Function<'env, FnArgs<(String, Unknown<'env>)>, Unknown<'env>>,
+    pending_js_error: Option<napi::Error>,
+}
+
+#[derive(serde::Deserialize)]
+struct JsLexStepResult {
+    handled: bool,
+    state: LexerState,
+}
+
+fn invoke_js_lex_step<'env>(
+    env: Env,
+    cb: &Function<'env, FnArgs<(String, Unknown<'env>)>, Unknown<'env>>,
+    method: &str,
+    state: &mut LexerState,
+    pending_js_error: &mut Option<napi::Error>,
+) -> std::result::Result<bool, PugError> {
+    let record = |e: napi::Error, slot: &mut Option<napi::Error>| {
+        let msg = e.to_string();
+        *slot = Some(e);
+        PugError::host_exception(msg)
+    };
+    let state_json = serde_json::to_value(&*state)
+        .map_err(|e| PugError::host_exception(format!("Failed to serialize lexer state: {e}")))?;
+    let js_state = env
+        .to_js_value(&state_json)
+        .map_err(|e| record(e, pending_js_error))?;
+    let ret = cb
+        .call(FnArgs::from((method.to_string(), js_state)))
+        .map_err(|e| record(e, pending_js_error))?;
+    let ret_json: Value = env
+        .from_js_value(ret)
+        .map_err(|e| record(e, pending_js_error))?;
+    let parsed: JsLexStepResult = serde_json::from_value(ret_json)
+        .map_err(|e| PugError::host_exception(format!("Invalid lexer plugin result: {e}")))?;
+    *state = parsed.state;
+    Ok(parsed.handled)
+}
+
+impl LexerPluginHook for NapiLexBridge<'_> {
+    fn call_lex(&mut self, method: &str, state: &mut LexerState) -> std::result::Result<bool, PugError> {
+        invoke_js_lex_step(
+            self.env,
+            &self.cb,
+            method,
+            state,
+            &mut self.pending_js_error,
+        )
+    }
+}
+
 #[napi]
-pub fn lex_sync(source: String, options: Option<NapiLexerOptions>) -> Result<NapiJsonOutcome> {
+pub fn lex_sync(
+    env: Env,
+    source: String,
+    options: Option<NapiLexerOptions>,
+    callbacks: Option<Object>,
+) -> Result<NapiJsonOutcome> {
     let opts = options.unwrap_or_default();
     let lex_opts = LexerOptions {
         filename: opts.filename,
         interpolated: opts.interpolated.unwrap_or(false),
         starting_line: opts.starting_line.map(|n| n as usize),
         starting_column: opts.starting_column.map(|n| n as usize),
+        plugin_methods: opts.plugin_methods.unwrap_or_default(),
     };
+    let lex_cb: Option<Function<FnArgs<(String, Unknown)>, Unknown>> = match callbacks {
+        Some(ref obj) if obj.has_named_property("lexPluginStep")? => {
+            let v: Unknown = obj.get_named_property("lexPluginStep")?;
+            if v.get_type()? == ValueType::Function {
+                Some(Function::from_unknown(v)?)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let mut pending_js_err: Option<napi::Error> = None;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        lex(&source, &lex_opts)
+        if !lex_opts.plugin_methods.is_empty()
+            && let Some(cb) = lex_cb
+        {
+            let mut bridge = NapiLexBridge {
+                env,
+                cb,
+                pending_js_error: None,
+            };
+            let res = lex_with_hook(&source, &lex_opts, &mut bridge);
+            pending_js_err = bridge.pending_js_error;
+            res
+        } else {
+            lex(&source, &lex_opts)
+        }
     }));
     match outcome {
         Ok(Ok(tokens)) => {
@@ -160,12 +247,25 @@ pub fn lex_sync(source: String, options: Option<NapiLexerOptions>) -> Result<Nap
                 plain_error: None,
             })
         }
-        Ok(Err(pug_err)) => Ok(NapiJsonOutcome {
-            ok: false,
-            data: None,
-            error: Some(NapiPugErrorDto::from(pug_err)),
-            plain_error: None,
-        }),
+        Ok(Err(pug_err)) => {
+            if let Some(js_err) = pending_js_err {
+                return Err(js_err);
+            }
+            if pug_err.is_js_host_exception {
+                return Ok(NapiJsonOutcome {
+                    ok: false,
+                    data: None,
+                    error: None,
+                    plain_error: Some(pug_err.message),
+                });
+            }
+            Ok(NapiJsonOutcome {
+                ok: false,
+                data: None,
+                error: Some(NapiPugErrorDto::from(pug_err)),
+                plain_error: None,
+            })
+        }
         Err(_panic) => Err(napi::Error::from_reason(
             "Internal Rust panic caught at FFI boundary in lex_sync",
         )),
@@ -216,17 +316,34 @@ pub struct NapiParserOptions {
 pub fn parse_sync(
     tokens: Vec<Value>,
     options: Option<NapiParserOptions>,
+    callbacks: Option<Object>,
 ) -> Result<NapiJsonOutcome> {
     let opts = options.unwrap_or_default();
     let parse_opts = ParserOptions {
         filename: opts.filename,
         src: opts.src,
     };
+    let warn_cb: Option<Function<String, Unknown>> = match callbacks {
+        Some(ref obj) if obj.has_named_property("warn")? => {
+            let v: Unknown = obj.get_named_property("warn")?;
+            if v.get_type()? == ValueType::Function {
+                Some(Function::from_unknown(v)?)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parse_json_tokens(&tokens, &parse_opts)
+        parse_json_tokens_with_warnings(&tokens, &parse_opts)
     }));
     match outcome {
-        Ok(Ok(ast)) => {
+        Ok(Ok((ast, warnings))) => {
+            if let Some(cb) = warn_cb {
+                for w in warnings {
+                    let _ = cb.call(w);
+                }
+            }
             let val = serde_json::to_value(ast)
                 .map_err(|e| napi::Error::from_reason(format!("Failed to serialize AST: {e}")))?;
             Ok(NapiJsonOutcome {
@@ -669,6 +786,30 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
 
     fn post_code_gen(&mut self, js: String) -> std::result::Result<String, PugError> {
         self.call_json_hook("postCodeGen", js)
+    }
+
+    fn warn(&mut self, msg: &str) {
+        if let Ok(Some(val)) = self.get_optional_val("warn")
+            && let Ok(cb) = Function::<String, Unknown>::from_unknown(val)
+        {
+            let _ = cb.call(msg.to_string());
+        }
+    }
+
+    fn call_lex_plugin(
+        &mut self,
+        method: &str,
+        state: &mut LexerState,
+    ) -> std::result::Result<bool, PugError> {
+        let cb_val = self
+            .get_optional_val("lexPluginStep")
+            .map_err(|e| self.record_js_err(e))?;
+        let Some(val) = cb_val else {
+            return Ok(false);
+        };
+        let cb: Function<'env, FnArgs<(String, Unknown<'env>)>, Unknown<'env>> =
+            Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
+        invoke_js_lex_step(self.env, &cb, method, state, &mut self.pending_js_error)
     }
 }
 
@@ -1113,6 +1254,7 @@ pub fn compile_body_sync(
             .unwrap_or_else(|| String::from("template")),
         filter_options: options.filter_options.unwrap_or(Value::Null),
         filter_aliases: options.filter_aliases.unwrap_or_default(),
+        lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
     };
 
     let mut host = NodeHostAdapter {

@@ -94,6 +94,103 @@ function dtoToJsError(dto) {
   return err;
 }
 
+function buildLexPluginBridge(plugins) {
+  const lexPlugins = (plugins || [])
+    .filter((p) => p && p.lex)
+    .map((p) => p.lex);
+  if (!lexPlugins.length) {
+    return { methods: [], step: undefined };
+  }
+  const methodSet = new Set();
+  for (const lp of lexPlugins) {
+    for (const k of Object.keys(lp)) {
+      if (typeof lp[k] === 'function') methodSet.add(k);
+    }
+    const proto = Object.getPrototypeOf(lp);
+    if (proto && proto !== Object.prototype) {
+      for (const k of Object.getOwnPropertyNames(proto)) {
+        if (k !== 'constructor' && typeof lp[k] === 'function') methodSet.add(k);
+      }
+    }
+  }
+  return {
+    methods: Array.from(methodSet),
+    step: function(method, state) {
+      const proxy = {
+        input: state.input,
+        filename: state.filename === null ? undefined : state.filename,
+        lineno: state.lineno,
+        colno: state.colno,
+        interpolated: state.interpolated,
+        tokens: state.tokens,
+        ended: state.ended,
+        tok(type, val) {
+          const t = {
+            type,
+            loc: {
+              start: { line: this.lineno, column: this.colno },
+              filename: this.filename,
+            },
+          };
+          if (val !== undefined) t.val = val;
+          return t;
+        },
+        tokEnd(tok) {
+          tok.loc.end = { line: this.lineno, column: this.colno };
+          return tok;
+        },
+        consume(len) {
+          this.input = this.input.substr(len);
+        },
+        incrementColumn(inc) {
+          this.colno += inc;
+        },
+        incrementLine(inc) {
+          this.lineno += inc;
+          if (inc) this.colno = 1;
+        },
+        error(code, message) {
+          throw makeError(code, message, {
+            line: this.lineno,
+            column: this.colno,
+            filename: this.filename,
+          });
+        },
+      };
+      let handled = false;
+      for (const lp of lexPlugins) {
+        if (typeof lp[method] === 'function' && lp[method](proxy)) {
+          handled = true;
+          break;
+        }
+      }
+      return {
+        handled,
+        state: {
+          input: proxy.input,
+          filename: proxy.filename === undefined ? null : proxy.filename,
+          lineno: proxy.lineno,
+          colno: proxy.colno,
+          interpolated: Boolean(proxy.interpolated),
+          tokens: proxy.tokens.map((tok) => {
+            if (tok && tok.loc && tok.loc.start && !tok.loc.end) {
+              return {
+                ...tok,
+                loc: {
+                  ...tok.loc,
+                  end: { ...tok.loc.start },
+                },
+              };
+            }
+            return tok;
+          }),
+          ended: Boolean(proxy.ended),
+        },
+      };
+    },
+  };
+}
+
 function lex(str, options) {
   if (typeof str !== 'string') {
     throw new Error(
@@ -106,14 +203,20 @@ function lex(str, options) {
     );
   }
   options = options || {};
-  const outcome = native.lexSync(str, {
-    filename: options.filename,
-    interpolated: Boolean(options.interpolated),
-    startingLine:
-      options.startingLine === undefined ? undefined : Number(options.startingLine),
-    startingColumn:
-      options.startingColumn === undefined ? undefined : Number(options.startingColumn),
-  });
+  const lexBridge = buildLexPluginBridge(options.plugins);
+  const outcome = native.lexSync(
+    str,
+    {
+      filename: options.filename,
+      interpolated: Boolean(options.interpolated),
+      startingLine:
+        options.startingLine === undefined ? undefined : Number(options.startingLine),
+      startingColumn:
+        options.startingColumn === undefined ? undefined : Number(options.startingColumn),
+      pluginMethods: lexBridge.methods,
+    },
+    lexBridge.step ? { lexPluginStep: lexBridge.step } : undefined
+  );
   if (!outcome.ok && outcome.plainError) {
     throw new Error(outcome.plainError);
   }
@@ -158,10 +261,14 @@ function parse(tokens, options) {
     );
   }
   options = options || {};
-  const outcome = native.parseSync(tokens, {
-    filename: options.filename,
-    src: options.src,
-  });
+  const outcome = native.parseSync(
+    tokens,
+    {
+      filename: options.filename,
+      src: options.src,
+    },
+    { warn: (msg) => console.warn(msg) }
+  );
   if (!outcome.ok && outcome.plainError) {
     throw new Error(outcome.plainError);
   }
@@ -637,6 +744,7 @@ function compileBody(str, options) {
   const customResolve = findReplacementFunc(plugins, 'resolve');
   const customRead = findReplacementFunc(plugins, 'read');
   const customGenerateCode = findReplacementFunc(plugins, 'generateCode');
+  const lexBridge = buildLexPluginBridge(plugins);
 
   function fileOpts(filename, src) {
     const o = Object.assign({}, options);
@@ -646,6 +754,10 @@ function compileBody(str, options) {
   }
 
   const hostCallbacks = {
+    warn: function(msg) {
+      console.warn(msg);
+    },
+    lexPluginStep: lexBridge.step,
     preLex: function(s, filename) {
       return applyPlugins(
         s,
@@ -778,6 +890,7 @@ function compileBody(str, options) {
       templateName: options.templateName || 'template',
       filterOptions: options.filterOptions || null,
       filterAliases: options.filterAliases || undefined,
+      lexPluginMethods: lexBridge.methods,
     },
     hostCallbacks
   );
@@ -964,6 +1077,11 @@ export function compileFileClient(path, options) {
 }
 
 export function __express(path, options, fn) {
+  if (typeof options === 'function') {
+    fn = options;
+    options = {};
+  }
+  options = options || {};
   if (
     options.compileDebug == undefined &&
     process.env.NODE_ENV === 'production'

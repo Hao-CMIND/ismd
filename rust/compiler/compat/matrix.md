@@ -28,8 +28,8 @@
 | `pug-linker` | `pug_linker` | Step 4 | 24 | 24 PASS / 0 APPROVED_DIFF / 0 FAIL | 24 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 | `pug-attrs` | `pug_attrs` | Step 5 | 58 | 58 PASS / 0 APPROVED_DIFF / 0 FAIL | 58 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 | `pug-runtime` | `pug_runtime` | Step 5 | 9 | 9 PASS / 0 APPROVED_DIFF / 0 FAIL | 9 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
-| `pug` | `pug_code_gen + pug_compiler + pug_napi` | Step 1–6 | 330 | 328 PASS / 2 APPROVED_DIFF / 0 FAIL | 294 PASS / 36 DEFERRED / 0 BLOCKED / 0 FAIL |
-| **合計** | — | **Step 0** | **726** | **724 PASS / 2 APPROVED_DIFF / 0 FAIL** | **690 PASS / 36 DEFERRED / 0 BLOCKED / 0 FAIL** |
+| `pug` | `pug_code_gen + pug_compiler + pug_napi` | Step 1–6 | 330 | 328 PASS / 2 APPROVED_DIFF / 0 FAIL | 330 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| **合計** | — | **Step 0** | **726** | **724 PASS / 2 APPROVED_DIFF / 0 FAIL** | **726 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL** |
 
 > 註：`pug-code-gen` (`2.0.2`) 在原版 Monorepo 中無獨立 `test/` 資料夾，其單元與快照測試合併於 `pug` 主套件的 `cases/*.pug`、`compileClient` 快照與執行語意測試中驗收。
 
@@ -41,11 +41,11 @@
 |---|---:|---|---|
 | Token/AST | 273 | 273 PASS / 0 APPROVED_DIFF / 0 FAIL | 273 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 | HTML | 131 | 131 PASS / 0 APPROVED_DIFF / 0 FAIL | 131 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
-| Execution Semantics | 12 | 12 PASS / 0 APPROVED_DIFF / 0 FAIL | 11 PASS / 1 DEFERRED / 0 BLOCKED / 0 FAIL |
-| Filters/Plugins | 17 | 17 PASS / 0 APPROVED_DIFF / 0 FAIL | 15 PASS / 2 DEFERRED / 0 BLOCKED / 0 FAIL |
-| API | 25 | 25 PASS / 0 APPROVED_DIFF / 0 FAIL | 16 PASS / 9 DEFERRED / 0 BLOCKED / 0 FAIL |
-| Error | 87 | 85 PASS / 2 APPROVED_DIFF / 0 FAIL | 67 PASS / 20 DEFERRED / 0 BLOCKED / 0 FAIL |
-| JS Artifact | 181 | 181 PASS / 0 APPROVED_DIFF / 0 FAIL | 177 PASS / 4 DEFERRED / 0 BLOCKED / 0 FAIL |
+| Execution Semantics | 12 | 12 PASS / 0 APPROVED_DIFF / 0 FAIL | 12 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| Filters/Plugins | 17 | 17 PASS / 0 APPROVED_DIFF / 0 FAIL | 17 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| API | 25 | 25 PASS / 0 APPROVED_DIFF / 0 FAIL | 25 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| Error | 87 | 85 PASS / 2 APPROVED_DIFF / 0 FAIL | 87 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
+| JS Artifact | 181 | 181 PASS / 0 APPROVED_DIFF / 0 FAIL | 181 PASS / 0 DEFERRED / 0 BLOCKED / 0 FAIL |
 
 ---
 
@@ -53,30 +53,30 @@
 
 | 類別 | 項目 | 原版基準行為 | 目前目標狀態 | 預計完成階段 |
 |---|---|---|---|---|
-| 公開 API | `pug.compile(str, options)` | 回傳附帶 `.dependencies` 的同步渲染函式 | `PARTIAL (Step 4 範圍)` | Step 1 / Step 3 / Step 4 / Step 6 |
-| 公開 API | `pug.compileFile(path, options)` | 讀取檔案並支援 `exports.cache[path]` | `PARTIAL (Step 4 範圍)` | Step 4 / Step 6 |
-| 公開 API | `pug.compileClient(str, options)` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | `PASS (Step 5 範圍)` | Step 1 / Step 3 / Step 4 / Step 5 |
-| 公開 API | `pug.compileFileClient(path, options)` | 支援 `exports.cache[path + ':client']` 與 `name` | `PARTIAL (Step 5 已實作，cache 測試待 Step 6)` | Step 5 / Step 6 |
-| 公開 API | `pug.compileClientWithDependenciesTracked(str, options)` | 回傳 `{ body, dependencies }` | `PASS (Step 5 範圍)` | Step 1 / Step 3 / Step 4 / Step 5 |
-| 公開 API | `pug.render(str, options, fn)` | 同步渲染或同步回呼 `fn(err, html)`；原始 `locals` 不經 JSON 序列化 | `PARTIAL (Step 5 範圍)` | Step 1 / Step 3 / Step 4 / Step 6 |
-| 公開 API | `pug.renderFile(path, options, fn)` | 檔案同步渲染或同步回呼 `fn(err, html)` | `PARTIAL (Step 5 範圍)` | Step 4 / Step 6 |
-| 公開 API | `pug.__express(path, options, fn)` | `NODE_ENV === 'production'` 且未指定 `compileDebug` 時預設 `false` | `DEFERRED (Step 6)` | Step 6 |
-| 公開 API | `pug.cache` / `pug.filters` / `pug.runtime` / `pug.name` | 外部可直接讀寫 `cache` 與 `filters`；`name === 'Pug'` | `PASS (Step 1 骨架)` | Step 1 / Step 6 |
-| 公開 API | `require('pug/register')` | 註冊 `require.extensions['.pug'] = pug.compileFile` | `PASS (Step 1 骨架)` | Step 1 / Step 6 |
-| 編譯選項 | `pretty` / `doctype` / `self` / `globals` | 縮排字串、DOCTYPE 模式、`self` 命名空間與全域變數白名單 | `PASS (Step 5 範圍)` | Step 3 / Step 5 |
-| 編譯選項 | `compileDebug` / `includeSources` / `debug` | 保留 `compile` 與 `compileClient` 預設差異 | `PASS (Step 5 範圍)` | Step 3 / Step 5 / Step 6 |
-| 編譯選項 | `inlineRuntimeFunctions` / `name` / `module` | 內嵌 `pug_*` 依賴展開或 `runtimeWrap` / `require("pug-runtime")` | `PASS (Step 5 範圍)` | Step 1 / Step 3 / Step 5 |
-| 編譯選項 | `filename` / `basedir` | Node `path` 相容解析，不任意 `fs::canonicalize` | `PASS (Step 4 範圍)` | Step 4 |
-| 外掛介面 | `preLex` / `postLex` / `preParse` / `postParse` / `preLoad` / `postLoad` | 對入口與每個 `include`/`extends` 依賴檔案在主執行緒同步呼叫 | `PASS (Step 4 範圍)` | Step 1 / Step 4 / Step 6 |
-| 外掛介面 | `preFilters` / `postFilters` / `preLink` / `postLink` / `preCodeGen` / `postCodeGen` | 管線各階段 AST / Code 同步轉換 hook | `PASS (Step 4 範圍)` | Step 4 / Step 6 |
-| 外掛介面 | Replacement hooks (`resolve`, `read`, `generateCode`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 `Buffer` 回傳 | `PASS (Step 4 範圍)` | Step 4 / Step 6 |
-| 外掛介面 | 內部擴充 (`plugin.lex`, `plugin.parse`) | 如 `#3295` tag interpolation 中的 `plugin.lex.advance` | `DEFERRED (Step 6)` | Step 6 |
+| 公開 API | `pug.compile(str, options)` | 回傳附帶 `.dependencies` 的同步渲染函式 | `PASS (Step 6)` | Step 1–6 |
+| 公開 API | `pug.compileFile(path, options)` | 讀取檔案並支援 `exports.cache[path]` | `PASS (Step 6)` | Step 4 / Step 6 |
+| 公開 API | `pug.compileClient(str, options)` | 回傳 JS 函式原始碼字串（雙層驗收：Prettier + Raw） | `PASS (Step 5/6)` | Step 1–6 |
+| 公開 API | `pug.compileFileClient(path, options)` | 支援 `exports.cache[path + ':client']` 與 `name` | `PASS (Step 6)` | Step 5 / Step 6 |
+| 公開 API | `pug.compileClientWithDependenciesTracked(str, options)` | 回傳 `{ body, dependencies }` | `PASS (Step 5/6)` | Step 1–6 |
+| 公開 API | `pug.render(str, options, fn)` | 同步渲染或同步回呼 `fn(err, html)`；原始 `locals` 不經 JSON 序列化 | `PASS (Step 6)` | Step 1–6 |
+| 公開 API | `pug.renderFile(path, options, fn)` | 檔案同步渲染或同步回呼 `fn(err, html)` | `PASS (Step 6)` | Step 4 / Step 6 |
+| 公開 API | `pug.__express(path, options, fn)` | `NODE_ENV === 'production'` 且未指定 `compileDebug` 時預設 `false` | `PASS (Step 6)` | Step 6 |
+| 公開 API | `pug.cache` / `pug.filters` / `pug.runtime` / `pug.name` | 外部可直接讀寫 `cache` 與 `filters`；`name === 'Pug'` | `PASS (Step 6)` | Step 1 / Step 6 |
+| 公開 API | `require('pug/register')` | 註冊 `require.extensions['.pug'] = compileTemplate` | `PASS (Step 6)` | Step 1 / Step 6 |
+| 編譯選項 | `pretty` / `doctype` / `self` / `globals` | 縮排字串、DOCTYPE 模式、`self` 命名空間與全域變數白名單 | `PASS (Step 5/6)` | Step 3 / Step 5 |
+| 編譯選項 | `compileDebug` / `includeSources` / `debug` | 保留 `compile` 與 `compileClient` 預設差異與警告/除錯輸出 | `PASS (Step 5/6)` | Step 3 / Step 5 / Step 6 |
+| 編譯選項 | `inlineRuntimeFunctions` / `name` / `module` | 內嵌 `pug_*` 依賴展開或 `runtimeWrap` / `require("pug-runtime")` | `PASS (Step 5/6)` | Step 1 / Step 3 / Step 5 |
+| 編譯選項 | `filename` / `basedir` | Node `path` 相容解析，不任意 `fs::canonicalize` | `PASS (Step 4/6)` | Step 4 |
+| 外掛介面 | `preLex` / `postLex` / `preParse` / `postParse` / `preLoad` / `postLoad` | 對入口與每個 `include`/`extends` 依賴檔案在主執行緒同步呼叫 | `PASS (Step 6)` | Step 1 / Step 4 / Step 6 |
+| 外掛介面 | `preFilters` / `postFilters` / `preLink` / `postLink` / `preCodeGen` / `postCodeGen` | 管線各階段 AST / Code 同步轉換 hook | `PASS (Step 6)` | Step 4 / Step 6 |
+| 外掛介面 | Replacement hooks (`resolve`, `read`, `generateCode`) | 多個 plugin 同時實作同名 replacement 時拋錯；支援 `Buffer` 回傳 | `PASS (Step 6)` | Step 4 / Step 6 |
+| 外掛介面 | 內部擴充 (`plugin.lex`, `pug-parser` plugin contexts) | 如 `#3295` tag interpolation 中的 `plugin.lex.advance` 已原生橋接；原版未測試之 `pug-parser` context hooks 尚未實作 | `PASS (plugin.lex) / N/A (parser context 未使用)` | Step 6 |
 
 ---
 
-## 5. Step 5 節點與編譯選項支援矩陣（四種能力分界）
+## 5. 節點、編譯選項與外掛支援矩陣（Step 6 完整狀態）
 
-| 類別 | AST 節點 / 編譯選項 | 可解析 (`pug_parser`) | 可走訪 (`pug_walk`) | 可產生 JS (`pug_code_gen`) | 可渲染 (`Node VM + locals`) | 延後完成階段與說明 |
+| 類別 | AST 節點 / 編譯選項 | 可解析 (`pug_parser`) | 可走訪 (`pug_walk`) | 可產生 JS (`pug_code_gen`) | 可渲染 (`Node VM + locals`) | 完成階段與說明 |
 |---|---|:---:|:---:|:---:|:---:|---|
 | AST 節點 | `Block` / `Tag` / `InterpolatedTag` / `Text` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（含 inline tags、block expansion、text interpolation） |
 | AST 節點 | `Comment` / `BlockComment` / `Doctype` | ✅ | ✅ | ✅ | ✅ | Step 3 已完成（含 conditional comments 與 doctype 模式） |
@@ -90,9 +90,9 @@
 | AST 節點 | `NamedBlock` (`block` / `append` / `prepend`) / `YieldBlock` | ✅ | ✅ | ✅ | ✅ | Step 4C 已完成（`pug_linker` 繼承合併、`yield` 替換與 `Codegen` 走訪） |
 | AST 節點 | `Mixin`（定義與呼叫）/ `MixinBlock` | ✅ | ✅ | ✅ | ✅ | Step 4D/5 已完成（定義、參數/rest、動態名稱、繼承位置與 block/attributes 合併傳遞） |
 | 編譯選項 | `pretty` / `doctype` / `self` / `globals` | ✅ | ✅ | ✅ | ✅ | Step 5 已完成多選項組合、void-elements 與 terse/xml 收斂 |
-| 編譯選項 | `compileDebug` / `includeSources` / `inlineRuntimeFunctions` | ✅ | ✅ | ✅ | ✅ | Step 5 已完成全部選項與 Runtime helper 依賴展開組合 |
+| 編譯選項 | `compileDebug` / `includeSources` / `inlineRuntimeFunctions` | ✅ | ✅ | ✅ | ✅ | Step 5/6 已完成全部選項與 Runtime helper 依賴展開組合 |
 | 編譯選項 | `filename` / `basedir`（多檔案相對/絕對路徑解析） | ✅ | ✅ | ✅ | ✅ | Step 4A 已完成（`pug_load` 跨檔案依賴解析） |
-| 外掛擴充 | `plugin.parse` / `plugin.lex` | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | ❌ (`DEFERRED`) | Step 6（完整 Node Plugin 相容驗收） |
+| 外掛擴充 | `plugin.lex`（lexer method 擴充 + nested interpolation） | ✅ | ✅ | ✅ | ✅ | Step 6 已透過 `LexerPluginHook` / `NapiLexBridge` 完成 `plugin.lex` 全方法橋接 |
 
 ---
 

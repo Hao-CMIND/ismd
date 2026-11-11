@@ -2,11 +2,11 @@ use pug_ast::{BlockNode, RawContent, Token};
 use pug_code_gen::{CodeGenOptions, generate_code};
 use pug_error::PugError;
 use pug_filters::{FilterInvocation, handle_filters};
-use pug_lexer::{LexerOptions, lex};
+use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
 use pug_linker::link;
 pub use pug_load::LoadedFile;
 use pug_load::{LoadHost, annotate_load_error, load_ast};
-use pug_parser::{ParserOptions, parse};
+use pug_parser::{ParserOptions, parse_with_warnings};
 use pug_strip_comments::{StripCommentsOptions, strip_comments};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +26,7 @@ pub struct CompileOptions {
     pub template_name: String,
     pub filter_options: Value,
     pub filter_aliases: HashMap<String, String>,
+    pub lex_plugin_methods: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +137,19 @@ pub trait CompilerHost {
 
     fn post_code_gen(&mut self, js: String) -> Result<String, PugError> {
         Ok(js)
+    }
+
+    fn warn(&mut self, msg: &str) {
+        let _ = msg;
+    }
+
+    fn call_lex_plugin(
+        &mut self,
+        method: &str,
+        state: &mut LexerState,
+    ) -> Result<bool, PugError> {
+        let _ = (method, state);
+        Ok(false)
     }
 }
 
@@ -278,6 +292,16 @@ struct Session<'a, H: CompilerHost> {
     debug_sources: Vec<(String, String)>,
 }
 
+struct HostLexBridge<'a, H: CompilerHost> {
+    host: &'a mut H,
+}
+
+impl<H: CompilerHost> LexerPluginHook for HostLexBridge<'_, H> {
+    fn call_lex(&mut self, method: &str, state: &mut LexerState) -> Result<bool, PugError> {
+        self.host.call_lex_plugin(method, state)
+    }
+}
+
 impl<H: CompilerHost> Session<'_, H> {
     fn record_source(&mut self, key: String, text: String) {
         if let Some(entry) = self.debug_sources.iter_mut().find(|(k, _)| *k == key) {
@@ -295,9 +319,15 @@ impl<H: CompilerHost> Session<'_, H> {
         let contents = self.host.pre_lex(src.to_string(), filename)?;
         let lex_opts = LexerOptions {
             filename: filename.map(String::from),
+            plugin_methods: self.options.lex_plugin_methods.clone(),
             ..LexerOptions::default()
         };
-        let mut tokens = lex(&contents, &lex_opts)?;
+        let mut tokens = if lex_opts.plugin_methods.is_empty() {
+            lex(&contents, &lex_opts)?
+        } else {
+            let mut bridge = HostLexBridge { host: self.host };
+            lex_with_hook(&contents, &lex_opts, &mut bridge)?
+        };
         tokens = self.host.post_lex(tokens, &ctx)?;
 
         // parse adapter: append `.pug` to extensionless path tokens
@@ -318,7 +348,10 @@ impl<H: CompilerHost> Session<'_, H> {
             filename: filename.map(String::from),
             src: Some(src.to_string()),
         };
-        let mut ast = parse(&tokens, &parse_opts)?;
+        let (mut ast, warnings) = parse_with_warnings(&tokens, &parse_opts)?;
+        for warning in warnings {
+            self.host.warn(&warning);
+        }
         ast = self.host.post_parse(ast, &ctx)?;
         self.host.pre_load(ast, &ctx)
     }

@@ -13,6 +13,24 @@ pub struct LexerOptions {
     pub interpolated: bool,
     pub starting_line: Option<usize>,
     pub starting_column: Option<usize>,
+    pub plugin_methods: Vec<String>,
+}
+
+/// Mutable state passed to JS `plugin.lex.<method>(lexer)` hooks.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LexerState {
+    pub input: String,
+    pub filename: Option<String>,
+    pub lineno: usize,
+    pub colno: usize,
+    pub interpolated: bool,
+    pub tokens: Vec<Token>,
+    pub ended: bool,
+}
+
+/// Host callback interface for `options.plugins[].lex` (e.g. `#3295`).
+pub trait LexerPluginHook {
+    fn call_lex(&mut self, method: &str, state: &mut LexerState) -> Result<bool, PugError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +45,7 @@ struct AttributeValueResponse {
     remaining_source: String,
 }
 
-pub struct Lexer {
+pub struct Lexer<'h> {
     pub input: String,
     pub original_input: String,
     pub filename: Option<String>,
@@ -39,10 +57,21 @@ pub struct Lexer {
     pub interpolation_allowed: bool,
     pub tokens: Vec<Token>,
     pub ended: bool,
+    plugin_methods: Vec<String>,
+    hook: Option<&'h mut dyn LexerPluginHook>,
 }
 
 pub fn lex(input: &str, options: &LexerOptions) -> Result<Vec<Token>, PugError> {
     let mut lexer = Lexer::new(input, options);
+    lexer.get_tokens()
+}
+
+pub fn lex_with_hook(
+    input: &str,
+    options: &LexerOptions,
+    hook: &mut dyn LexerPluginHook,
+) -> Result<Vec<Token>, PugError> {
+    let mut lexer = Lexer::with_hook(input, options, hook);
     lexer.get_tokens()
 }
 
@@ -127,8 +156,26 @@ fn first_line(s: &str) -> &str {
     }
 }
 
-impl Lexer {
+impl Lexer<'static> {
     pub fn new(str_input: &str, options: &LexerOptions) -> Self {
+        Lexer::create_inner(str_input, options, None)
+    }
+}
+
+impl<'h> Lexer<'h> {
+    pub fn with_hook(
+        str_input: &str,
+        options: &LexerOptions,
+        hook: &'h mut dyn LexerPluginHook,
+    ) -> Self {
+        Lexer::create_inner(str_input, options, Some(hook))
+    }
+
+    fn create_inner(
+        str_input: &str,
+        options: &LexerOptions,
+        hook: Option<&'h mut dyn LexerPluginHook>,
+    ) -> Self {
         let normalized = SourceIndex::normalize_pug_input(str_input);
         Self {
             original_input: normalized.clone(),
@@ -142,7 +189,35 @@ impl Lexer {
             interpolation_allowed: true,
             tokens: Vec::new(),
             ended: false,
+            plugin_methods: options.plugin_methods.clone(),
+            hook,
         }
+    }
+
+    fn run_plugin_step(&mut self, method: &str) -> Result<bool, PugError> {
+        if !self.plugin_methods.iter().any(|m| m == method) {
+            return Ok(false);
+        }
+        let Some(hook) = self.hook.take() else {
+            return Ok(false);
+        };
+        let mut state = LexerState {
+            input: std::mem::take(&mut self.input),
+            filename: self.filename.clone(),
+            lineno: self.lineno,
+            colno: self.colno,
+            interpolated: self.interpolated,
+            tokens: std::mem::take(&mut self.tokens),
+            ended: self.ended,
+        };
+        let res = hook.call_lex(method, &mut state);
+        self.hook = Some(hook);
+        self.input = state.input;
+        self.lineno = state.lineno;
+        self.colno = state.colno;
+        self.tokens = state.tokens;
+        self.ended = state.ended;
+        res
     }
 
     fn error(&self, code: &str, message: impl Into<String>) -> PugError {
@@ -710,16 +785,27 @@ impl Lexer {
             self.tokens.push(ended_start);
 
             let child_input = substr_u16(value, index_of_start + 2);
-            let mut child = Lexer::new(
-                child_input,
-                &LexerOptions {
-                    filename: self.filename.clone(),
-                    interpolated: true,
-                    starting_line: Some(self.lineno),
-                    starting_column: Some(self.colno),
-                },
-            );
-            let interpolated_tokens = match child.get_tokens() {
+            let child_opts = LexerOptions {
+                filename: self.filename.clone(),
+                interpolated: true,
+                starting_line: Some(self.lineno),
+                starting_column: Some(self.colno),
+                plugin_methods: self.plugin_methods.clone(),
+            };
+            let (interpolated_res, remaining_child_input, child_colno) =
+                if let Some(hook) = self.hook.take() {
+                    let mut child = Lexer::with_hook(child_input, &child_opts, hook);
+                    let res = child.get_tokens();
+                    let rem = child.input;
+                    let col = child.colno;
+                    self.hook = child.hook.take();
+                    (res, rem, col)
+                } else {
+                    let mut child = Lexer::new(child_input, &child_opts);
+                    let res = child.get_tokens();
+                    (res, child.input, child.colno)
+                };
+            let interpolated_tokens = match interpolated_res {
                 Ok(toks) => toks,
                 Err(ex) => {
                     if let Some(col) = ex.column {
@@ -729,7 +815,7 @@ impl Lexer {
                     return Err(self.error(short_code, ex.msg));
                 }
             };
-            self.colno = child.colno;
+            self.colno = child_colno;
             self.tokens.extend(interpolated_tokens);
 
             let end_interp_tok = self.tok("end-pug-interpolation", None);
@@ -737,7 +823,7 @@ impl Lexer {
             let ended_end = self.tok_end(end_interp_tok);
             self.tokens.push(ended_end);
 
-            return self.add_text(token_type, &child.input, None, 0);
+            return self.add_text(token_type, &remaining_child_input, None, 0);
         }
 
         if index_of_end != usize::MAX
@@ -2114,42 +2200,47 @@ impl Lexer {
     }
 
     pub fn advance(&mut self) -> Result<bool, PugError> {
-        if self.blank()?
-            || self.eos()?
-            || self.end_interpolation()?
-            || self.yield_tok()?
-            || self.doctype()?
-            || self.interpolation()?
-            || self.case_tok()?
-            || self.when()?
-            || self.default_tok()?
-            || self.extends_tok()?
-            || self.append()?
-            || self.prepend()?
-            || self.block()?
-            || self.mixin_block()?
-            || self.include()?
-            || self.mixin()?
-            || self.call()?
-            || self.conditional()?
-            || self.each_of()?
-            || self.each()?
-            || self.while_tok()?
-            || self.tag()?
-            || self.filter(false)?
-            || self.block_code()?
-            || self.code()?
-            || self.id()?
-            || self.dot()?
-            || self.class_name()?
-            || self.attrs()?
-            || self.attributes_block()?
-            || self.indent()?
-            || self.text()?
-            || self.text_html()?
-            || self.comment()?
-            || self.slash()?
-            || self.colon()?
+        macro_rules! step {
+            ($name:literal, $call:expr) => {
+                self.run_plugin_step($name)? || $call?
+            };
+        }
+        if step!("blank", self.blank())
+            || step!("eos", self.eos())
+            || step!("endInterpolation", self.end_interpolation())
+            || step!("yield", self.yield_tok())
+            || step!("doctype", self.doctype())
+            || step!("interpolation", self.interpolation())
+            || step!("case", self.case_tok())
+            || step!("when", self.when())
+            || step!("default", self.default_tok())
+            || step!("extends", self.extends_tok())
+            || step!("append", self.append())
+            || step!("prepend", self.prepend())
+            || step!("block", self.block())
+            || step!("mixinBlock", self.mixin_block())
+            || step!("include", self.include())
+            || step!("mixin", self.mixin())
+            || step!("call", self.call())
+            || step!("conditional", self.conditional())
+            || step!("eachOf", self.each_of())
+            || step!("each", self.each())
+            || step!("while", self.while_tok())
+            || step!("tag", self.tag())
+            || step!("filter", self.filter(false))
+            || step!("blockCode", self.block_code())
+            || step!("code", self.code())
+            || step!("id", self.id())
+            || step!("dot", self.dot())
+            || step!("className", self.class_name())
+            || step!("attrs", self.attrs())
+            || step!("attributesBlock", self.attributes_block())
+            || step!("indent", self.indent())
+            || step!("text", self.text())
+            || step!("textHtml", self.text_html())
+            || step!("comment", self.comment())
+            || step!("slash", self.slash())
+            || step!("colon", self.colon())
         {
             return Ok(true);
         }
@@ -2158,7 +2249,9 @@ impl Lexer {
 
     pub fn get_tokens(&mut self) -> Result<Vec<Token>, PugError> {
         while !self.ended {
-            self.advance()?;
+            if !self.run_plugin_step("advance")? {
+                self.advance()?;
+            }
         }
         Ok(self.tokens.clone())
     }

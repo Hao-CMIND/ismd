@@ -1,13 +1,15 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use pug_ast::{
     Attribute, AttributeBlock, BlockCommentNode, BlockNode, CaseNode, CodeNode, CommentNode,
     ConditionalNode, DoctypeNode, EachNode, EachOfNode, InterpolatedTagNode, MixinNode, Node,
     TagNode, WhenNode, WhileNode,
 };
-use pug_attrs::{AttrsFormat, compile_attrs};
+use pug_attrs::{AttrsFormat, compile_attrs_fast};
 use pug_error::{ErrorOptions, PugError};
-use pug_js::{add_with_checked, eval_constant, js_stringify_str};
+use pug_js::{add_with_checked, eval_constant, push_js_string_inner};
 use serde::{Deserialize, Serialize};
 
 /// Void elements matching `void-elements@3.1.0`.
@@ -58,20 +60,19 @@ pub fn generate_code(ast: &BlockNode, options: &CodeGenOptions) -> Result<String
         ));
     }
 
-    let mut runtime_functions_used = Vec::new();
+    let mut runtime_functions_used: Vec<&'static str> = Vec::with_capacity(8);
     if options.compile_debug && options.inline_runtime_functions {
-        runtime_functions_used.push(String::from("rethrow"));
+        runtime_functions_used.push("rethrow");
     }
 
     let mut generator = CodeGenerator {
         options,
-        buf: Vec::new(),
+        js: String::with_capacity(ast.nodes.len() * 128 + 256),
         runtime_functions_used,
         buffered_concatenation_count: 0,
-        last_buffered_idx: None,
         last_buffered_type: None,
-        buffer_start_char: "",
-        last_buffered: String::new(),
+        buffer_start_char: "\"",
+        last_buffered: String::with_capacity(256),
         has_compiled_doctype: false,
         has_compiled_tag: false,
         indents: 0,
@@ -91,7 +92,7 @@ pub fn generate_code(ast: &BlockNode, options: &CodeGenOptions) -> Result<String
         generator.set_doctype(dt);
     }
     if options.pretty.is_some() {
-        generator.buf.push(String::from("var pug_indent = [];"));
+        generator.push_line("var pug_indent = [];");
     }
 
     generator.visit_block(ast)?;
@@ -110,12 +111,46 @@ struct MixinEntry {
     instances: Vec<(usize, usize)>,
 }
 
+#[inline]
+fn inline_or_pug_runtime_name(inline: bool, name: &'static str) -> &'static str {
+    if inline {
+        match name {
+            "attr" => "pug_attr",
+            "attrs" => "pug_attrs",
+            "classes" => "pug_classes",
+            "classes_array" => "pug_classes_array",
+            "classes_object" => "pug_classes_object",
+            "escape" => "pug_escape",
+            "has_own_property" => "pug_has_own_property",
+            "match_html" => "pug_match_html",
+            "merge" => "pug_merge",
+            "rethrow" => "pug_rethrow",
+            "style" => "pug_style",
+            _ => "pug_unknown",
+        }
+    } else {
+        match name {
+            "attr" => "pug.attr",
+            "attrs" => "pug.attrs",
+            "classes" => "pug.classes",
+            "classes_array" => "pug.classes_array",
+            "classes_object" => "pug.classes_object",
+            "escape" => "pug.escape",
+            "has_own_property" => "pug.has_own_property",
+            "match_html" => "pug.match_html",
+            "merge" => "pug.merge",
+            "rethrow" => "pug.rethrow",
+            "style" => "pug.style",
+            _ => "pug.unknown",
+        }
+    }
+}
+
 struct CodeGenerator<'a> {
     options: &'a CodeGenOptions,
-    buf: Vec<String>,
-    runtime_functions_used: Vec<String>,
+    js: String,
+    runtime_functions_used: Vec<&'static str>,
     buffered_concatenation_count: usize,
-    last_buffered_idx: Option<usize>,
     last_buffered_type: Option<BufferedType>,
     buffer_start_char: &'static str,
     last_buffered: String,
@@ -133,13 +168,61 @@ struct CodeGenerator<'a> {
 }
 
 impl<'a> CodeGenerator<'a> {
-    fn runtime(&mut self, name: &str) -> String {
-        if self.options.inline_runtime_functions {
-            self.runtime_functions_used.push(name.to_string());
-            format!("pug_{name}")
-        } else {
-            format!("pug.{name}")
+    #[inline]
+    fn record_runtime(&mut self, name: &'static str) {
+        if !self.runtime_functions_used.contains(&name) {
+            self.runtime_functions_used.push(name);
         }
+    }
+
+    fn runtime(&mut self, name: &'static str) -> &'static str {
+        if self.options.inline_runtime_functions {
+            self.record_runtime(name);
+        }
+        inline_or_pug_runtime_name(self.options.inline_runtime_functions, name)
+    }
+
+    fn flush_buffered(&mut self) {
+        let Some(kind) = self.last_buffered_type.take() else {
+            return;
+        };
+        if !self.js.is_empty() {
+            self.js.push('\n');
+        }
+        self.js.push_str("pug_html = pug_html + ");
+        match kind {
+            BufferedType::Text => {
+                self.js.push_str(self.buffer_start_char);
+                self.js.push_str(&self.last_buffered);
+                self.js.push_str("\";");
+            }
+            BufferedType::Code => {
+                if self.buffered_concatenation_count == 0 && self.buffer_start_char.is_empty() {
+                    self.js.push_str(&self.last_buffered);
+                    self.js.push(';');
+                } else {
+                    self.js.push('(');
+                    self.js.push_str(self.buffer_start_char);
+                    self.js.push_str(&self.last_buffered);
+                    self.js.push_str(");");
+                }
+            }
+        }
+        self.last_buffered.clear();
+    }
+
+    #[inline]
+    fn start_line(&mut self) {
+        self.flush_buffered();
+        if !self.js.is_empty() {
+            self.js.push('\n');
+        }
+    }
+
+    #[inline]
+    fn push_line(&mut self, line: &str) {
+        self.start_line();
+        self.js.push_str(line);
     }
 
     fn error(&self, message: String, code: &str, line: usize, column: Option<usize>, filename: Option<String>) -> PugError {
@@ -172,7 +255,7 @@ impl<'a> CodeGenerator<'a> {
                 "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">",
             ),
             "basic" => String::from(
-                "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd\">",
+                "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-basic11.dtd\">",
             ),
             "mobile" => String::from(
                 "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">",
@@ -182,35 +265,26 @@ impl<'a> CodeGenerator<'a> {
             ),
             _ => format!("<!DOCTYPE {name}>"),
         };
-        self.terse = dt.to_lowercase() == "<!doctype html>";
+        self.terse = dt.eq_ignore_ascii_case("<!doctype html>");
         self.xml = dt.starts_with("<?xml");
         self.doctype = Some(dt);
     }
 
     fn buffer(&mut self, s: &str) {
-        let escaped = js_stringify_str(s);
-        let inner = &escaped[1..escaped.len() - 1];
-
-        if self.last_buffered_idx == Some(self.buf.len()) && self.buffered_concatenation_count < 100
-        {
+        if self.last_buffered_type.is_some() && self.buffered_concatenation_count < 100 {
             if self.last_buffered_type == Some(BufferedType::Code) {
                 self.last_buffered.push_str(" + \"");
                 self.buffered_concatenation_count += 1;
             }
             self.last_buffered_type = Some(BufferedType::Text);
-            self.last_buffered.push_str(inner);
-            let idx = self.last_buffered_idx.unwrap() - 1;
-            self.buf[idx] = format!(
-                "pug_html = pug_html + {}{}\";",
-                self.buffer_start_char, self.last_buffered
-            );
+            push_js_string_inner(&mut self.last_buffered, s);
         } else {
+            self.flush_buffered();
             self.buffered_concatenation_count = 0;
-            self.buf.push(format!("pug_html = pug_html + \"{inner}\";"));
             self.last_buffered_type = Some(BufferedType::Text);
             self.buffer_start_char = "\"";
-            self.last_buffered = inner.to_string();
-            self.last_buffered_idx = Some(self.buf.len());
+            self.last_buffered.clear();
+            push_js_string_inner(&mut self.last_buffered, s);
         }
     }
 
@@ -219,26 +293,24 @@ impl<'a> CodeGenerator<'a> {
             self.buffer(&cval.to_js_string());
             return;
         }
-        if self.last_buffered_idx == Some(self.buf.len()) && self.buffered_concatenation_count < 100
-        {
+        if self.last_buffered_type.is_some() && self.buffered_concatenation_count < 100 {
             self.buffered_concatenation_count += 1;
             if self.last_buffered_type == Some(BufferedType::Text) {
                 self.last_buffered.push('"');
             }
             self.last_buffered_type = Some(BufferedType::Code);
-            self.last_buffered.push_str(&format!(" + ({src})"));
-            let idx = self.last_buffered_idx.unwrap() - 1;
-            self.buf[idx] = format!(
-                "pug_html = pug_html + ({}{});",
-                self.buffer_start_char, self.last_buffered
-            );
+            self.last_buffered.push_str(" + (");
+            self.last_buffered.push_str(src);
+            self.last_buffered.push(')');
         } else {
+            self.flush_buffered();
             self.buffered_concatenation_count = 0;
-            self.buf.push(format!("pug_html = pug_html + ({src});"));
             self.last_buffered_type = Some(BufferedType::Code);
             self.buffer_start_char = "";
-            self.last_buffered = format!("({src})");
-            self.last_buffered_idx = Some(self.buf.len());
+            self.last_buffered.clear();
+            self.last_buffered.push('(');
+            self.last_buffered.push_str(src);
+            self.last_buffered.push(')');
         }
     }
 
@@ -246,13 +318,15 @@ impl<'a> CodeGenerator<'a> {
         let Some(ref pp) = self.options.pretty else {
             return;
         };
-        let nl = if newline { "\n" } else { "" };
         let count = (self.indents + offset).saturating_sub(1);
-        let indent_str = format!("{nl}{}", pp.repeat(count));
-        self.buffer(&indent_str);
+        if newline {
+            self.buffer("\n");
+        }
+        for _ in 0..count {
+            self.buffer(pp);
+        }
         if self.parent_indents > 0 {
-            self.buf
-                .push(String::from("pug_html = pug_html + pug_indent.join(\"\");"));
+            self.push_line("pug_html = pug_html + pug_indent.join(\"\");");
         }
     }
 
@@ -267,12 +341,14 @@ impl<'a> CodeGenerator<'a> {
         }
         let (line, filename) = node_line_and_filename(node);
         if line > 0 {
-            let mut js = format!(";pug_debug_line = {line}");
+            self.start_line();
+            let _ = write!(self.js, ";pug_debug_line = {line}");
             if let Some(f) = filename {
-                js.push_str(&format!(";pug_debug_filename = {}", js_stringify_str(f)));
+                self.js.push_str(";pug_debug_filename = \"");
+                push_js_string_inner(&mut self.js, f);
+                self.js.push('"');
             }
-            js.push(';');
-            self.buf.push(js);
+            self.js.push(';');
         }
     }
 
@@ -334,12 +410,16 @@ impl<'a> CodeGenerator<'a> {
 
     fn visit_mixin_block(&mut self) {
         if let Some(ref pp) = self.options.pretty {
-            self.buf
-                .push(format!("pug_indent.push({});", js_stringify_str(&pp.repeat(self.indents))));
+            let indents = self.indents;
+            let s = pp.repeat(indents);
+            self.start_line();
+            self.js.push_str("pug_indent.push(\"");
+            push_js_string_inner(&mut self.js, &s);
+            self.js.push_str("\");");
         }
-        self.buf.push(String::from("block && block();"));
+        self.push_line("block && block();");
         if self.options.pretty.is_some() {
-            self.buf.push(String::from("pug_indent.pop();"));
+            self.push_line("pug_indent.pop();");
         }
     }
 
@@ -348,36 +428,36 @@ impl<'a> CodeGenerator<'a> {
         if dynamic {
             self.dynamic_mixins = true;
         }
-        let name_inner = if dynamic && mixin.name.len() >= 3 {
-            mixin.name[2..mixin.name.len() - 1].to_string()
+        let name_expr = if dynamic && mixin.name.len() >= 3 {
+            &mixin.name[2..mixin.name.len() - 1]
         } else {
-            format!("\"{}\"", mixin.name)
+            &mixin.name
         };
-        let name = format!("pug_mixins[{name_inner}]");
         let args = mixin.args.as_deref().unwrap_or("");
-        let key = mixin.name.clone();
-        self.mixins.entry(key.clone()).or_default();
+        let entry = self.mixins.entry(mixin.name.clone()).or_default();
 
         if mixin.call {
-            self.mixins.get_mut(&key).unwrap().used = true;
+            entry.used = true;
             if let Some(ref pp) = self.options.pretty {
-                self.buf.push(format!(
-                    "pug_indent.push({});",
-                    js_stringify_str(&pp.repeat(self.indents))
-                ));
+                let s = pp.repeat(self.indents);
+                self.start_line();
+                self.js.push_str("pug_indent.push(\"");
+                push_js_string_inner(&mut self.js, &s);
+                self.js.push_str("\");");
             }
             let attrs = mixin.attrs.as_deref().unwrap_or(&[]);
-            let mut attrs_blocks = mixin
-                .attribute_blocks
-                .as_deref()
-                .map(extract_attr_blocks)
-                .unwrap_or_default();
+            let attr_blocks = mixin.attribute_blocks.as_deref().unwrap_or(&[]);
 
-            if mixin.block.is_some() || !attrs.is_empty() || !attrs_blocks.is_empty() {
-                self.buf.push(format!("{name}.call({{"));
+            if mixin.block.is_some() || !attrs.is_empty() || !attr_blocks.is_empty() {
+                self.start_line();
+                if dynamic && mixin.name.len() >= 3 {
+                    let _ = write!(self.js, "pug_mixins[{name_expr}].call({{");
+                } else {
+                    let _ = write!(self.js, "pug_mixins[\"{name_expr}\"].call({{");
+                }
 
                 if let Some(ref block) = mixin.block {
-                    self.buf.push(String::from("block: function(){"));
+                    self.push_line("block: function(){");
                     self.parent_indents += 1;
                     let saved_indents = self.indents;
                     self.indents = 0;
@@ -385,76 +465,118 @@ impl<'a> CodeGenerator<'a> {
                     self.indents = saved_indents;
                     self.parent_indents -= 1;
 
-                    if !attrs.is_empty() || !attrs_blocks.is_empty() {
-                        self.buf.push(String::from("},"));
+                    if !attrs.is_empty() || !attr_blocks.is_empty() {
+                        self.push_line("},");
                     } else {
-                        self.buf.push(String::from("}"));
+                        self.push_line("}");
                     }
                 }
 
-                if !attrs_blocks.is_empty() {
-                    if !attrs.is_empty() {
-                        let val = self.compile_attrs_internal(attrs, false);
-                        attrs_blocks.insert(0, val);
-                    }
-                    if attrs_blocks.len() > 1 {
-                        let merge_fn = self.runtime("merge");
-                        self.buf.push(format!(
-                            "attributes: {merge_fn}([{}])",
-                            attrs_blocks.join(",")
-                        ));
+                if !attr_blocks.is_empty() {
+                    let has_attrs = !attrs.is_empty();
+                    let val = if has_attrs {
+                        Some(self.compile_attrs_internal(attrs, false))
                     } else {
-                        self.buf
-                            .push(format!("attributes: {}", attrs_blocks[0]));
+                        None
+                    };
+                    let total_blocks = attr_blocks.len() + usize::from(has_attrs);
+                    if total_blocks > 1 {
+                        let merge_fn = self.runtime("merge");
+                        self.start_line();
+                        self.js.push_str("attributes: ");
+                        self.js.push_str(merge_fn);
+                        self.js.push_str("([");
+                        let mut first = true;
+                        if let Some(ref v) = val {
+                            self.js.push_str(v);
+                            first = false;
+                        }
+                        for ab in attr_blocks {
+                            if !first {
+                                self.js.push(',');
+                            }
+                            first = false;
+                            self.js.push_str(&ab.val);
+                        }
+                        self.js.push_str("])");
+                    } else if let Some(ref v) = val {
+                        self.start_line();
+                        self.js.push_str("attributes: ");
+                        self.js.push_str(v);
+                    } else {
+                        self.start_line();
+                        self.js.push_str("attributes: ");
+                        self.js.push_str(&attr_blocks[0].val);
                     }
                 } else if !attrs.is_empty() {
                     let val = self.compile_attrs_internal(attrs, false);
-                    self.buf.push(format!("attributes: {val}"));
+                    self.start_line();
+                    self.js.push_str("attributes: ");
+                    self.js.push_str(&val);
                 }
 
                 if !args.is_empty() {
-                    self.buf.push(format!("}}, {args});"));
+                    self.start_line();
+                    let _ = write!(self.js, "}}, {args});");
                 } else {
-                    self.buf.push(String::from("});"));
+                    self.push_line("});");
                 }
             } else {
-                self.buf.push(format!("{name}({args});"));
+                self.start_line();
+                if dynamic && mixin.name.len() >= 3 {
+                    let _ = write!(self.js, "pug_mixins[{name_expr}]({args});");
+                } else {
+                    let _ = write!(self.js, "pug_mixins[\"{name_expr}\"]({args});");
+                }
             }
 
             if self.options.pretty.is_some() {
-                self.buf.push(String::from("pug_indent.pop();"));
+                self.push_line("pug_indent.pop();");
             }
         } else {
-            let mixin_start = self.buf.len();
-            let mut arg_parts: Vec<String> = if args.is_empty() {
+            self.flush_buffered();
+            let mixin_start = self.js.len();
+            let mut arg_parts: Vec<&str> = if args.is_empty() {
                 Vec::new()
             } else {
-                args.split(',').map(String::from).collect()
+                args.split(',').collect()
             };
-            let mut rest: Option<String> = None;
+            let mut rest: Option<&str> = None;
             if let Some(last) = arg_parts.last()
                 && let Some(stripped) = last.trim().strip_prefix("...")
             {
-                rest = Some(stripped.to_string());
+                rest = Some(stripped);
                 arg_parts.pop();
             }
 
-            self.buf.push(format!(
-                "{name} = pug_interp = function({}){{",
-                arg_parts.join(",")
-            ));
-            self.buf.push(String::from(
+            self.start_line();
+            if dynamic && mixin.name.len() >= 3 {
+                let _ = write!(self.js, "pug_mixins[{name_expr}] = pug_interp = function(");
+            } else {
+                let _ = write!(self.js, "pug_mixins[\"{name_expr}\"] = pug_interp = function(");
+            }
+            for (i, part) in arg_parts.iter().enumerate() {
+                if i > 0 {
+                    self.js.push(',');
+                }
+                self.js.push_str(part);
+            }
+            self.js.push_str("){");
+            self.push_line(
                 "var block = (this && this.block), attributes = (this && this.attributes) || {};",
-            ));
+            );
             if let Some(rest_name) = rest {
-                self.buf.push(format!("var {rest_name} = [];"));
-                self.buf.push(format!(
+                self.start_line();
+                let _ = write!(self.js, "var {rest_name} = [];");
+                self.start_line();
+                let _ = write!(
+                    self.js,
                     "for (pug_interp = {}; pug_interp < arguments.length; pug_interp++) {{",
                     arg_parts.len()
-                ));
-                self.buf
-                    .push(format!("  {rest_name}.push(arguments[pug_interp]);"));
-                self.buf.push(String::from("}"));
+                );
+                self.start_line();
+                let _ = write!(self.js, "  {rest_name}.push(arguments[pug_interp]);");
+                self.push_line("}");
             }
 
             self.parent_indents += 1;
@@ -462,10 +584,10 @@ impl<'a> CodeGenerator<'a> {
                 self.visit_block(block)?;
             }
             self.parent_indents -= 1;
-            self.buf.push(String::from("};"));
-            let mixin_end = self.buf.len();
+            self.push_line("};");
+            let mixin_end = self.js.len();
             self.mixins
-                .entry(key)
+                .entry(mixin.name.clone())
                 .or_default()
                 .instances
                 .push((mixin_start, mixin_end));
@@ -540,8 +662,7 @@ impl<'a> CodeGenerator<'a> {
         if is_self_closing {
             self.buffer("<");
             self.buffer(name);
-            let attr_blocks = extract_attr_blocks(&tag.attribute_blocks);
-            self.visit_attributes(&tag.attrs, attr_blocks);
+            self.visit_attributes(&tag.attrs, &tag.attribute_blocks);
             if self.terse && !tag.self_closing {
                 self.buffer(">");
             } else {
@@ -561,8 +682,7 @@ impl<'a> CodeGenerator<'a> {
         } else {
             self.buffer("<");
             self.buffer(name);
-            let attr_blocks = extract_attr_blocks(&tag.attribute_blocks);
-            self.visit_attributes(&tag.attrs, attr_blocks);
+            self.visit_attributes(&tag.attrs, &tag.attribute_blocks);
             self.buffer(">");
             if let Some(ref code) = tag.code {
                 self.visit_code(code)?;
@@ -599,8 +719,7 @@ impl<'a> CodeGenerator<'a> {
         if tag.self_closing {
             self.buffer("<");
             self.buffer_expression(&tag.expr);
-            let attr_blocks = extract_attr_blocks(&tag.attribute_blocks);
-            self.visit_attributes(&tag.attrs, attr_blocks);
+            self.visit_attributes(&tag.attrs, &tag.attribute_blocks);
             if self.terse && !tag.self_closing {
                 self.buffer(">");
             } else {
@@ -621,8 +740,7 @@ impl<'a> CodeGenerator<'a> {
         } else {
             self.buffer("<");
             self.buffer_expression(&tag.expr);
-            let attr_blocks = extract_attr_blocks(&tag.attribute_blocks);
-            self.visit_attributes(&tag.attrs, attr_blocks);
+            self.visit_attributes(&tag.attrs, &tag.attribute_blocks);
             self.buffer(">");
             if let Some(ref code) = tag.code {
                 self.visit_code(code)?;
@@ -648,7 +766,9 @@ impl<'a> CodeGenerator<'a> {
         if self.options.pretty.is_some() {
             self.pretty_indent(1, true);
         }
-        self.buffer(&format!("<!--{}-->", comment.val));
+        self.buffer("<!--");
+        self.buffer(&comment.val);
+        self.buffer("-->");
         Ok(())
     }
 
@@ -659,7 +779,8 @@ impl<'a> CodeGenerator<'a> {
         if self.options.pretty.is_some() {
             self.pretty_indent(1, true);
         }
-        self.buffer(&format!("<!--{}", comment.val));
+        self.buffer("<!--");
+        self.buffer(&comment.val);
         self.visit_block(&comment.block)?;
         if self.options.pretty.is_some() {
             self.pretty_indent(1, true);
@@ -671,47 +792,50 @@ impl<'a> CodeGenerator<'a> {
     fn visit_code(&mut self, code: &CodeNode) -> Result<(), PugError> {
         if code.buffer {
             let val = code.val.trim();
-            let mut expr = format!("null == (pug_interp = {val}) ? \"\" : pug_interp");
+            let mut expr = String::with_capacity(val.len() + 48);
             if code.must_escape {
                 let esc = self.runtime("escape");
-                expr = format!("{esc}({expr})");
+                let _ = write!(expr, "{esc}(null == (pug_interp = {val}) ? \"\" : pug_interp)");
+            } else {
+                let _ = write!(expr, "null == (pug_interp = {val}) ? \"\" : pug_interp");
             }
             self.buffer_expression(&expr);
         } else {
-            self.buf.push(code.val.clone());
+            self.push_line(&code.val);
         }
 
         if let Some(ref block) = code.block {
             if !code.buffer {
-                self.buf.push(String::from("{"));
+                self.push_line("{");
             }
             self.visit_block(block)?;
             if !code.buffer {
-                self.buf.push(String::from("}"));
+                self.push_line("}");
             }
         }
         Ok(())
     }
 
     fn visit_conditional(&mut self, cond: &ConditionalNode) -> Result<(), PugError> {
-        self.buf.push(format!("if ({}) {{", cond.test));
+        self.start_line();
+        let _ = write!(self.js, "if ({}) {{", cond.test);
         self.visit_block(&cond.consequent)?;
-        self.buf.push(String::from("}"));
+        self.push_line("}");
         if let Some(ref alt) = cond.alternate {
             match alt.as_ref() {
                 Node::Conditional(elif) => {
-                    self.buf.push(String::from("else"));
+                    self.push_line("else");
                     self.visit_conditional(elif)?;
                 }
                 Node::Block(b) => {
-                    self.buf.push(String::from("else {"));
+                    self.push_line("else {");
                     self.visit_block(b)?;
-                    self.buf.push(String::from("}"));
+                    self.push_line("}");
                 }
                 other => {
-                    self.buf.push(String::from("else {"));
+                    self.push_line("else {");
                     self.visit(other)?;
-                    self.buf.push(String::from("}"));
+                    self.push_line("}");
                 }
             }
         }
@@ -719,105 +843,151 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn visit_while(&mut self, loop_node: &WhileNode) -> Result<(), PugError> {
-        self.buf.push(format!("while ({}) {{", loop_node.test));
+        self.start_line();
+        let _ = write!(self.js, "while ({}) {{", loop_node.test);
         self.visit_block(&loop_node.block)?;
-        self.buf.push(String::from("}"));
+        self.push_line("}");
         Ok(())
     }
 
     fn visit_each(&mut self, each: &EachNode) -> Result<(), PugError> {
-        let index_var_name = each
-            .key
-            .clone()
-            .unwrap_or_else(|| format!("pug_index{}", self.each_count));
+        let count = self.each_count;
         self.each_count += 1;
 
-        self.buf.push(format!(
+        self.start_line();
+        let _ = write!(
+            self.js,
             "// iterate {}\n;(function(){{\n  var $$obj = {};\n  if ('number' == typeof $$obj.length) {{",
             each.obj, each.obj
-        ));
+        );
 
         if each.alternate.is_some() {
-            self.buf.push(String::from("    if ($$obj.length) {"));
+            self.push_line("    if ($$obj.length) {");
         }
 
-        self.buf.push(format!(
-            "      for (var {index_var_name} = 0, $$l = $$obj.length; {index_var_name} < $$l; {index_var_name}++) {{\n        var {} = $$obj[{index_var_name}];",
-            each.val
-        ));
+        self.start_line();
+        if let Some(ref k) = each.key {
+            let _ = write!(
+                self.js,
+                "      for (var {k} = 0, $$l = $$obj.length; {k} < $$l; {k}++) {{\n        var {} = $$obj[{k}];",
+                each.val
+            );
+        } else {
+            let _ = write!(
+                self.js,
+                "      for (var pug_index{count} = 0, $$l = $$obj.length; pug_index{count} < $$l; pug_index{count}++) {{\n        var {} = $$obj[pug_index{count}];",
+                each.val
+            );
+        }
 
         self.visit_block(&each.block)?;
-        self.buf.push(String::from("      }"));
+        self.push_line("      }");
 
         if let Some(ref alt) = each.alternate {
-            self.buf.push(String::from("    } else {"));
+            self.push_line("    } else {");
             self.visit_block(alt)?;
-            self.buf.push(String::from("    }"));
+            self.push_line("    }");
         }
 
-        self.buf.push(format!(
-            "  }} else {{\n    var $$l = 0;\n    for (var {index_var_name} in $$obj) {{\n      $$l++;\n      var {} = $$obj[{index_var_name}];",
-            each.val
-        ));
+        self.start_line();
+        if let Some(ref k) = each.key {
+            let _ = write!(
+                self.js,
+                "  }} else {{\n    var $$l = 0;\n    for (var {k} in $$obj) {{\n      $$l++;\n      var {} = $$obj[{k}];",
+                each.val
+            );
+        } else {
+            let _ = write!(
+                self.js,
+                "  }} else {{\n    var $$l = 0;\n    for (var pug_index{count} in $$obj) {{\n      $$l++;\n      var {} = $$obj[pug_index{count}];",
+                each.val
+            );
+        }
 
         self.visit_block(&each.block)?;
-        self.buf.push(String::from("    }"));
+        self.push_line("    }");
 
         if let Some(ref alt) = each.alternate {
-            self.buf.push(String::from("    if ($$l === 0) {"));
+            self.push_line("    if ($$l === 0) {");
             self.visit_block(alt)?;
-            self.buf.push(String::from("    }"));
+            self.push_line("    }");
         }
 
-        self.buf.push(String::from("  }\n}).call(this);\n"));
+        self.push_line("  }\n}).call(this);\n");
         Ok(())
     }
 
     fn visit_each_of(&mut self, each: &EachOfNode) -> Result<(), PugError> {
-        self.buf.push(format!(
+        self.start_line();
+        let _ = write!(
+            self.js,
             "// iterate {}\nfor (const {} of {}) {{\n",
             each.obj, each.val, each.obj
-        ));
+        );
         self.visit_block(&each.block)?;
-        self.buf.push(String::from("}\n"));
+        self.push_line("}\n");
         Ok(())
     }
 
     fn visit_case(&mut self, case_node: &CaseNode) -> Result<(), PugError> {
-        self.buf.push(format!("switch ({}){{", case_node.expr));
+        self.start_line();
+        let _ = write!(self.js, "switch ({}){{", case_node.expr);
         self.visit_block(&case_node.block)?;
-        self.buf.push(String::from("}"));
+        self.push_line("}");
         Ok(())
     }
 
     fn visit_when(&mut self, when_node: &WhenNode) -> Result<(), PugError> {
         if when_node.expr == "default" {
-            self.buf.push(String::from("default:"));
+            self.push_line("default:");
         } else {
-            self.buf.push(format!("case {}:", when_node.expr));
+            self.start_line();
+            let _ = write!(self.js, "case {}:", when_node.expr);
         }
         if let Some(ref block) = when_node.block {
             self.visit_block(block)?;
-            self.buf.push(String::from("  break;"));
+            self.push_line("  break;");
         }
         Ok(())
     }
 
-    fn visit_attributes(&mut self, attrs: &[Attribute], mut attr_blocks: Vec<String>) {
+    fn visit_attributes(&mut self, attrs: &[Attribute], attr_blocks: &[AttributeBlock]) {
         if !attr_blocks.is_empty() {
-            if !attrs.is_empty() {
-                let val = self.compile_attrs_internal(attrs, false);
-                attr_blocks.insert(0, val);
-            }
+            let has_attrs = !attrs.is_empty();
+            let val = if has_attrs {
+                Some(self.compile_attrs_internal(attrs, false))
+            } else {
+                None
+            };
             let terse = self.terse;
-            if attr_blocks.len() > 1 {
+            let total_blocks = attr_blocks.len() + usize::from(has_attrs);
+            if total_blocks > 1 {
                 let attrs_fn = self.runtime("attrs");
                 let merge_fn = self.runtime("merge");
-                let expr = format!("{attrs_fn}({merge_fn}([{}]), {terse})", attr_blocks.join(","));
+                let mut expr = String::with_capacity(64);
+                expr.push_str(attrs_fn);
+                expr.push('(');
+                expr.push_str(merge_fn);
+                expr.push_str("([");
+                let mut first = true;
+                if let Some(ref v) = val {
+                    expr.push_str(v);
+                    first = false;
+                }
+                for ab in attr_blocks {
+                    if !first {
+                        expr.push(',');
+                    }
+                    first = false;
+                    expr.push_str(&ab.val);
+                }
+                let _ = write!(expr, "]), {terse})");
                 self.buffer_expression(&expr);
             } else {
                 let attrs_fn = self.runtime("attrs");
-                let expr = format!("{attrs_fn}({}, {terse})", attr_blocks[0]);
+                let block_expr = val.as_deref().unwrap_or_else(|| &attr_blocks[0].val);
+                let mut expr = String::with_capacity(attrs_fn.len() + block_expr.len() + 12);
+                let _ = write!(expr, "{attrs_fn}({block_expr}, {terse})");
                 self.buffer_expression(&expr);
             }
         } else if !attrs.is_empty() {
@@ -833,16 +1003,16 @@ impl<'a> CodeGenerator<'a> {
             AttrsFormat::Object
         };
         let inline = self.options.inline_runtime_functions;
-        let mut used = Vec::new();
-        let res = compile_attrs(attrs, terse, format, |name| {
-            if inline {
-                used.push(name.to_string());
-                format!("pug_{name}")
-            } else {
-                format!("pug.{name}")
+        let mut used: Vec<&'static str> = Vec::new();
+        let res = compile_attrs_fast(attrs, terse, format, |name| {
+            if inline && !used.contains(&name) {
+                used.push(name);
             }
+            Cow::Borrowed(inline_or_pug_runtime_name(inline, name))
         });
-        self.runtime_functions_used.extend(used);
+        for name in used {
+            self.record_runtime(name);
+        }
         if buffer {
             self.buffer_expression(&res);
         }
@@ -856,29 +1026,62 @@ impl<'a> CodeGenerator<'a> {
             &self.options.template_name
         };
 
-        if !self.dynamic_mixins {
+        self.flush_buffered();
+
+        let mut js = if !self.dynamic_mixins {
+            let mut dead_ranges: Vec<(usize, usize)> = Vec::new();
             for entry in self.mixins.values() {
                 if !entry.used {
-                    for &(start, end) in &entry.instances {
-                        for line in &mut self.buf[start..end] {
-                            line.clear();
-                        }
-                    }
+                    dead_ranges.extend_from_slice(&entry.instances);
                 }
             }
-        }
-
-        let mut js = self.buf.join("\n");
-        let mut globals = self.options.globals.clone();
-        for &iv in INTERNAL_VARIABLES {
-            globals.push(String::from(iv));
-        }
+            if dead_ranges.is_empty() {
+                std::mem::take(&mut self.js)
+            } else {
+                dead_ranges.sort_unstable_by_key(|r| r.0);
+                let mut filtered = String::with_capacity(self.js.len());
+                let mut cursor = 0;
+                for (start, end) in dead_ranges {
+                    if start > cursor {
+                        filtered.push_str(&self.js[cursor..start]);
+                    }
+                    let slice_start = start.max(cursor);
+                    if end > slice_start {
+                        let nl_count = self.js[slice_start..end]
+                            .bytes()
+                            .filter(|&b| b == b'\n')
+                            .count();
+                        for _ in 0..nl_count {
+                            filtered.push('\n');
+                        }
+                    }
+                    cursor = cursor.max(end);
+                }
+                if cursor < self.js.len() {
+                    filtered.push_str(&self.js[cursor..]);
+                }
+                filtered
+            }
+        } else {
+            std::mem::take(&mut self.js)
+        };
 
         if self.options.use_self {
-            js = format!("var self = locals || {{}};{js}");
+            let mut prefixed = String::with_capacity(js.len() + 24);
+            prefixed.push_str("var self = locals || {};");
+            prefixed.push_str(&js);
+            js = prefixed;
         } else {
-            let mut exclude = globals;
-            for rf in &self.runtime_functions_used {
+            let mut exclude = Vec::with_capacity(
+                self.options.globals.len()
+                    + INTERNAL_VARIABLES.len()
+                    + self.runtime_functions_used.len(),
+            );
+            exclude.extend(self.options.globals.iter().cloned());
+            for &iv in INTERNAL_VARIABLES {
+                exclude.push(String::from(iv));
+            }
+            for &rf in &self.runtime_functions_used {
                 exclude.push(format!("pug_{rf}"));
             }
             js = add_with_checked("locals || {}", &js, &exclude).map_err(|e| {
@@ -895,37 +1098,53 @@ impl<'a> CodeGenerator<'a> {
             })?;
         }
 
+        let runtime_prefix = {
+            let _prof_rt = pug_ast::profile::scope(pug_ast::profile::Stage::RuntimeBuild);
+            pug_runtime::build(&self.runtime_functions_used)
+        };
+
+        let sources_json = if self.options.compile_debug {
+            self.options.debug_sources_json.as_deref()
+        } else {
+            None
+        };
+        let extra = runtime_prefix.len()
+            + fn_name.len()
+            + js.len()
+            + sources_json.map_or(0, |s| s.len() + 26)
+            + 200;
+        let mut out = String::with_capacity(extra);
+        out.push_str(&runtime_prefix);
+        let _ = write!(
+            out,
+            "function {fn_name}(locals) {{var pug_html = \"\", pug_mixins = {{}}, pug_interp;"
+        );
         if self.options.compile_debug {
-            if let Some(ref sources_json) = self.options.debug_sources_json {
-                js = format!("var pug_debug_sources = {sources_json};\n{js}");
-            }
             let rethrow = if self.options.inline_runtime_functions {
                 "pug_rethrow"
             } else {
                 "pug.rethrow"
             };
-            let src_arg = if self.options.debug_sources_json.is_some() {
-                ", pug_debug_sources[pug_debug_filename]"
-            } else {
-                ""
-            };
-            js = format!(
-                "var pug_debug_filename, pug_debug_line;try {{{js}}} catch (err) {{{rethrow}(err, pug_debug_filename, pug_debug_line{src_arg});}}"
+            out.push_str("var pug_debug_filename, pug_debug_line;try {");
+            if let Some(sj) = sources_json {
+                let _ = write!(out, "var pug_debug_sources = {sj};\n");
+            }
+            out.push_str(&js);
+            let _ = write!(
+                out,
+                "}} catch (err) {{{rethrow}(err, pug_debug_filename, pug_debug_line{});}}",
+                if sources_json.is_some() {
+                    ", pug_debug_sources[pug_debug_filename]"
+                } else {
+                    ""
+                }
             );
+        } else {
+            out.push_str(&js);
         }
-
-        let runtime_prefix = {
-            let _prof_rt = pug_ast::profile::scope(pug_ast::profile::Stage::RuntimeBuild);
-            pug_runtime::build(&self.runtime_functions_used)
-        };
-        Ok(format!(
-            "{runtime_prefix}function {fn_name}(locals) {{var pug_html = \"\", pug_mixins = {{}}, pug_interp;{js};return pug_html;}}"
-        ))
+        out.push_str(";return pug_html;}");
+        Ok(out)
     }
-}
-
-fn extract_attr_blocks(blocks: &[AttributeBlock]) -> Vec<String> {
-    blocks.iter().map(|b| b.val.clone()).collect()
 }
 
 fn block_has_non_whitespace_content(block: &BlockNode) -> bool {

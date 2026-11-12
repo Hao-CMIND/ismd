@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+use std::fmt::Write as _;
+
 use pug_ast::Attribute;
 use pug_js::{
     ConstVal, eval_constant, js_stringify_str, js_stringify_val, pug_attr, pug_classes,
-    pug_escape, pug_style,
+    pug_escape, pug_style, push_js_string_inner,
 };
 use serde_json::Value;
 
@@ -24,17 +27,39 @@ pub fn compile_attrs<R>(
 where
     R: FnMut(&str) -> String,
 {
+    compile_attrs_fast(attrs, terse, format, |name| Cow::Owned(runtime(name)))
+}
+
+/// Allocation-minimized variant of `compile_attrs` allowing `&'static str` runtime helpers.
+pub fn compile_attrs_fast<R>(
+    attrs: &[Attribute],
+    terse: bool,
+    format: AttrsFormat,
+    mut runtime: R,
+) -> String
+where
+    R: FnMut(&'static str) -> Cow<'static, str>,
+{
     let _prof_attrs = pug_ast::profile::scope(pug_ast::profile::Stage::Attrs);
-    let mut buf: Vec<String> = Vec::new();
-    let mut classes: Vec<(String, bool)> = Vec::new();
+    if attrs.is_empty() {
+        return match format {
+            AttrsFormat::Html => String::from("\"\""),
+            AttrsFormat::Object => String::from("{}"),
+        };
+    }
+
+    let mut body = String::with_capacity(attrs.len() * 24);
+    let mut last_was_str_lit = false;
+    let mut classes: Vec<(Cow<'_, str>, bool)> = Vec::new();
     let mut class_escaping: Vec<bool> = Vec::new();
 
     for attr in attrs {
         let key = &attr.name;
-        let (mut val, mut is_str) = match &attr.val {
-            Value::String(s) => (s.clone(), true),
-            Value::Bool(b) => (b.to_string(), false),
-            other => (other.to_string(), false),
+        let (mut val, mut is_str): (Cow<'_, str>, bool) = match &attr.val {
+            Value::String(s) => (Cow::Borrowed(s.as_str()), true),
+            Value::Bool(true) => (Cow::Borrowed("true"), false),
+            Value::Bool(false) => (Cow::Borrowed("false"), false),
+            other => (Cow::Owned(other.to_string()), false),
         };
         let must_escape = attr.must_escape;
 
@@ -44,11 +69,11 @@ where
         } else {
             if key == "style" {
                 if is_str && let Some(cval) = eval_constant(&val) {
-                    val = js_stringify_str(&pug_style(&cval));
+                    val = Cow::Owned(js_stringify_str(&pug_style(&cval)));
                     is_str = true;
                 } else {
                     let style_fn = runtime("style");
-                    val = format!("{style_fn}({val})");
+                    val = Cow::Owned(format!("{style_fn}({val})"));
                     is_str = true;
                 }
             }
@@ -57,7 +82,8 @@ where
                 &val,
                 is_str,
                 must_escape,
-                &mut buf,
+                &mut body,
+                &mut last_was_str_lit,
                 terse,
                 format,
                 &mut runtime,
@@ -65,83 +91,132 @@ where
         }
     }
 
-    let mut classes_buf: Vec<String> = Vec::new();
-    if !classes.is_empty() {
-        let mut evaluated_classes: Vec<Option<ConstVal>> = Vec::with_capacity(classes.len());
-        let mut all_const = true;
-        for (cls, is_s) in &classes {
-            let cv = if *is_s { eval_constant(cls) } else { None };
-            if cv.is_none() {
-                all_const = false;
-            }
-            evaluated_classes.push(cv);
-        }
-
-        if all_const {
-            let const_vals: Vec<ConstVal> = evaluated_classes
-                .into_iter()
-                .map(|c| c.unwrap_or(ConstVal::Undefined))
-                .collect();
-            let class_str = pug_classes(&ConstVal::Array(const_vals), Some(&class_escaping));
-            let val_str = js_stringify_str(&class_str);
-            add_attribute(
-                "class",
-                &val_str,
-                true,
-                false,
-                &mut classes_buf,
-                terse,
-                format,
-                &mut runtime,
-            );
-        } else {
-            let mut class_exprs: Vec<String> = Vec::with_capacity(classes.len());
-            for (i, ((cls, _), cv)) in classes.into_iter().zip(evaluated_classes).enumerate() {
-                if let Some(cval) = cv {
-                    let final_val = if class_escaping[i] {
-                        let s = cval.to_js_string();
-                        let escaped = pug_escape(&s);
-                        if escaped == s {
-                            cval
-                        } else {
-                            ConstVal::String(escaped)
-                        }
-                    } else {
-                        cval
-                    };
-                    class_exprs.push(js_stringify_val(&final_val));
-                    class_escaping[i] = false;
+    if classes.is_empty() {
+        return match format {
+            AttrsFormat::Html => {
+                if body.is_empty() {
+                    String::from("\"\"")
                 } else {
-                    class_exprs.push(cls);
+                    body
                 }
             }
-            let classes_fn = runtime("classes");
-            let esc_json =
-                serde_json::to_string(&class_escaping).unwrap_or_else(|_| String::from("[]"));
-            let expr = format!("{classes_fn}([{}], {esc_json})", class_exprs.join(","));
-            add_attribute(
-                "class",
-                &expr,
-                true,
-                false,
-                &mut classes_buf,
-                terse,
-                format,
-                &mut runtime,
-            );
-        }
+            AttrsFormat::Object => {
+                let mut out = String::with_capacity(body.len() + 2);
+                out.push('{');
+                out.push_str(&body);
+                out.push('}');
+                out
+            }
+        };
     }
 
-    classes_buf.extend(buf);
-    match format {
-        AttrsFormat::Html => {
-            if classes_buf.is_empty() {
-                String::from("\"\"")
+    let mut evaluated_classes: Vec<Option<ConstVal>> = Vec::with_capacity(classes.len());
+    let mut all_const = true;
+    for (cls, is_s) in &classes {
+        let cv = if *is_s { eval_constant(cls) } else { None };
+        if cv.is_none() {
+            all_const = false;
+        }
+        evaluated_classes.push(cv);
+    }
+
+    let mut class_out = String::with_capacity(64);
+    let mut class_last_str_lit = false;
+    if all_const {
+        let const_vals: Vec<ConstVal> = evaluated_classes
+            .into_iter()
+            .map(|c| c.unwrap_or(ConstVal::Undefined))
+            .collect();
+        let class_str = pug_classes(&ConstVal::Array(const_vals), Some(&class_escaping));
+        let val_str = js_stringify_str(&class_str);
+        add_attribute(
+            "class",
+            &val_str,
+            true,
+            false,
+            &mut class_out,
+            &mut class_last_str_lit,
+            terse,
+            format,
+            &mut runtime,
+        );
+    } else {
+        let classes_fn = runtime("classes");
+        let mut expr = String::with_capacity(classes.len() * 20 + 24);
+        expr.push_str(&classes_fn);
+        expr.push_str("([");
+        for (i, ((cls, _), cv)) in classes.into_iter().zip(evaluated_classes).enumerate() {
+            if i > 0 {
+                expr.push(',');
+            }
+            if let Some(cval) = cv {
+                let final_val = if class_escaping[i] {
+                    let s = cval.to_js_string();
+                    let escaped = pug_escape(&s);
+                    if escaped == s {
+                        cval
+                    } else {
+                        ConstVal::String(escaped)
+                    }
+                } else {
+                    cval
+                };
+                expr.push_str(&js_stringify_val(&final_val));
+                class_escaping[i] = false;
             } else {
-                classes_buf.join("+")
+                expr.push_str(&cls);
             }
         }
-        AttrsFormat::Object => format!("{{{}}}", classes_buf.join(",")),
+        expr.push_str("], [");
+        for (i, esc) in class_escaping.iter().enumerate() {
+            if i > 0 {
+                expr.push(',');
+            }
+            expr.push_str(if *esc { "true" } else { "false" });
+        }
+        expr.push_str("])");
+        add_attribute(
+            "class",
+            &expr,
+            true,
+            false,
+            &mut class_out,
+            &mut class_last_str_lit,
+            terse,
+            format,
+            &mut runtime,
+        );
+    }
+
+    match format {
+        AttrsFormat::Html => {
+            if body.is_empty() {
+                if class_out.is_empty() {
+                    String::from("\"\"")
+                } else {
+                    class_out
+                }
+            } else if class_out.is_empty() {
+                body
+            } else {
+                class_out.reserve(1 + body.len());
+                class_out.push('+');
+                class_out.push_str(&body);
+                class_out
+            }
+        }
+        AttrsFormat::Object => {
+            let total = 2 + class_out.len() + if !body.is_empty() && !class_out.is_empty() { 1 } else { 0 } + body.len();
+            let mut out = String::with_capacity(total);
+            out.push('{');
+            out.push_str(&class_out);
+            if !class_out.is_empty() && !body.is_empty() {
+                out.push(',');
+            }
+            out.push_str(&body);
+            out.push('}');
+            out
+        }
     }
 }
 
@@ -151,27 +226,31 @@ fn add_attribute<R>(
     val: &str,
     is_str: bool,
     must_escape: bool,
-    buf: &mut Vec<String>,
+    out: &mut String,
+    last_was_str_lit: &mut bool,
     terse: bool,
     format: AttrsFormat,
     runtime: &mut R,
 ) where
-    R: FnMut(&str) -> String,
+    R: FnMut(&'static str) -> Cow<'static, str>,
 {
     if is_str && let Some(cval) = eval_constant(val) {
         match format {
             AttrsFormat::Html => {
-                let str_lit = js_stringify_str(&pug_attr(key, &cval, must_escape, terse));
-                if let Some(last) = buf.last_mut()
-                    && !last.is_empty()
-                    && !str_lit.is_empty()
-                    && last.as_bytes().last() == str_lit.as_bytes().first()
-                {
-                    last.pop();
-                    last.push_str(&str_lit[1..]);
+                let rendered = pug_attr(key, &cval, must_escape, terse);
+                if *last_was_str_lit && out.ends_with('"') {
+                    out.pop();
+                    push_js_string_inner(out, &rendered);
+                    out.push('"');
                 } else {
-                    buf.push(str_lit);
+                    if !out.is_empty() {
+                        out.push('+');
+                    }
+                    out.push('"');
+                    push_js_string_inner(out, &rendered);
+                    out.push('"');
                 }
+                *last_was_str_lit = true;
             }
             AttrsFormat::Object => {
                 let final_val = if must_escape {
@@ -185,27 +264,43 @@ fn add_attribute<R>(
                 } else {
                     cval
                 };
-                buf.push(format!(
-                    "{}: {}",
-                    js_stringify_str(key),
-                    js_stringify_val(&final_val)
-                ));
+                if !out.is_empty() {
+                    out.push(',');
+                }
+                out.push('"');
+                push_js_string_inner(out, key);
+                out.push_str("\": ");
+                out.push_str(&js_stringify_val(&final_val));
+                *last_was_str_lit = false;
             }
         }
     } else {
         match format {
             AttrsFormat::Html => {
                 let attr_fn = runtime("attr");
-                buf.push(format!("{attr_fn}(\"{key}\", {val}, {must_escape}, {terse})"));
+                if !out.is_empty() {
+                    out.push('+');
+                }
+                let _ = write!(out, "{attr_fn}(\"{key}\", {val}, {must_escape}, {terse})");
+                *last_was_str_lit = false;
             }
             AttrsFormat::Object => {
-                let val_expr = if must_escape {
+                if !out.is_empty() {
+                    out.push(',');
+                }
+                out.push('"');
+                push_js_string_inner(out, key);
+                out.push_str("\": ");
+                if must_escape {
                     let esc_fn = runtime("escape");
-                    format!("{esc_fn}({val})")
+                    out.push_str(&esc_fn);
+                    out.push('(');
+                    out.push_str(val);
+                    out.push(')');
                 } else {
-                    val.to_string()
-                };
-                buf.push(format!("{}: {val_expr}", js_stringify_str(key)));
+                    out.push_str(val);
+                }
+                *last_was_str_lit = false;
             }
         }
     }
@@ -213,7 +308,9 @@ fn add_attribute<R>(
 
 /// Legacy helper for static attributes when no runtime function is needed.
 pub fn compile_static_attrs(attrs: &[Attribute]) -> String {
-    let expr = compile_attrs(attrs, false, AttrsFormat::Html, |name| format!("pug.{name}"));
+    let expr = compile_attrs_fast(attrs, false, AttrsFormat::Html, |name| {
+        Cow::Owned(format!("pug.{name}"))
+    });
     eval_constant(&expr)
         .map(|v| v.to_js_string())
         .unwrap_or_default()

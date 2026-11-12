@@ -10,6 +10,7 @@ pub mod scope;
 pub use constant::{
     ConstEvalOutcome, ConstVal, escape_js_stringify_chars, eval_constant, eval_filter_constant,
     is_constant, js_stringify_str, js_stringify_val, pug_attr, pug_classes, pug_escape, pug_style,
+    push_js_string_inner,
 };
 pub use expression::{
     ExpressionAnalysis, ExpressionError, ExpressionOptions, analyze_expression, is_expression,

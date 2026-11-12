@@ -204,18 +204,121 @@ pub fn js_stringify_val(val: &ConstVal) -> String {
     escape_js_stringify_chars(&json)
 }
 
+/// Appends the unquoted JS-string-escaped body of `s` (equivalent to
+/// `&js_stringify_str(s)[1..escaped.len() - 1]`) directly into `out`.
+pub fn push_js_string_inner(out: &mut String, s: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = s.as_bytes();
+    let mut last_idx = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let esc: &str = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'<' => "\\u003C",
+            b'>' => "\\u003E",
+            b'/' => "\\u002F",
+            0x08 => "\\b",
+            0x0c => "\\f",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0x00..=0x1f => {
+                if last_idx < i {
+                    out.push_str(&s[last_idx..i]);
+                }
+                let buf = [
+                    b'\\',
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[(b >> 4) as usize],
+                    HEX[(b & 0xf) as usize],
+                ];
+                // SAFETY: `buf` contains strictly ASCII hex/escape bytes.
+                out.push_str(unsafe { std::str::from_utf8_unchecked(&buf) });
+                i += 1;
+                last_idx = i;
+                continue;
+            }
+            0xE2 if i + 2 < bytes.len() && bytes[i + 1] == 0x80 && (bytes[i + 2] == 0xA8 || bytes[i + 2] == 0xA9) => {
+                if last_idx < i {
+                    out.push_str(&s[last_idx..i]);
+                }
+                if bytes[i + 2] == 0xA8 {
+                    out.push_str("\\u2028");
+                } else {
+                    out.push_str("\\u2029");
+                }
+                i += 3;
+                last_idx = i;
+                continue;
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        if last_idx < i {
+            out.push_str(&s[last_idx..i]);
+        }
+        out.push_str(esc);
+        i += 1;
+        last_idx = i;
+    }
+    if last_idx < s.len() {
+        out.push_str(&s[last_idx..]);
+    }
+}
+
 /// Equivalent to `js-stringify(str)` on a string.
 pub fn js_stringify_str(s: &str) -> String {
-    let json = serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""));
-    escape_js_stringify_chars(&json)
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    push_js_string_inner(&mut out, s);
+    out.push('"');
+    out
 }
 
 pub fn escape_js_stringify_chars(json: &str) -> String {
-    json.replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029")
-        .replace('<', "\\u003C")
-        .replace('>', "\\u003E")
-        .replace('/', "\\u002F")
+    let bytes = json.as_bytes();
+    let mut out: Option<String> = None;
+    let mut last_idx = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let (esc, step) = match bytes[i] {
+            b'<' => ("\\u003C", 1),
+            b'>' => ("\\u003E", 1),
+            b'/' => ("\\u002F", 1),
+            0xE2 if i + 2 < bytes.len() && bytes[i + 1] == 0x80 && bytes[i + 2] == 0xA8 => {
+                ("\\u2028", 3)
+            }
+            0xE2 if i + 2 < bytes.len() && bytes[i + 1] == 0x80 && bytes[i + 2] == 0xA9 => {
+                ("\\u2029", 3)
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        let buf = out.get_or_insert_with(|| String::with_capacity(json.len() + 8));
+        if last_idx < i {
+            buf.push_str(&json[last_idx..i]);
+        }
+        buf.push_str(esc);
+        i += step;
+        last_idx = i;
+    }
+    match out {
+        None => json.to_string(),
+        Some(mut buf) => {
+            if last_idx < json.len() {
+                buf.push_str(&json[last_idx..]);
+            }
+            buf
+        }
+    }
 }
 
 /// Equivalent to `pug_escape` in `pug-runtime@2.0.5`.

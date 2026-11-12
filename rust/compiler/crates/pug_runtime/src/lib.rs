@@ -47,34 +47,98 @@ pub fn source(name: &str) -> Option<&'static str> {
     }
 }
 
+const SORTED_RUNTIME_NAMES: [&str; 11] = [
+    "attr",
+    "attrs",
+    "classes",
+    "classes_array",
+    "classes_object",
+    "escape",
+    "has_own_property",
+    "match_html",
+    "merge",
+    "rethrow",
+    "style",
+];
+
+#[inline]
+fn fn_index(name: &str) -> Option<usize> {
+    match name {
+        "attr" => Some(0),
+        "attrs" => Some(1),
+        "classes" => Some(2),
+        "classes_array" => Some(3),
+        "classes_object" => Some(4),
+        "escape" => Some(5),
+        "has_own_property" => Some(6),
+        "match_html" => Some(7),
+        "merge" => Some(8),
+        "rethrow" => Some(9),
+        "style" => Some(10),
+        _ => None,
+    }
+}
+
 /// Equivalent to `pug-runtime/build.js`: expands transitive runtime helper dependencies,
 /// filters out direct calls to internal names at the top level, sorts alphabetically,
 /// and joins their minified JS sources with `\n`.
 pub fn build<S: AsRef<str>>(functions: &[S]) -> String {
-    let mut queue: Vec<String> = functions
-        .iter()
-        .map(|s| s.as_ref().to_string())
-        .filter(|name| !is_internal(name))
-        .collect();
-
-    let mut fns: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < queue.len() {
-        let current = queue[i].clone();
-        if !fns.contains(&current) {
-            for &dep in dependencies(&current) {
-                queue.push(dep.to_string());
-            }
-            fns.push(current);
+    let mut pending: u16 = 0;
+    for f in functions {
+        let name = f.as_ref();
+        if !is_internal(name)
+            && let Some(idx) = fn_index(name)
+        {
+            pending |= 1 << idx;
         }
-        i += 1;
+    }
+    if pending == 0 {
+        return String::new();
     }
 
-    fns.sort();
-    fns.into_iter()
-        .filter_map(|name| source(&name))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut resolved: u16 = 0;
+    while pending != 0 {
+        let bit = pending.trailing_zeros() as usize;
+        pending &= !(1 << bit);
+        let mask = 1 << bit;
+        if resolved & mask != 0 {
+            continue;
+        }
+        resolved |= mask;
+        for &dep in dependencies(SORTED_RUNTIME_NAMES[bit]) {
+            if let Some(dep_idx) = fn_index(dep) {
+                let dep_mask = 1 << dep_idx;
+                if resolved & dep_mask == 0 {
+                    pending |= dep_mask;
+                }
+            }
+        }
+    }
+
+    let count = resolved.count_ones() as usize;
+    let mut total_len = count.saturating_sub(1);
+    for (i, &name) in SORTED_RUNTIME_NAMES.iter().enumerate() {
+        if resolved & (1 << i) != 0
+            && let Some(src) = source(name)
+        {
+            total_len += src.len();
+        }
+    }
+
+    let mut out = String::with_capacity(total_len);
+    let mut first = true;
+    for (i, &name) in SORTED_RUNTIME_NAMES.iter().enumerate() {
+        if resolved & (1 << i) != 0
+            && let Some(src) = source(name)
+        {
+            if !first {
+                out.push('\n');
+            }
+            first = false;
+            out.push_str(src);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

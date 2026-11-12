@@ -725,3 +725,128 @@ test('Step 6.6: Packed tarball clean install verification in isolated project (E
     fs.rmSync(consumerDir, { recursive: true, force: true });
   }
 });
+
+test('Step 6.7: Sparse plugin lifecycle callbacks (preLex-only, postParse-only, ordering, fs ENOENT parity)', () => {
+  // 1. Only preLex plugin: triggers only preLex and matches rawPug
+  const preLexEvents = [];
+  const preLexPlugin = {
+    preLex(src, opts) {
+      preLexEvents.push({ hook: 'preLex', filename: opts.filename });
+      return src.replace('OLD', 'NEW');
+    },
+  };
+  const src1 = 'p OLD';
+  const rust1 = rustPug.render(src1, { filename: 'a.pug', plugins: [preLexPlugin] });
+  const raw1 = rawPug.render(src1, {
+    filename: 'a.pug',
+    plugins: [{ preLex: (s) => s.replace('OLD', 'NEW') }],
+  });
+  assert.strictEqual(rust1, '<p>NEW</p>');
+  assert.strictEqual(rust1, raw1);
+  assert.deepStrictEqual(preLexEvents, [{ hook: 'preLex', filename: 'a.pug' }]);
+
+  // 2. Only postParse plugin: triggers only postParse and preserves AST roundtrip & parity
+  const postParseEvents = [];
+  const postParsePlugin = {
+    postParse(ast, opts) {
+      postParseEvents.push({
+        hook: 'postParse',
+        type: ast.type,
+        filename: opts.filename,
+      });
+      ast.nodes[0].attrs.push({ name: 'data-pp', val: "'ok'", mustEscape: true });
+      return ast;
+    },
+  };
+  const src2 = 'div hi';
+  const rust2 = rustPug.render(src2, { filename: 'b.pug', plugins: [postParsePlugin] });
+  const raw2 = rawPug.render(src2, {
+    filename: 'b.pug',
+    plugins: [
+      {
+        postParse(ast) {
+          ast.nodes[0].attrs.push({ name: 'data-pp', val: "'ok'", mustEscape: true });
+          return ast;
+        },
+      },
+    ],
+  });
+  assert.strictEqual(rust2, '<div data-pp="ok">hi</div>');
+  assert.strictEqual(rust2, raw2);
+  assert.deepStrictEqual(postParseEvents, [
+    { hook: 'postParse', type: 'Block', filename: 'b.pug' },
+  ]);
+
+  // 3. Multiple plugins implementing the same hook execute in exact registration order
+  const order = [];
+  const pA = {
+    preLex(s) {
+      order.push('A:preLex');
+      return s;
+    },
+    postParse(ast) {
+      order.push('A:postParse');
+      return ast;
+    },
+    preCodeGen(ast) {
+      order.push('A:preCodeGen');
+      return ast;
+    },
+  };
+  const pB = {
+    preLex(s) {
+      order.push('B:preLex');
+      return s.replace('VAL', 'STEP1');
+    },
+    postParse(ast) {
+      order.push('B:postParse');
+      return ast;
+    },
+  };
+  const pC = {
+    preLex(s) {
+      order.push('C:preLex');
+      return s.replace('STEP1', 'STEP2');
+    },
+    preCodeGen(ast) {
+      order.push('C:preCodeGen');
+      return ast;
+    },
+  };
+  const rust3 = rustPug.render('p VAL', { plugins: [pA, pB, pC] });
+  assert.strictEqual(rust3, '<p>STEP2</p>');
+  assert.deepStrictEqual(order, [
+    'A:preLex',
+    'B:preLex',
+    'C:preLex',
+    'A:postParse',
+    'B:postParse',
+    'A:preCodeGen',
+    'C:preCodeGen',
+  ]);
+
+  // 4. Built-in Rust filesystem read preserves ENOENT code & message parity when no customRead
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-step6-enoent-'));
+  try {
+    const entry = path.join(tmpDir, 'entry.pug');
+    fs.writeFileSync(entry, 'include does-not-exist.pug\n');
+    let rustErr = null;
+    let rawErr = null;
+    try {
+      rustPug.compileFile(entry);
+    } catch (e) {
+      rustErr = e;
+    }
+    try {
+      rawPug.compileFile(entry);
+    } catch (e) {
+      rawErr = e;
+    }
+    assert.ok(rustErr && rawErr);
+    assert.strictEqual(rustErr.code, 'ENOENT');
+    assert.strictEqual(rustErr.code, rawErr.code);
+    assert.strictEqual(rustErr.message, rawErr.message);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

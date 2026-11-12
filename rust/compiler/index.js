@@ -746,22 +746,64 @@ function normalizePretty(pretty) {
   return undefined;
 }
 
+function defaultWarn(msg) {
+  console.warn(msg);
+}
+
+const defaultFilterCallback = makeFilterHostCallback(null);
+
+function hasPluginHook(plugins, name) {
+  for (let i = 0; i < plugins.length; i++) {
+    const plugin = plugins[i];
+    if (plugin && plugin[name]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function compileBody(str, options) {
   const plugins = options.plugins || [];
-  const filtersSet = {};
-  Object.keys(filters).forEach(function(key) {
-    filtersSet[key] = filters[key];
-  });
-  if (options.filters) {
-    Object.keys(options.filters).forEach(function(key) {
-      filtersSet[key] = options.filters[key];
-    });
+  const hasModuleFilters = Object.keys(filters).length > 0;
+  const hasOptionFilters =
+    Boolean(options.filters) && Object.keys(options.filters).length > 0;
+  let filterCallback = defaultFilterCallback;
+  if (hasModuleFilters || hasOptionFilters) {
+    const filtersSet = {};
+    if (hasModuleFilters) {
+      Object.keys(filters).forEach(function(key) {
+        filtersSet[key] = filters[key];
+      });
+    }
+    if (hasOptionFilters) {
+      Object.keys(options.filters).forEach(function(key) {
+        filtersSet[key] = options.filters[key];
+      });
+    }
+    filterCallback = makeFilterHostCallback(filtersSet);
   }
 
-  const customResolve = findReplacementFunc(plugins, 'resolve');
-  const customRead = findReplacementFunc(plugins, 'read');
-  const customGenerateCode = findReplacementFunc(plugins, 'generateCode');
-  const lexBridge = buildLexPluginBridge(plugins);
+  const customResolve = plugins.length ? findReplacementFunc(plugins, 'resolve') : null;
+  const customRead = plugins.length ? findReplacementFunc(plugins, 'read') : null;
+  const customGenerateCode = plugins.length
+    ? findReplacementFunc(plugins, 'generateCode')
+    : null;
+  const lexBridge = plugins.length
+    ? buildLexPluginBridge(plugins)
+    : { methods: [], step: undefined };
+
+  const hasPreLex = plugins.length > 0 && hasPluginHook(plugins, 'preLex');
+  const hasPostLex = plugins.length > 0 && hasPluginHook(plugins, 'postLex');
+  const hasPreParse = plugins.length > 0 && hasPluginHook(plugins, 'preParse');
+  const hasPostParse = plugins.length > 0 && hasPluginHook(plugins, 'postParse');
+  const hasPreLoad = plugins.length > 0 && hasPluginHook(plugins, 'preLoad');
+  const hasPostLoad = plugins.length > 0 && hasPluginHook(plugins, 'postLoad');
+  const hasPreFilters = plugins.length > 0 && hasPluginHook(plugins, 'preFilters');
+  const hasPostFilters = plugins.length > 0 && hasPluginHook(plugins, 'postFilters');
+  const hasPreLink = plugins.length > 0 && hasPluginHook(plugins, 'preLink');
+  const hasPostLink = plugins.length > 0 && hasPluginHook(plugins, 'postLink');
+  const hasPreCodeGen = plugins.length > 0 && hasPluginHook(plugins, 'preCodeGen');
+  const hasPostCodeGen = plugins.length > 0 && hasPluginHook(plugins, 'postCodeGen');
 
   function fileOpts(filename, src) {
     const o = Object.assign({}, options);
@@ -771,11 +813,15 @@ function compileBody(str, options) {
   }
 
   const hostCallbacks = {
-    warn: function(msg) {
-      console.warn(msg);
-    },
-    lexPluginStep: lexBridge.step,
-    preLex: function(s, filename) {
+    warn: defaultWarn,
+    filter: filterCallback,
+  };
+
+  if (lexBridge.step) {
+    hostCallbacks.lexPluginStep = lexBridge.step;
+  }
+  if (hasPreLex) {
+    hostCallbacks.preLex = function(s, filename) {
       return applyPlugins(
         s,
         {
@@ -787,14 +833,20 @@ function compileBody(str, options) {
         plugins,
         'preLex'
       );
-    },
-    postLex: function(tokens, filename, src) {
+    };
+  }
+  if (hasPostLex) {
+    hostCallbacks.postLex = function(tokens, filename, src) {
       return applyPlugins(tokens, fileOpts(filename, src), plugins, 'postLex');
-    },
-    preParse: function(tokens, filename, src) {
+    };
+  }
+  if (hasPreParse) {
+    hostCallbacks.preParse = function(tokens, filename, src) {
       return applyPlugins(tokens, fileOpts(filename, src), plugins, 'preParse');
-    },
-    postParse: function(ast, filename, src) {
+    };
+  }
+  if (hasPostParse) {
+    hostCallbacks.postParse = function(ast, filename, src) {
       return dehydrateAstBuffers(
         applyPlugins(
           reviveAstBuffers(ast),
@@ -803,8 +855,10 @@ function compileBody(str, options) {
           'postParse'
         )
       );
-    },
-    preLoad: function(ast, filename, src) {
+    };
+  }
+  if (hasPreLoad) {
+    hostCallbacks.preLoad = function(ast, filename, src) {
       return dehydrateAstBuffers(
         applyPlugins(
           reviveAstBuffers(ast),
@@ -813,24 +867,24 @@ function compileBody(str, options) {
           'preLoad'
         )
       );
-    },
-    resolve: customResolve
-      ? function(targetPath, source, nodeFilename, nodeLine) {
-          try {
-            return String(customResolve(targetPath, source, options));
-          } catch (ex) {
-            if (ex && typeof ex === 'object' && 'message' in ex) {
-              ex.message += '\n    at ' + nodeFilename + ' line ' + nodeLine;
-            }
-            throw ex;
-          }
-        }
-      : undefined,
-    read: function(fullPath, nodeFilename, nodeLine) {
+    };
+  }
+  if (customResolve) {
+    hostCallbacks.resolve = function(targetPath, source, nodeFilename, nodeLine) {
       try {
-        const contents = customRead
-          ? customRead(fullPath, options)
-          : fs.readFileSync(fullPath);
+        return String(customResolve(targetPath, source, options));
+      } catch (ex) {
+        if (ex && typeof ex === 'object' && 'message' in ex) {
+          ex.message += '\n    at ' + nodeFilename + ' line ' + nodeLine;
+        }
+        throw ex;
+      }
+    };
+  }
+  if (customRead) {
+    hostCallbacks.read = function(fullPath, nodeFilename, nodeLine) {
+      try {
+        const contents = customRead(fullPath, options);
         if (Buffer.isBuffer(contents) || typeof contents === 'string') {
           return contents;
         }
@@ -841,56 +895,69 @@ function compileBody(str, options) {
         }
         throw ex;
       }
-    },
-    postLoad: function(ast) {
+    };
+  }
+  if (hasPostLoad) {
+    hostCallbacks.postLoad = function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'postLoad')
       );
-    },
-    preFilters: function(ast) {
+    };
+  }
+  if (hasPreFilters) {
+    hostCallbacks.preFilters = function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'preFilters')
       );
-    },
-    filter: makeFilterHostCallback(filtersSet),
-    postFilters: function(ast) {
+    };
+  }
+  if (hasPostFilters) {
+    hostCallbacks.postFilters = function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'postFilters')
       );
-    },
-    preLink: function(ast) {
+    };
+  }
+  if (hasPreLink) {
+    hostCallbacks.preLink = function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'preLink')
       );
-    },
-    postLink: function(ast) {
+    };
+  }
+  if (hasPostLink) {
+    hostCallbacks.postLink = function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'postLink')
       );
-    },
-    preCodeGen: function(ast) {
+    };
+  }
+  if (hasPreCodeGen) {
+    hostCallbacks.preCodeGen = function(ast) {
       return dehydrateAstBuffers(
         applyPlugins(reviveAstBuffers(ast), options, plugins, 'preCodeGen')
       );
-    },
-    generateCode: customGenerateCode
-      ? function(ast) {
-          return customGenerateCode(reviveAstBuffers(ast), {
-            pretty: options.pretty,
-            compileDebug: options.compileDebug,
-            doctype: options.doctype,
-            inlineRuntimeFunctions: options.inlineRuntimeFunctions,
-            globals: options.globals,
-            self: options.self,
-            includeSources: options.includeSources,
-            templateName: options.templateName,
-          });
-        }
-      : undefined,
-    postCodeGen: function(js) {
+    };
+  }
+  if (customGenerateCode) {
+    hostCallbacks.generateCode = function(ast) {
+      return customGenerateCode(reviveAstBuffers(ast), {
+        pretty: options.pretty,
+        compileDebug: options.compileDebug,
+        doctype: options.doctype,
+        inlineRuntimeFunctions: options.inlineRuntimeFunctions,
+        globals: options.globals,
+        self: options.self,
+        includeSources: options.includeSources,
+        templateName: options.templateName,
+      });
+    };
+  }
+  if (hasPostCodeGen) {
+    hostCallbacks.postCodeGen = function(js) {
       return applyPlugins(js, options, plugins, 'postCodeGen');
-    },
-  };
+    };
+  }
 
   const outcome = native.compileBodySync(
     str,
@@ -913,7 +980,11 @@ function compileBody(str, options) {
   );
 
   if (!outcome.ok && outcome.plainError) {
-    throw new Error(outcome.plainError);
+    const err = new Error(outcome.plainError);
+    if (outcome.plainErrorCode) {
+      err.code = outcome.plainErrorCode;
+    }
+    throw err;
   }
   if (!outcome.ok && outcome.error) {
     const dto = outcome.error;

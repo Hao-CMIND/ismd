@@ -38,6 +38,8 @@ pub struct PugError {
     pub message: String,
     #[serde(skip)]
     pub is_js_host_exception: bool,
+    #[serde(skip)]
+    pub plain_error_code: Option<String>,
 }
 
 impl PugError {
@@ -115,6 +117,7 @@ impl PugError {
             src,
             message: full_message,
             is_js_host_exception: false,
+            plain_error_code: None,
         }
     }
 
@@ -129,6 +132,25 @@ impl PugError {
             src: None,
             message: m,
             is_js_host_exception: true,
+            plain_error_code: None,
+        }
+    }
+
+    pub fn host_exception_with_code(
+        plain_code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        let m = message.into();
+        Self {
+            code: String::from("JS_HOST_EXCEPTION"),
+            msg: m.clone(),
+            line: 0,
+            column: None,
+            filename: None,
+            src: None,
+            message: m,
+            is_js_host_exception: true,
+            plain_error_code: Some(plain_code.into()),
         }
     }
 

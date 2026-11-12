@@ -76,6 +76,7 @@ pub struct NapiCompileOutcome {
     pub dependencies: Option<Vec<String>>,
     pub error: Option<NapiPugErrorDto>,
     pub plain_error: Option<String>,
+    pub plain_error_code: Option<String>,
 }
 
 #[napi]
@@ -774,11 +775,18 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
             })
         } else {
             let bytes = std::fs::read(&full_path).map_err(|e| {
-                annotate_load_error(
-                    PugError::host_exception(format!("{e}, open '{full_path}'")),
-                    node_filename,
-                    node_line,
-                )
+                let pug_err = match e.kind() {
+                    std::io::ErrorKind::NotFound => PugError::host_exception_with_code(
+                        "ENOENT",
+                        format!("ENOENT: no such file or directory, open '{full_path}'"),
+                    ),
+                    std::io::ErrorKind::PermissionDenied => PugError::host_exception_with_code(
+                        "EACCES",
+                        format!("EACCES: permission denied, open '{full_path}'"),
+                    ),
+                    _ => PugError::host_exception(format!("{e}, open '{full_path}'")),
+                };
+                annotate_load_error(pug_err, node_filename, node_line)
             })?;
             let raw = RawContent::Bytes(bytes);
             let text = raw.to_utf8_string();
@@ -1233,18 +1241,11 @@ pub fn handle_filters_sync(
                 return Err(js_err);
             }
             if pug_err.is_js_host_exception {
-                return Ok(NapiCompileOutcome {
+                return Ok(NapiJsonOutcome {
                     ok: false,
-                    body: None,
-                    dependencies: None,
-                    error: None,
-                    plain_error: Some(pug_err.message),
-                })
-                .map(|c| NapiJsonOutcome {
-                    ok: c.ok,
                     data: None,
                     error: None,
-                    plain_error: c.plain_error,
+                    plain_error: Some(pug_err.message),
                 });
             }
             Ok(NapiJsonOutcome {
@@ -1346,6 +1347,7 @@ pub fn compile_body_sync(
             dependencies: Some(res.dependencies),
             error: None,
             plain_error: None,
+            plain_error_code: None,
         }),
         Ok(Err(pug_err)) => {
             if let Some(js_err) = host.pending_js_error.take() {
@@ -1358,6 +1360,7 @@ pub fn compile_body_sync(
                     dependencies: None,
                     error: None,
                     plain_error: Some(pug_err.message),
+                    plain_error_code: pug_err.plain_error_code,
                 });
             }
             Ok(NapiCompileOutcome {
@@ -1366,6 +1369,7 @@ pub fn compile_body_sync(
                 dependencies: None,
                 error: Some(NapiPugErrorDto::from(pug_err)),
                 plain_error: None,
+                plain_error_code: None,
             })
         }
         Err(_panic) => Err(napi::Error::from_reason(

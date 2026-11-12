@@ -1,0 +1,18 @@
+{
+  "name": "@pug-rust/cli",
+  "version": "0.1.0",
+  "description": "CLI for pug-rust-compiler using persistent CompilerSession",
+  "type": "module",
+  "main": "./index.js",
+  "bin": {
+    "pug-rust": "./index.js"
+  },
+  "exports": {
+    ".": "./index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "private": true
+}

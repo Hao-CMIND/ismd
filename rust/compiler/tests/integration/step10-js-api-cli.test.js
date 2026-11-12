@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import pug from '../../index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const cliPath = path.resolve(__dirname, '../../bin/pug-rust.js');
+const cliPath = path.resolve(__dirname, '../../../cli/index.js');
 
 test('Phase 5B: Simple JS API + Advanced createCompiler removeFiles & dispose lifecycle', () => {
   // Simple API

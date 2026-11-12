@@ -7,13 +7,14 @@
   "exports": {
     ".": "./index.js",
     "./plugin": "./plugin.js",
-    "./loader": "./loader.cjs"
+    "./loader": "./loader.js"
   },
   "peerDependencies": {
     "webpack": "^5.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "private": true
 }

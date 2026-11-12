@@ -7,7 +7,7 @@ import pug from '../../index.js';
 import {
   getFilterMetrics,
   resetFilterMetrics,
-} from '../../../../packages/filters/index.js';
+} from '../../../filters/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const compilerEntry = path.resolve(__dirname, '../../index.js');

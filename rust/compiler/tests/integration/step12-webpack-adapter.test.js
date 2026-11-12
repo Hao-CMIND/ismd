@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 
-import { PugRustPlugin, loaderPath } from '../../../../packages/webpack/index.js';
+import { PugRustPlugin, loaderPath } from '../../../webpack/index.js';
 
-const require = createRequire(import.meta.url);
-const pugRustLoader = require(loaderPath);
+const { default: pugRustLoader } = await import(pathToFileURL(loaderPath).href);
 
 function createAsyncTapHook() {
   const taps = [];
@@ -188,19 +187,16 @@ test('Phase 5E: Webpack production run disposes on done and standalone loader fa
 
     // Standalone loader fallback (no _compiler registered)
     const fallbackDeps = [];
-    const output = await new Promise((resolve, reject) => {
-      const ctx = {
+    const output = pugRustLoader.call(
+      {
         resourcePath: site.page1Path,
         getOptions: () => ({ basedir: site.dir }),
         addDependency(dep) {
           fallbackDeps.push(path.resolve(dep));
         },
-        async() {
-          return (err, code) => (err ? reject(err) : resolve(code));
-        },
-      };
-      pugRustLoader.call(ctx, fs.readFileSync(site.page1Path, 'utf8'));
-    });
+      },
+      fs.readFileSync(site.page1Path, 'utf8')
+    );
 
     assert.ok(output.includes('WP Page 1 V1'));
     assert.ok(fallbackDeps.includes(path.resolve(site.layoutPath)));

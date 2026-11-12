@@ -568,7 +568,7 @@ function loadFilterAdapter() {
       cachedFilterAdapter = require('@pug-rust/filters');
     } catch (_) {
       try {
-        cachedFilterAdapter = require(path.join(__dirname, '../../packages/filters/index.cjs'));
+        cachedFilterAdapter = require(path.join(__dirname, '../filters/index.js'));
       } catch (_2) {
         return null;
       }

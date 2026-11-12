@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import pug from '../../rust/compiler/index.js';
-import registry from './session-registry.cjs';
+import pug from '../compiler/index.js';
+import registry from './session-registry.js';
 
 function isPugFile(filePath) {
   return typeof filePath === 'string' && /\.pug$/i.test(filePath);

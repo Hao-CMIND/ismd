@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
-import { pugRustPlugin } from '../../../../packages/vite/index.js';
+import { pugRustPlugin } from '../../../vite/index.js';
 
 function createTempMpaSite(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));

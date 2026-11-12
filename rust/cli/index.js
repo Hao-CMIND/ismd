@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import pug from '../index.js';
+import pug from '../compiler/index.js';
 
 function printHelp() {
   console.log(`Usage: pug-rust [options] <file-or-dir...>

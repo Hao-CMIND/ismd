@@ -1,6 +1,10 @@
-'use strict';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-const path = require('node:path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
 let cachedFilterResolve = null;
 let cachedJstransformerFn = null;
@@ -24,7 +28,7 @@ function requireFilterDep(name) {
   }
 }
 
-function getFilterTransformer(name, currentDirectory) {
+export function getFilterTransformer(name, currentDirectory) {
   const basedir = currentDirectory || process.cwd();
   const cacheKey = basedir + '\0' + name;
   let trPath = jstransformerPathCache.get(cacheKey);
@@ -70,7 +74,7 @@ function getFilterTransformer(name, currentDirectory) {
   return tr;
 }
 
-function runJstransformerFilter(name, str, options, currentDirectory, funcName) {
+export function runJstransformerFilter(name, str, options, currentDirectory, funcName) {
   funcName = funcName || 'render';
   const tr = getFilterTransformer(name, currentDirectory);
   if (!tr) {
@@ -110,7 +114,7 @@ function runJstransformerFilter(name, str, options, currentDirectory, funcName) 
   return { ok: true, value: result };
 }
 
-function createFilterExecutor(filtersSet = {}) {
+export function createFilterExecutor(filtersSet = {}) {
   return {
     execute(filterName, mode, text, fullPath, rawVal, attrsObj, dir) {
       metrics.filterExecutions += 1;
@@ -138,18 +142,18 @@ function createFilterExecutor(filtersSet = {}) {
   };
 }
 
-function createFilterCallback(filtersSet = {}) {
+export function createFilterCallback(filtersSet = {}) {
   const executor = createFilterExecutor(filtersSet);
   return function filterHostCallback(filterName, mode, text, fullPath, rawVal, attrsObj, dir) {
     return executor.execute(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
   };
 }
 
-function getFilterMetrics() {
+export function getFilterMetrics() {
   return { ...metrics };
 }
 
-function resetFilterMetrics() {
+export function resetFilterMetrics() {
   metrics.resolveModuleLoads = 0;
   metrics.jstransformerModuleLoads = 0;
   metrics.resolveLookups = 0;
@@ -158,7 +162,7 @@ function resetFilterMetrics() {
   metrics.filterExecutions = 0;
 }
 
-module.exports = {
+export default {
   getFilterTransformer,
   runJstransformerFilter,
   createFilterExecutor,

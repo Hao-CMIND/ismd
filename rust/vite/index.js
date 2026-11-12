@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import pug from '../../rust/compiler/index.js';
+import pug from '../compiler/index.js';
 
 function isPugFile(filePath) {
   return typeof filePath === 'string' && /\.pug($|\?)/i.test(filePath);

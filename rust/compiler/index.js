@@ -1384,7 +1384,17 @@ export function createCompiler(defaultOptions = {}) {
       }
 
       const normalized = normalizeBatchEntries(entries);
-      const rawResults = session.compileEntries(normalized);
+      const parallelBool =
+        typeof compileOpts.parallel === 'boolean' ? compileOpts.parallel : undefined;
+      const parallelThreshold =
+        typeof compileOpts.parallel === 'number'
+          ? compileOpts.parallel
+          : compileOpts.parallelThreshold;
+      const rawResults = session.compileEntries(
+        normalized,
+        parallelBool,
+        parallelThreshold
+      );
       return wrapBatchResults(rawResults, optsCopy, {
         ...compileOpts,
         entries,
@@ -1415,10 +1425,18 @@ export function compileBatch(entries, defaultOptions = {}, compileOpts = {}) {
   }
 
   const normalized = normalizeBatchEntries(entries);
+  const parallelBool =
+    typeof compileOpts.parallel === 'boolean' ? compileOpts.parallel : undefined;
+  const parallelThreshold =
+    typeof compileOpts.parallel === 'number'
+      ? compileOpts.parallel
+      : compileOpts.parallelThreshold;
   const rawResults = native.compileBatchSync(
     normalized,
     toNapiCompileOptions(defaultOptions),
-    defaultOptions.templateStore || undefined
+    defaultOptions.templateStore || undefined,
+    parallelBool,
+    parallelThreshold
   );
   return wrapBatchResults(rawResults, defaultOptions, {
     ...compileOpts,

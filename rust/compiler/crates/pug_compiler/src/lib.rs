@@ -19,7 +19,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 pub use session::{
-    BatchEntryInput, BatchEntryOutput, CompilerSession, compile_batch_with_store,
+    BatchEntryInput, BatchEntryOutput, CompilerSession, DEFAULT_PARALLEL_THRESHOLD, ParallelMode,
+    compile_batch_with_mode, compile_batch_with_store,
 };
 pub use store::{
     DeclaredBlockMeta, DependencyKind, DependencyRef, ParseKey, ParsedTemplate, SourceEntry,
@@ -1034,6 +1035,63 @@ mod tests {
         let out2 = session.compile_entries(&entries);
         assert!(out2[0].body.as_ref().unwrap().contains("updated"));
         assert!(out2[1].body.as_ref().unwrap().contains("updated"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parallel_batch_compile_matches_serial_deterministically() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug_parallel_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("layout.pug"), "html\n  body\n    block content\n").unwrap();
+        let mut entries = Vec::new();
+        for i in 1..=32 {
+            let p = dir.join(format!("p{i}.pug"));
+            std::fs::write(
+                &p,
+                format!("extends layout.pug\nblock content\n  p= 'Page ' + {i}\n"),
+            )
+            .unwrap();
+            entries.push(BatchEntryInput {
+                id: format!("p{i}"),
+                filename: Some(p.to_string_lossy().into_owned()),
+                source: None,
+                options: None,
+            });
+        }
+
+        let opts = CompileOptions {
+            basedir: Some(dir.to_string_lossy().into_owned()),
+            ..CompileOptions::default()
+        };
+        let serial = compile_batch_with_mode(
+            &entries,
+            &opts,
+            &TemplateStore::new(),
+            ParallelMode::ForceSerial,
+        );
+        let parallel = compile_batch_with_mode(
+            &entries,
+            &opts,
+            &TemplateStore::new(),
+            ParallelMode::ForceParallel,
+        );
+
+        assert_eq!(serial.len(), 32);
+        assert_eq!(parallel.len(), 32);
+        for (s, p) in serial.iter().zip(parallel.iter()) {
+            assert_eq!(s.id, p.id);
+            assert!(s.ok && p.ok);
+            assert_eq!(s.body, p.body);
+            assert_eq!(s.dependencies, p.dependencies);
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

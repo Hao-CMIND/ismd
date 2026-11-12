@@ -4,9 +4,10 @@ use napi_derive::napi;
 use pug_ast::{Attribute, BlockNode, RawContent, Token};
 use pug_attrs::{AttrsFormat, compile_attrs};
 use pug_compiler::{
-    BatchEntryInput, BatchEntryOutput, CompileOptions, CompilerHost, CompilerSession, FileCtx,
-    LoadedFile, TemplateStore, TemplateStoreStats, compile_batch_with_store,
-    compile_body_with_store, default_global_store, default_resolve,
+    BatchEntryInput, BatchEntryOutput, CompileOptions, CompilerHost, CompilerSession,
+    DEFAULT_PARALLEL_THRESHOLD, FileCtx, LoadedFile, ParallelMode, TemplateStore,
+    TemplateStoreStats, compile_batch_with_mode, compile_body_with_store, default_global_store,
+    default_resolve,
 };
 use pug_error::{ErrorOptions, PugError};
 use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
@@ -1733,11 +1734,25 @@ impl NativeCompilerSession {
     }
 
     #[napi]
-    pub fn compile_entries(&self, entries: Vec<NapiBatchEntryInput>) -> Result<Vec<NapiBatchEntryResult>> {
+    pub fn compile_entries(
+        &self,
+        entries: Vec<NapiBatchEntryInput>,
+        parallel: Option<bool>,
+        parallel_threshold: Option<u32>,
+    ) -> Result<Vec<NapiBatchEntryResult>> {
         let _prof_session = pug_ast::profile::begin_session();
         let batch_inputs = convert_batch_inputs(entries);
+        let mode = match parallel {
+            Some(true) => ParallelMode::ForceParallel,
+            Some(false) => ParallelMode::ForceSerial,
+            None => ParallelMode::Auto(
+                parallel_threshold
+                    .map(|v| v as usize)
+                    .unwrap_or(DEFAULT_PARALLEL_THRESHOLD),
+            ),
+        };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.inner.compile_entries(&batch_inputs)
+            self.inner.compile_entries_with_mode(&batch_inputs, mode)
         }));
         match outcome {
             Ok(results) => Ok(results.into_iter().map(NapiBatchEntryResult::from).collect()),
@@ -1753,6 +1768,8 @@ pub fn compile_batch_sync(
     entries: Vec<NapiBatchEntryInput>,
     default_options: Option<NapiCompileOptions>,
     store: Option<&NativeTemplateStore>,
+    parallel: Option<bool>,
+    parallel_threshold: Option<u32>,
 ) -> Result<Vec<NapiBatchEntryResult>> {
     let _prof_session = pug_ast::profile::begin_session();
     let opts = default_options
@@ -1763,8 +1780,17 @@ pub fn compile_batch_sync(
         Some(s) => s.inner.as_ref(),
         None => default_global_store(),
     };
+    let mode = match parallel {
+        Some(true) => ParallelMode::ForceParallel,
+        Some(false) => ParallelMode::ForceSerial,
+        None => ParallelMode::Auto(
+            parallel_threshold
+                .map(|v| v as usize)
+                .unwrap_or(DEFAULT_PARALLEL_THRESHOLD),
+        ),
+    };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile_batch_with_store(&batch_inputs, &opts, store_ref)
+        compile_batch_with_mode(&batch_inputs, &opts, store_ref, mode)
     }));
     match outcome {
         Ok(results) => Ok(results.into_iter().map(NapiBatchEntryResult::from).collect()),

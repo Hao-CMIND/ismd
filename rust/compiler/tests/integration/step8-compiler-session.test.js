@@ -69,6 +69,31 @@ test('Phase 3C: createCompiler and compileBatch share layout/includes across bat
     assert.equal(errRes.length, 1);
     assert.equal(errRes[0].ok, false);
     assert.equal(errRes[0].error.code, 'ENOENT');
+
+    // Phase 3D: Rayon parallel vs serial deterministic parity across 32 pages
+    const manyPages = [];
+    for (let i = 1; i <= 32; i++) {
+      const p = path.join(dir, `par${i}.pug`);
+      fs.writeFileSync(p, `extends layout.pug\nblock content\n  p Parallel ${i} #{name}\n`, 'utf8');
+      manyPages.push(p);
+    }
+    const serialOut = pug.compileBatch(
+      manyPages,
+      { basedir: dir, compileDebug: false },
+      { parallel: false }
+    );
+    const parallelOut = pug.compileBatch(
+      manyPages,
+      { basedir: dir, compileDebug: false },
+      { parallel: true }
+    );
+    assert.equal(serialOut.length, 32);
+    assert.equal(parallelOut.length, 32);
+    for (let i = 0; i < 32; i++) {
+      assert.equal(parallelOut[i].id, serialOut[i].id);
+      assert.equal(parallelOut[i].body, serialOut[i].body);
+      assert.equal(parallelOut[i].fn({ name: 'OK' }), serialOut[i].fn({ name: 'OK' }));
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

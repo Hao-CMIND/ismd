@@ -1,11 +1,37 @@
 use std::sync::Arc;
 
 use pug_error::PugError;
+use rayon::prelude::*;
 
 use crate::{
     CompileOptions, DefaultHost, TemplateStore, TemplateStoreStats, compile_body_with_store,
     io_read_error,
 };
+
+pub const DEFAULT_PARALLEL_THRESHOLD: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelMode {
+    Auto(usize),
+    ForceParallel,
+    ForceSerial,
+}
+
+impl Default for ParallelMode {
+    fn default() -> Self {
+        Self::Auto(DEFAULT_PARALLEL_THRESHOLD)
+    }
+}
+
+impl ParallelMode {
+    pub fn should_parallelize(self, len: usize) -> bool {
+        match self {
+            ParallelMode::Auto(threshold) => len >= threshold,
+            ParallelMode::ForceParallel => len > 1,
+            ParallelMode::ForceSerial => false,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct BatchEntryInput {
@@ -77,6 +103,14 @@ impl CompilerSession {
     pub fn compile_entries(&self, entries: &[BatchEntryInput]) -> Vec<BatchEntryOutput> {
         compile_batch_with_store(entries, &self.default_options, &self.store)
     }
+
+    pub fn compile_entries_with_mode(
+        &self,
+        entries: &[BatchEntryInput],
+        mode: ParallelMode,
+    ) -> Vec<BatchEntryOutput> {
+        compile_batch_with_mode(entries, &self.default_options, &self.store, mode)
+    }
 }
 
 pub fn compile_batch_with_store(
@@ -84,10 +118,26 @@ pub fn compile_batch_with_store(
     default_options: &CompileOptions,
     store: &TemplateStore,
 ) -> Vec<BatchEntryOutput> {
-    entries
-        .iter()
-        .map(|entry| compile_single_entry(entry, default_options, store))
-        .collect()
+    compile_batch_with_mode(entries, default_options, store, ParallelMode::default())
+}
+
+pub fn compile_batch_with_mode(
+    entries: &[BatchEntryInput],
+    default_options: &CompileOptions,
+    store: &TemplateStore,
+    mode: ParallelMode,
+) -> Vec<BatchEntryOutput> {
+    if mode.should_parallelize(entries.len()) {
+        entries
+            .par_iter()
+            .map(|entry| compile_single_entry(entry, default_options, store))
+            .collect()
+    } else {
+        entries
+            .iter()
+            .map(|entry| compile_single_entry(entry, default_options, store))
+            .collect()
+    }
 }
 
 pub(crate) fn compile_single_entry(

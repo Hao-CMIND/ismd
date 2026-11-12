@@ -189,6 +189,80 @@ impl CompilerSession {
         self.build_invalidation_report(changed_files, &changed_ids)
     }
 
+    pub fn remove_files(&self, paths: &[String]) -> IncrementalUpdateReport {
+        let mut changed_files = Vec::new();
+        let mut removed_ids = Vec::new();
+        let mut removed_norms = HashSet::new();
+        for path in paths {
+            let norm = normalize_cache_path(path);
+            removed_norms.insert(norm);
+            if let Some(id) = self.store.id_for_path(path) {
+                changed_files.push(path.clone());
+                removed_ids.push(id);
+            }
+        }
+
+        // Remove matching registered entries cleanly and keep pending_affected indices consistent.
+        {
+            let mut reg = self
+                .registered_entries
+                .write()
+                .expect("registered_entries rwlock poisoned");
+            let mut by_path = self
+                .entry_index_by_path
+                .write()
+                .expect("entry_index_by_path rwlock poisoned");
+            let mut pending = self
+                .pending_affected
+                .write()
+                .expect("pending_affected rwlock poisoned");
+
+            let old_pending: HashSet<usize> = pending.iter().copied().collect();
+            let mut new_reg = Vec::with_capacity(reg.len());
+            let mut new_by_path = HashMap::with_capacity(by_path.len());
+            let mut new_pending = Vec::new();
+
+            for (old_idx, entry) in reg.drain(..).enumerate() {
+                let key_path = entry
+                    .filename
+                    .as_deref()
+                    .or(entry.options.as_ref().and_then(|o| o.filename.as_deref()))
+                    .unwrap_or(&entry.id);
+                let norm = normalize_cache_path(key_path);
+                if removed_norms.contains(&norm) {
+                    continue;
+                }
+                let new_idx = new_reg.len();
+                new_reg.push(entry);
+                new_by_path.insert(norm, new_idx);
+                if old_pending.contains(&old_idx) {
+                    new_pending.push(new_idx);
+                }
+            }
+
+            *reg = new_reg;
+            *by_path = new_by_path;
+            *pending = new_pending;
+        }
+
+        if removed_ids.is_empty() {
+            for path in paths {
+                let _ = self.store.remove_path(path);
+            }
+            return IncrementalUpdateReport::default();
+        }
+
+        let report = self.build_invalidation_report(changed_files, &removed_ids);
+        for path in paths {
+            let _ = self.store.remove_path(path);
+        }
+        report
+    }
+
+    pub fn dispose(&self) {
+        self.clear();
+    }
+
     fn build_invalidation_report(
         &self,
         changed_files: Vec<String>,

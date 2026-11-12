@@ -1398,6 +1398,9 @@ pub struct NapiTemplateStoreStats {
     pub sources: u32,
     pub parsed: u32,
     pub resolved: u32,
+    pub outputs: u32,
+    pub dag_nodes: u32,
+    pub dag_edges: u32,
     pub source_hits: f64,
     pub source_misses: f64,
     pub parse_hits: f64,
@@ -1412,6 +1415,9 @@ impl From<TemplateStoreStats> for NapiTemplateStoreStats {
             sources: s.sources as u32,
             parsed: s.parsed as u32,
             resolved: s.resolved as u32,
+            outputs: s.outputs as u32,
+            dag_nodes: s.dag_nodes as u32,
+            dag_edges: s.dag_edges as u32,
             source_hits: s.source_hits as f64,
             source_misses: s.source_misses as f64,
             parse_hits: s.parse_hits as f64,
@@ -1747,6 +1753,16 @@ impl NativeCompilerSession {
     #[napi]
     pub fn invalidate_files(&self, paths: Vec<String>) -> NapiIncrementalUpdateReport {
         NapiIncrementalUpdateReport::from(self.inner.invalidate_files_incremental(&paths))
+    }
+
+    #[napi]
+    pub fn remove_files(&self, paths: Vec<String>) -> NapiIncrementalUpdateReport {
+        NapiIncrementalUpdateReport::from(self.inner.remove_files(&paths))
+    }
+
+    #[napi]
+    pub fn dispose(&self) {
+        self.inner.dispose();
     }
 
     #[napi]

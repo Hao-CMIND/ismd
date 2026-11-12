@@ -117,6 +117,9 @@ pub struct TemplateStoreStats {
     pub sources: usize,
     pub parsed: usize,
     pub resolved: usize,
+    pub outputs: usize,
+    pub dag_nodes: usize,
+    pub dag_edges: usize,
     pub source_hits: u64,
     pub source_misses: u64,
     pub parse_hits: u64,
@@ -527,11 +530,33 @@ impl TemplateStore {
         arc
     }
 
+    /// Removes all cached state and DAG edges for `path`, returning its `TemplateId` if known.
+    pub fn remove_path(&self, path: &str) -> Option<TemplateId> {
+        let id = self.invalidate_path_checked(path);
+        let norm = normalize_cache_path(path);
+        if let Some(tid) = id {
+            self.dag.remove_template(tid);
+            self.path_ids
+                .write()
+                .expect("path_ids rwlock poisoned")
+                .remove(&norm);
+            self.id_paths
+                .write()
+                .expect("id_paths rwlock poisoned")
+                .remove(&tid);
+        }
+        id
+    }
+
     pub fn stats(&self) -> TemplateStoreStats {
+        let dag_stats = self.dag.stats();
         TemplateStoreStats {
             sources: self.sources.read().expect("sources rwlock poisoned").len(),
             parsed: self.parsed.read().expect("parsed rwlock poisoned").len(),
             resolved: self.resolved.read().expect("resolved rwlock poisoned").len(),
+            outputs: self.outputs.read().expect("outputs rwlock poisoned").len(),
+            dag_nodes: dag_stats.nodes,
+            dag_edges: dag_stats.edges,
             source_hits: self.source_hits.load(Ordering::Relaxed),
             source_misses: self.source_misses.load(Ordering::Relaxed),
             parse_hits: self.parse_hits.load(Ordering::Relaxed),

@@ -933,7 +933,7 @@ function compileBody(str, options) {
   if (customGenerateCode) {
     hostCallbacks.generateCode = function(ast) {
       return customGenerateCode(reviveAstBuffers(ast), {
-        pretty: options.pretty,
+        pretty: normalizePretty(options.pretty),
         compileDebug: options.compileDebug,
         doctype: options.doctype,
         inlineRuntimeFunctions: options.inlineRuntimeFunctions,
@@ -1033,7 +1033,7 @@ export function compile(str, options) {
     compileDebug: options.compileDebug !== false,
     filename: options.filename,
     basedir: options.basedir,
-    pretty: options.pretty,
+    pretty: normalizePretty(options.pretty),
     doctype: options.doctype,
     inlineRuntimeFunctions: options.inlineRuntimeFunctions,
     globals: options.globals,
@@ -1065,7 +1065,7 @@ export function compileClientWithDependenciesTracked(str, options) {
     compileDebug: options.compileDebug,
     filename: options.filename,
     basedir: options.basedir,
-    pretty: options.pretty,
+    pretty: normalizePretty(options.pretty),
     doctype: options.doctype,
     inlineRuntimeFunctions: options.inlineRuntimeFunctions !== false,
     globals: options.globals,
@@ -1202,7 +1202,7 @@ function toNapiCompileOptions(options = {}) {
     compileDebug: options.compileDebug !== false,
     filename: options.filename,
     basedir: options.basedir,
-    pretty: options.pretty,
+    pretty: normalizePretty(options.pretty),
     doctype: options.doctype,
     inlineRuntimeFunctions: Boolean(options.inlineRuntimeFunctions),
     globals: Array.isArray(options.globals) ? options.globals : [],
@@ -1333,19 +1333,41 @@ export function createCompiler(defaultOptions = {}) {
     optsCopy.templateStore || undefined
   );
   const fnCache = new Map();
+  let disposed = false;
+
+  function assertAlive() {
+    if (disposed) {
+      throw new Error('CompilerSession has been disposed');
+    }
+  }
 
   return {
     updateFiles(files) {
+      assertAlive();
       return session.updateFiles(normalizeVirtualFiles(files));
     },
     invalidateFiles(paths) {
+      assertAlive();
       const list = Array.isArray(paths) ? paths : [paths];
       return session.invalidateFiles(list.map(String));
     },
+    removeFiles(paths) {
+      assertAlive();
+      const list = (Array.isArray(paths) ? paths : [paths]).map(String);
+      const normSet = new Set(list.map((p) => path.resolve(p).toLowerCase()));
+      for (const key of fnCache.keys()) {
+        if (list.includes(key) || normSet.has(path.resolve(String(key)).toLowerCase())) {
+          fnCache.delete(key);
+        }
+      }
+      return session.removeFiles(list);
+    },
     getAffectedEntries() {
+      assertAlive();
       return session.getAffectedEntries();
     },
     compileAffected(compileOpts = {}) {
+      assertAlive();
       if (session.getAffectedEntries().length === 0) {
         return [];
       }
@@ -1359,13 +1381,31 @@ export function createCompiler(defaultOptions = {}) {
       return wrapBatchResults(rawResults, optsCopy, { ...compileOpts, fnCache });
     },
     clear() {
+      assertAlive();
       fnCache.clear();
       session.clear();
     },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      fnCache.clear();
+      session.dispose();
+    },
+    get isDisposed() {
+      return disposed;
+    },
     stats() {
-      return session.stats();
+      const s = session.stats();
+      return {
+        ...s,
+        fnCache: fnCache.size,
+      };
+    },
+    compileBatch(entries, compileOpts = {}) {
+      return this.compileEntries(entries, compileOpts);
     },
     compileEntries(entries, compileOpts = {}) {
+      assertAlive();
       if (
         hasHostCustomizations(optsCopy) ||
         entries.some((e) => typeof e === 'object' && hasHostCustomizations(e.options))

@@ -5,9 +5,9 @@ use pug_ast::{Attribute, BlockNode, RawContent, Token};
 use pug_attrs::{AttrsFormat, compile_attrs};
 use pug_compiler::{
     BatchEntryInput, BatchEntryOutput, CompileOptions, CompilerHost, CompilerSession,
-    DEFAULT_PARALLEL_THRESHOLD, FileCtx, LoadedFile, ParallelMode, TemplateStore,
-    TemplateStoreStats, compile_batch_with_mode, compile_body_with_store, default_global_store,
-    default_resolve,
+    DEFAULT_PARALLEL_THRESHOLD, FileCtx, IncrementalUpdateReport, LoadedFile, ParallelMode,
+    TemplateStore, TemplateStoreStats, compile_batch_with_mode, compile_body_with_store,
+    default_global_store, default_resolve,
 };
 use pug_error::{ErrorOptions, PugError};
 use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
@@ -1687,6 +1687,26 @@ fn convert_batch_inputs(entries: Vec<NapiBatchEntryInput>) -> Vec<BatchEntryInpu
         .collect()
 }
 
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct NapiIncrementalUpdateReport {
+    pub changed: bool,
+    pub changed_files: Vec<String>,
+    pub invalidated_templates: Vec<String>,
+    pub affected_entries: Vec<String>,
+}
+
+impl From<IncrementalUpdateReport> for NapiIncrementalUpdateReport {
+    fn from(r: IncrementalUpdateReport) -> Self {
+        Self {
+            changed: r.changed,
+            changed_files: r.changed_files,
+            invalidated_templates: r.invalidated_templates,
+            affected_entries: r.affected_entries,
+        }
+    }
+}
+
 #[napi]
 pub struct NativeCompilerSession {
     inner: CompilerSession,
@@ -1710,17 +1730,49 @@ impl NativeCompilerSession {
     }
 
     #[napi]
-    pub fn update_files(&self, files: Vec<NapiVirtualFile>) {
+    pub fn update_files(&self, files: Vec<NapiVirtualFile>) -> NapiIncrementalUpdateReport {
         let pairs: Vec<(String, String)> = files
             .into_iter()
             .map(|f| (f.path, f.source))
             .collect();
-        self.inner.update_files(&pairs);
+        NapiIncrementalUpdateReport::from(self.inner.update_files_incremental(&pairs))
     }
 
     #[napi]
-    pub fn invalidate_files(&self, paths: Vec<String>) {
-        self.inner.invalidate_files(&paths);
+    pub fn invalidate_files(&self, paths: Vec<String>) -> NapiIncrementalUpdateReport {
+        NapiIncrementalUpdateReport::from(self.inner.invalidate_files_incremental(&paths))
+    }
+
+    #[napi]
+    pub fn get_affected_entries(&self) -> Vec<String> {
+        self.inner.affected_entries()
+    }
+
+    #[napi]
+    pub fn compile_affected(
+        &self,
+        parallel: Option<bool>,
+        parallel_threshold: Option<u32>,
+    ) -> Result<Vec<NapiBatchEntryResult>> {
+        let _prof_session = pug_ast::profile::begin_session();
+        let mode = match parallel {
+            Some(true) => ParallelMode::ForceParallel,
+            Some(false) => ParallelMode::ForceSerial,
+            None => ParallelMode::Auto(
+                parallel_threshold
+                    .map(|v| v as usize)
+                    .unwrap_or(DEFAULT_PARALLEL_THRESHOLD),
+            ),
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.compile_affected_with_mode(mode)
+        }));
+        match outcome {
+            Ok(results) => Ok(results.into_iter().map(NapiBatchEntryResult::from).collect()),
+            Err(_) => Err(napi::Error::from_reason(
+                "Internal Rust panic caught at FFI boundary in NativeCompilerSession::compile_affected",
+            )),
+        }
     }
 
     #[napi]

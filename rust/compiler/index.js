@@ -1352,11 +1352,27 @@ export function createCompiler(defaultOptions = {}) {
 
   return {
     updateFiles(files) {
-      session.updateFiles(normalizeVirtualFiles(files));
+      return session.updateFiles(normalizeVirtualFiles(files));
     },
     invalidateFiles(paths) {
       const list = Array.isArray(paths) ? paths : [paths];
-      session.invalidateFiles(list.map(String));
+      return session.invalidateFiles(list.map(String));
+    },
+    getAffectedEntries() {
+      return session.getAffectedEntries();
+    },
+    compileAffected(compileOpts = {}) {
+      if (session.getAffectedEntries().length === 0) {
+        return [];
+      }
+      const parallelBool =
+        typeof compileOpts.parallel === 'boolean' ? compileOpts.parallel : undefined;
+      const parallelThreshold =
+        typeof compileOpts.parallel === 'number'
+          ? compileOpts.parallel
+          : compileOpts.parallelThreshold;
+      const rawResults = session.compileAffected(parallelBool, parallelThreshold);
+      return wrapBatchResults(rawResults, optsCopy, compileOpts);
     },
     clear() {
       session.clear();

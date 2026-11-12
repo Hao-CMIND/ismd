@@ -98,3 +98,76 @@ test('Phase 3C: createCompiler and compileBatch share layout/includes across bat
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Phase 4C: createCompiler incremental HMR (noop, single page, header, layout, compileAffected)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-hmr-'));
+  try {
+    const headerPath = path.join(dir, 'header.pug');
+    const footerPath = path.join(dir, 'footer.pug');
+    const layoutPath = path.join(dir, 'layout.pug');
+    const initialHeader = 'header.site InitialHeader\n';
+    const initialFooter = 'footer.site InitialFooter\n';
+    const initialLayout =
+      'html\n  body\n    include header.pug\n    block content\n    include footer.pug\n';
+    fs.writeFileSync(headerPath, initialHeader, 'utf8');
+    fs.writeFileSync(footerPath, initialFooter, 'utf8');
+    fs.writeFileSync(layoutPath, initialLayout, 'utf8');
+
+    const pages = [];
+    for (let i = 1; i <= 10; i++) {
+      const p = path.join(dir, `page${i}.pug`);
+      fs.writeFileSync(p, `extends layout.pug\nblock content\n  p Page ${i} #{name}\n`, 'utf8');
+      pages.push(p);
+    }
+
+    const compiler = pug.createCompiler({ basedir: dir, compileDebug: false });
+    const initial = compiler.compileEntries(pages);
+    assert.equal(initial.length, 10);
+
+    // 1. Identical source update => no-op
+    const noopReport = compiler.updateFiles({ [headerPath]: initialHeader });
+    assert.equal(noopReport.changed, false);
+    assert.deepEqual(noopReport.changedFiles, []);
+    assert.deepEqual(noopReport.invalidatedTemplates, []);
+    assert.deepEqual(noopReport.affectedEntries, []);
+    assert.deepEqual(compiler.getAffectedEntries(), []);
+    assert.deepEqual(compiler.compileAffected(), []);
+
+    // 2. Single page update => only 1 affected entry
+    const pageReport = compiler.updateFiles({
+      [pages[2]]: 'extends layout.pug\nblock content\n  p Page 3 Hot #{name}\n',
+    });
+    assert.equal(pageReport.changed, true);
+    assert.deepEqual(pageReport.affectedEntries, [pages[2]]);
+    assert.deepEqual(compiler.getAffectedEntries(), [pages[2]]);
+    const pageRebuilt = compiler.compileAffected();
+    assert.equal(pageRebuilt.length, 1);
+    assert.equal(pageRebuilt[0].id, pages[2]);
+    assert.ok(pageRebuilt[0].fn({ name: 'HMR' }).includes('Page 3 Hot HMR'));
+    assert.deepEqual(compiler.getAffectedEntries(), []);
+
+    // 3. Header update => all 10 entries affected
+    const headerReport = compiler.updateFiles({
+      [headerPath]: 'header.site UpdatedHeader\n',
+    });
+    assert.equal(headerReport.changed, true);
+    assert.equal(headerReport.affectedEntries.length, 10);
+    const headerRebuilt = compiler.compileAffected();
+    assert.equal(headerRebuilt.length, 10);
+    assert.ok(headerRebuilt[0].fn({ name: 'HMR' }).includes('UpdatedHeader'));
+    assert.ok(headerRebuilt[2].fn({ name: 'HMR' }).includes('Page 3 Hot HMR'));
+
+    // 4. Layout update => all 10 entries affected
+    const layoutReport = compiler.updateFiles({
+      [layoutPath]:
+        'html\n  body.v2\n    include header.pug\n    block content\n    include footer.pug\n',
+    });
+    assert.equal(layoutReport.changed, true);
+    assert.equal(layoutReport.affectedEntries.length, 10);
+    const layoutRebuilt = compiler.compileAffected();
+    assert.equal(layoutRebuilt.length, 10);
+    assert.ok(layoutRebuilt[9].fn({ name: 'HMR' }).includes('class="v2"'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

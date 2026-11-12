@@ -96,6 +96,22 @@ pub struct ParsedTemplate {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompiledOutputKey {
+    pub normalized_path: String,
+    pub content_hash: u64,
+    pub byte_len: u64,
+    pub source_version: u64,
+    pub options_hash: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledOutputEntry {
+    pub body: Arc<str>,
+    pub dependencies: Arc<Vec<String>>,
+    pub dep_versions: Vec<(String, u64, u64)>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TemplateStoreStats {
     pub sources: usize,
@@ -105,6 +121,8 @@ pub struct TemplateStoreStats {
     pub source_misses: u64,
     pub parse_hits: u64,
     pub parse_misses: u64,
+    pub output_cache_hits: u64,
+    pub output_cache_misses: u64,
 }
 
 use crate::dag::DependencyGraph;
@@ -118,11 +136,14 @@ pub struct TemplateStore {
     source_misses: AtomicU64,
     parse_hits: AtomicU64,
     parse_misses: AtomicU64,
+    output_cache_hits: AtomicU64,
+    output_cache_misses: AtomicU64,
     path_ids: RwLock<HashMap<String, TemplateId>>,
     id_paths: RwLock<HashMap<TemplateId, String>>,
     sources: RwLock<HashMap<String, Arc<SourceEntry>>>,
     parsed: RwLock<HashMap<ParseKey, Arc<ParsedTemplate>>>,
     resolved: RwLock<HashMap<ResolutionKey, String>>,
+    outputs: RwLock<HashMap<CompiledOutputKey, Arc<CompiledOutputEntry>>>,
     dag: DependencyGraph,
 }
 
@@ -154,11 +175,14 @@ impl TemplateStore {
             source_misses: AtomicU64::new(0),
             parse_hits: AtomicU64::new(0),
             parse_misses: AtomicU64::new(0),
+            output_cache_hits: AtomicU64::new(0),
+            output_cache_misses: AtomicU64::new(0),
             path_ids: RwLock::new(HashMap::new()),
             id_paths: RwLock::new(HashMap::new()),
             sources: RwLock::new(HashMap::new()),
             parsed: RwLock::new(HashMap::new()),
             resolved: RwLock::new(HashMap::new()),
+            outputs: RwLock::new(HashMap::new()),
             dag: DependencyGraph::new(),
         }
     }
@@ -228,6 +252,19 @@ impl TemplateStore {
             self.source_hits.fetch_add(1, Ordering::Relaxed);
         }
         entry
+    }
+
+    /// Reads a cached source entry without incrementing `source_hits` (used for internal metadata checks).
+    pub fn peek_cached_source(&self, full_path: &str) -> Option<Arc<SourceEntry>> {
+        if !self.trust_cached_sources {
+            return None;
+        }
+        let norm = normalize_cache_path(full_path);
+        self.sources
+            .read()
+            .expect("sources rwlock poisoned")
+            .get(&norm)
+            .cloned()
     }
 
     /// Resolves `path` from `source`/`basedir` using cached resolutions when
@@ -398,6 +435,10 @@ impl TemplateStore {
                 .write()
                 .expect("resolved rwlock poisoned")
                 .clear();
+            self.outputs
+                .write()
+                .expect("outputs rwlock poisoned")
+                .retain(|k, _| k.normalized_path != norm);
         }
         self.id_for_path(&norm)
     }
@@ -412,11 +453,17 @@ impl TemplateStore {
             .write()
             .expect("resolved rwlock poisoned")
             .clear();
+        self.outputs
+            .write()
+            .expect("outputs rwlock poisoned")
+            .clear();
         self.dag.clear();
         self.source_hits.store(0, Ordering::Relaxed);
         self.source_misses.store(0, Ordering::Relaxed);
         self.parse_hits.store(0, Ordering::Relaxed);
         self.parse_misses.store(0, Ordering::Relaxed);
+        self.output_cache_hits.store(0, Ordering::Relaxed);
+        self.output_cache_misses.store(0, Ordering::Relaxed);
     }
 
     pub fn get_parsed(&self, key: &ParseKey) -> Option<Arc<ParsedTemplate>> {
@@ -444,6 +491,42 @@ impl TemplateStore {
         arc
     }
 
+    pub fn get_compiled_output(&self, key: &CompiledOutputKey) -> Option<Arc<CompiledOutputEntry>> {
+        let entry = self
+            .outputs
+            .read()
+            .expect("outputs rwlock poisoned")
+            .get(key)
+            .cloned();
+        if let Some(ref e) = entry {
+            let sources = self.sources.read().expect("sources rwlock poisoned");
+            let valid = e.dep_versions.iter().all(|(dep_norm, dep_hash, dep_ver)| {
+                sources.get(dep_norm).is_some_and(|s| {
+                    s.content_hash == *dep_hash && s.version == *dep_ver
+                })
+            });
+            if valid {
+                self.output_cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some(Arc::clone(e));
+            }
+        }
+        self.output_cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    pub fn insert_compiled_output(
+        &self,
+        key: CompiledOutputKey,
+        entry: CompiledOutputEntry,
+    ) -> Arc<CompiledOutputEntry> {
+        let arc = Arc::new(entry);
+        self.outputs
+            .write()
+            .expect("outputs rwlock poisoned")
+            .insert(key, Arc::clone(&arc));
+        arc
+    }
+
     pub fn stats(&self) -> TemplateStoreStats {
         TemplateStoreStats {
             sources: self.sources.read().expect("sources rwlock poisoned").len(),
@@ -453,6 +536,8 @@ impl TemplateStore {
             source_misses: self.source_misses.load(Ordering::Relaxed),
             parse_hits: self.parse_hits.load(Ordering::Relaxed),
             parse_misses: self.parse_misses.load(Ordering::Relaxed),
+            output_cache_hits: self.output_cache_hits.load(Ordering::Relaxed),
+            output_cache_misses: self.output_cache_misses.load(Ordering::Relaxed),
         }
     }
 
@@ -460,6 +545,10 @@ impl TemplateStore {
         self.parsed
             .write()
             .expect("parsed rwlock poisoned")
+            .retain(|k, _| k.normalized_path != norm || k.source_version == keep_version);
+        self.outputs
+            .write()
+            .expect("outputs rwlock poisoned")
             .retain(|k, _| k.normalized_path != norm || k.source_version == keep_version);
     }
 }

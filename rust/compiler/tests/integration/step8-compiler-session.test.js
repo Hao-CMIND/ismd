@@ -171,3 +171,64 @@ test('Phase 4C: createCompiler incremental HMR (noop, single page, header, layou
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Phase 4D: CompiledOutputCache and JS fnCache skip codegen and new Function for unchanged pages', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pug-outcache-'));
+  try {
+    const headerPath = path.join(dir, 'header.pug');
+    const layoutPath = path.join(dir, 'layout.pug');
+    fs.writeFileSync(headerPath, 'header.site H1\n', 'utf8');
+    fs.writeFileSync(layoutPath, 'html\n  body\n    include header.pug\n    block content\n', 'utf8');
+
+    const pages = [];
+    for (let i = 1; i <= 10; i++) {
+      const p = path.join(dir, `p${i}.pug`);
+      fs.writeFileSync(p, `extends layout.pug\nblock content\n  p P${i}\n`, 'utf8');
+      pages.push(p);
+    }
+
+    const compiler = pug.createCompiler({ basedir: dir, compileDebug: false });
+    const first = compiler.compileEntries(pages);
+    assert.equal(first.length, 10);
+    assert.equal(first.every((r) => !r.cacheHit), true);
+    const st1 = compiler.stats();
+    assert.equal(st1.outputCacheMisses, 10);
+    assert.equal(st1.outputCacheHits, 0);
+
+    // Re-running compileEntries on all 10 pages hits CompiledOutputCache & reuses exact fn references
+    const second = compiler.compileEntries(pages);
+    assert.equal(second.length, 10);
+    assert.equal(second.every((r) => r.cacheHit), true);
+    for (let i = 0; i < 10; i++) {
+      assert.strictEqual(second[i].fn, first[i].fn);
+    }
+    const st2 = compiler.stats();
+    assert.equal(st2.outputCacheHits, 10);
+    assert.equal(st2.outputCacheMisses, 10);
+
+    // Updating 1 page and re-compiling all 10 hits cache on 9 and misses on 1
+    compiler.updateFiles({
+      [pages[4]]: 'extends layout.pug\nblock content\n  p P5-v2\n',
+    });
+    const third = compiler.compileEntries(pages);
+    assert.equal(third[4].cacheHit, false);
+    assert.notStrictEqual(third[4].fn, first[4].fn);
+    assert.ok(third[4].fn({}).includes('P5-v2'));
+    for (let i = 0; i < 10; i++) {
+      if (i !== 4) {
+        assert.equal(third[i].cacheHit, true);
+        assert.strictEqual(third[i].fn, first[i].fn);
+      }
+    }
+
+    // Updating header.pug invalidates all 10 via dep_versions check
+    compiler.updateFiles({
+      [headerPath]: 'header.site H2\n',
+    });
+    const fourth = compiler.compileEntries(pages);
+    assert.equal(fourth.every((r) => !r.cacheHit), true);
+    assert.ok(fourth[0].fn({}).includes('H2'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

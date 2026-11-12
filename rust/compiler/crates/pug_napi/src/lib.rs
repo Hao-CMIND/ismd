@@ -1402,6 +1402,8 @@ pub struct NapiTemplateStoreStats {
     pub source_misses: f64,
     pub parse_hits: f64,
     pub parse_misses: f64,
+    pub output_cache_hits: f64,
+    pub output_cache_misses: f64,
 }
 
 impl From<TemplateStoreStats> for NapiTemplateStoreStats {
@@ -1414,6 +1416,8 @@ impl From<TemplateStoreStats> for NapiTemplateStoreStats {
             source_misses: s.source_misses as f64,
             parse_hits: s.parse_hits as f64,
             parse_misses: s.parse_misses as f64,
+            output_cache_hits: s.output_cache_hits as f64,
+            output_cache_misses: s.output_cache_misses as f64,
         }
     }
 }
@@ -1649,6 +1653,7 @@ pub struct NapiBatchEntryResult {
     pub ok: bool,
     pub body: Option<String>,
     pub dependencies: Vec<String>,
+    pub cache_hit: bool,
     pub error: Option<NapiPugErrorDto>,
     pub plain_error: Option<String>,
     pub plain_error_code: Option<String>,
@@ -1661,6 +1666,7 @@ impl From<BatchEntryOutput> for NapiBatchEntryResult {
             ok: out.ok,
             body: out.body,
             dependencies: out.dependencies,
+            cache_hit: out.cache_hit,
             error: out.error.map(NapiPugErrorDto::from),
             plain_error: out.plain_error,
             plain_error_code: out.plain_error_code,

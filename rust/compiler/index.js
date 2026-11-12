@@ -1290,6 +1290,7 @@ function wrapBatchResults(rawResults, defaultOptions, compileOpts = {}) {
   const wrap = compileOpts.wrap !== false;
   const throwOnError = compileOpts.throwOnError !== false;
   const inlineDefault = Boolean(defaultOptions && defaultOptions.inlineRuntimeFunctions);
+  const fnCache = compileOpts.fnCache || null;
 
   return rawResults.map((r, idx) => {
     if (!r.ok) {
@@ -1305,6 +1306,7 @@ function wrapBatchResults(rawResults, defaultOptions, compileOpts = {}) {
         ok: true,
         body: r.body,
         dependencies: r.dependencies || [],
+        cacheHit: Boolean(r.cacheHit),
       };
     }
     const entryOpts = compileOpts.entries && compileOpts.entries[idx] && compileOpts.entries[idx].options;
@@ -1312,17 +1314,32 @@ function wrapBatchResults(rawResults, defaultOptions, compileOpts = {}) {
       entryOpts && entryOpts.inlineRuntimeFunctions !== undefined
         ? Boolean(entryOpts.inlineRuntimeFunctions)
         : inlineDefault;
+    if (fnCache && r.cacheHit) {
+      const cached = fnCache.get(r.id);
+      if (cached && cached.inline === inline && cached.body === r.body) {
+        return cached.result;
+      }
+    }
     const fn = inline
       ? new Function('', r.body + ';return template;')()
       : runtimeWrap(r.body);
     fn.dependencies = r.dependencies || [];
-    return {
+    const result = {
       id: r.id,
       ok: true,
       fn,
       body: r.body,
       dependencies: fn.dependencies,
+      cacheHit: Boolean(r.cacheHit),
     };
+    if (fnCache) {
+      fnCache.set(r.id, {
+        inline,
+        body: r.body,
+        result: { ...result, cacheHit: true },
+      });
+    }
+    return result;
   });
 }
 
@@ -1349,6 +1366,7 @@ export function createCompiler(defaultOptions = {}) {
     toNapiCompileOptions(optsCopy),
     optsCopy.templateStore || undefined
   );
+  const fnCache = new Map();
 
   return {
     updateFiles(files) {
@@ -1372,9 +1390,10 @@ export function createCompiler(defaultOptions = {}) {
           ? compileOpts.parallel
           : compileOpts.parallelThreshold;
       const rawResults = session.compileAffected(parallelBool, parallelThreshold);
-      return wrapBatchResults(rawResults, optsCopy, compileOpts);
+      return wrapBatchResults(rawResults, optsCopy, { ...compileOpts, fnCache });
     },
     clear() {
+      fnCache.clear();
       session.clear();
     },
     stats() {
@@ -1414,6 +1433,7 @@ export function createCompiler(defaultOptions = {}) {
       return wrapBatchResults(rawResults, optsCopy, {
         ...compileOpts,
         entries,
+        fnCache,
       });
     },
   };

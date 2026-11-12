@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
 use pug_error::PugError;
 use rayon::prelude::*;
 
+use crate::store::{CompiledOutputEntry, CompiledOutputKey};
 use crate::{
     CompileOptions, DefaultHost, TemplateId, TemplateStore, TemplateStoreStats,
     compile_body_with_store, io_read_error, normalize_cache_path,
@@ -48,6 +50,7 @@ pub struct BatchEntryOutput {
     pub ok: bool,
     pub body: Option<String>,
     pub dependencies: Vec<String>,
+    pub cache_hit: bool,
     pub error: Option<PugError>,
     pub plain_error: Option<String>,
     pub plain_error_code: Option<String>,
@@ -344,6 +347,30 @@ pub fn compile_batch_with_mode(
     }
 }
 
+fn hash_compile_options(opts: &CompileOptions) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    opts.filename.hash(&mut hasher);
+    opts.basedir.hash(&mut hasher);
+    opts.pretty.hash(&mut hasher);
+    opts.compile_debug.hash(&mut hasher);
+    opts.doctype.hash(&mut hasher);
+    opts.inline_runtime_functions.hash(&mut hasher);
+    opts.globals.hash(&mut hasher);
+    opts.use_self.hash(&mut hasher);
+    opts.include_sources.hash(&mut hasher);
+    opts.template_name.hash(&mut hasher);
+    opts.lex_plugin_methods.hash(&mut hasher);
+    if !opts.filter_options.is_null() {
+        opts.filter_options.to_string().hash(&mut hasher);
+    }
+    if !opts.filter_aliases.is_empty() {
+        let mut pairs: Vec<(&String, &String)> = opts.filter_aliases.iter().collect();
+        pairs.sort();
+        pairs.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 pub(crate) fn compile_single_entry(
     entry: &BatchEntryInput,
     default_options: &CompileOptions,
@@ -357,11 +384,36 @@ pub(crate) fn compile_single_entry(
         opts.filename = entry.filename.clone();
     }
 
+    let mut output_cache_key: Option<CompiledOutputKey> = None;
     let loaded_text: Option<String> = if let Some(ref src) = entry.source {
         Some(src.clone())
     } else if let Some(ref fname) = opts.filename {
         match store.load_or_read_disk(fname) {
-            Ok((source_entry, _hit)) => Some(source_entry.text.to_string()),
+            Ok((source_entry, _hit)) => {
+                if store.trust_cached_sources() {
+                    let key = CompiledOutputKey {
+                        normalized_path: source_entry.normalized_path.clone(),
+                        content_hash: source_entry.content_hash,
+                        byte_len: source_entry.byte_len,
+                        source_version: source_entry.version,
+                        options_hash: hash_compile_options(&opts),
+                    };
+                    if let Some(cached) = store.get_compiled_output(&key) {
+                        return BatchEntryOutput {
+                            id: entry.id.clone(),
+                            ok: true,
+                            body: Some(cached.body.to_string()),
+                            dependencies: (*cached.dependencies).clone(),
+                            cache_hit: true,
+                            error: None,
+                            plain_error: None,
+                            plain_error_code: None,
+                        };
+                    }
+                    output_cache_key = Some(key);
+                }
+                Some(source_entry.text.to_string())
+            }
             Err(e) => {
                 let pug_err = io_read_error(e, fname, None, 0);
                 return err_to_output(entry.id.clone(), pug_err);
@@ -373,6 +425,7 @@ pub(crate) fn compile_single_entry(
             ok: false,
             body: None,
             dependencies: Vec::new(),
+            cache_hit: false,
             error: None,
             plain_error: Some(String::from(
                 "Batch entry requires either `source` or `filename`",
@@ -384,15 +437,41 @@ pub(crate) fn compile_single_entry(
     let src = loaded_text.as_deref().unwrap_or("");
     let mut host = DefaultHost;
     match compile_body_with_store(src, &opts, &mut host, store) {
-        Ok(res) => BatchEntryOutput {
-            id: entry.id.clone(),
-            ok: true,
-            body: Some(res.body),
-            dependencies: res.dependencies,
-            error: None,
-            plain_error: None,
-            plain_error_code: None,
-        },
+        Ok(res) => {
+            if let Some(key) = output_cache_key {
+                let mut dep_versions = Vec::with_capacity(res.dependencies.len());
+                let mut all_deps_tracked = true;
+                for dep in &res.dependencies {
+                    let norm = normalize_cache_path(dep);
+                    if let Some(s) = store.peek_cached_source(&norm) {
+                        dep_versions.push((norm, s.content_hash, s.version));
+                    } else {
+                        all_deps_tracked = false;
+                        break;
+                    }
+                }
+                if all_deps_tracked {
+                    store.insert_compiled_output(
+                        key,
+                        CompiledOutputEntry {
+                            body: Arc::from(res.body.as_str()),
+                            dependencies: Arc::new(res.dependencies.clone()),
+                            dep_versions,
+                        },
+                    );
+                }
+            }
+            BatchEntryOutput {
+                id: entry.id.clone(),
+                ok: true,
+                body: Some(res.body),
+                dependencies: res.dependencies,
+                cache_hit: false,
+                error: None,
+                plain_error: None,
+                plain_error_code: None,
+            }
+        }
         Err(err) => err_to_output(entry.id.clone(), err),
     }
 }
@@ -404,6 +483,7 @@ fn err_to_output(id: String, err: PugError) -> BatchEntryOutput {
             ok: false,
             body: None,
             dependencies: Vec::new(),
+            cache_hit: false,
             error: None,
             plain_error: Some(err.message),
             plain_error_code: err.plain_error_code,
@@ -414,6 +494,7 @@ fn err_to_output(id: String, err: PugError) -> BatchEntryOutput {
             ok: false,
             body: None,
             dependencies: Vec::new(),
+            cache_hit: false,
             error: Some(err),
             plain_error: None,
             plain_error_code: None,

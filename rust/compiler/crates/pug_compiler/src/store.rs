@@ -91,6 +91,8 @@ pub struct ParsedTemplate {
     pub ast: Arc<BlockNode>,
     pub direct_dependencies: Vec<DependencyRef>,
     pub declared_blocks: Vec<DeclaredBlockMeta>,
+    pub has_filters: bool,
+    pub has_yield: bool,
     pub warnings: Vec<String>,
 }
 
@@ -432,29 +434,39 @@ pub fn normalize_cache_path(path: &str) -> String {
     normalized
 }
 
-pub fn collect_ast_metadata(block: &BlockNode) -> (Vec<DependencyRef>, Vec<DeclaredBlockMeta>) {
-    let mut deps = Vec::new();
-    let mut blocks = Vec::new();
-    collect_from_nodes(&block.nodes, &mut deps, &mut blocks);
-    (deps, blocks)
+pub struct AstMetadata {
+    pub dependencies: Vec<DependencyRef>,
+    pub declared_blocks: Vec<DeclaredBlockMeta>,
+    pub has_filters: bool,
+    pub has_yield: bool,
 }
 
-fn collect_from_nodes(
-    nodes: &[Node],
-    deps: &mut Vec<DependencyRef>,
-    blocks: &mut Vec<DeclaredBlockMeta>,
-) {
+pub fn collect_ast_metadata(block: &BlockNode) -> AstMetadata {
+    let mut meta = AstMetadata {
+        dependencies: Vec::new(),
+        declared_blocks: Vec::new(),
+        has_filters: false,
+        has_yield: false,
+    };
+    collect_from_nodes(&block.nodes, &mut meta);
+    meta
+}
+
+fn collect_from_nodes(nodes: &[Node], meta: &mut AstMetadata) {
     for node in nodes {
         match node {
-            Node::Block(b) => collect_from_nodes(&b.nodes, deps, blocks),
+            Node::Block(b) => collect_from_nodes(&b.nodes, meta),
             Node::NamedBlock(b) => {
-                blocks.push(DeclaredBlockMeta {
+                meta.declared_blocks.push(DeclaredBlockMeta {
                     name: b.name.clone(),
                     mode: b.mode.clone(),
                 });
-                collect_from_nodes(&b.nodes, deps, blocks);
+                collect_from_nodes(&b.nodes, meta);
             }
-            Node::Extends(n) => deps.push(DependencyRef {
+            Node::YieldBlock(_) => {
+                meta.has_yield = true;
+            }
+            Node::Extends(n) => meta.dependencies.push(DependencyRef {
                 kind: DependencyKind::Extends,
                 raw_path: n.file.path.clone(),
                 line: n.line,
@@ -463,7 +475,7 @@ fn collect_from_nodes(
                 is_filtered: false,
             }),
             Node::Include(n) => {
-                deps.push(DependencyRef {
+                meta.dependencies.push(DependencyRef {
                     kind: DependencyKind::Include,
                     raw_path: n.file.path.clone(),
                     line: n.line,
@@ -471,42 +483,50 @@ fn collect_from_nodes(
                     from_filename: n.filename.clone(),
                     is_filtered: false,
                 });
-                collect_from_nodes(&n.block.nodes, deps, blocks);
+                collect_from_nodes(&n.block.nodes, meta);
             }
-            Node::RawInclude(n) => deps.push(DependencyRef {
-                kind: DependencyKind::RawInclude,
-                raw_path: n.file.path.clone(),
-                line: n.line,
-                column: n.column,
-                from_filename: n.filename.clone(),
-                is_filtered: !n.filters.is_empty(),
-            }),
-            Node::Tag(t) => collect_from_nodes(&t.block.nodes, deps, blocks),
-            Node::InterpolatedTag(t) => collect_from_nodes(&t.block.nodes, deps, blocks),
-            Node::Filter(f) => collect_from_nodes(&f.block.nodes, deps, blocks),
-            Node::Case(c) => collect_from_nodes(&c.block.nodes, deps, blocks),
+            Node::RawInclude(n) => {
+                if !n.filters.is_empty() {
+                    meta.has_filters = true;
+                }
+                meta.dependencies.push(DependencyRef {
+                    kind: DependencyKind::RawInclude,
+                    raw_path: n.file.path.clone(),
+                    line: n.line,
+                    column: n.column,
+                    from_filename: n.filename.clone(),
+                    is_filtered: !n.filters.is_empty(),
+                });
+            }
+            Node::Tag(t) => collect_from_nodes(&t.block.nodes, meta),
+            Node::InterpolatedTag(t) => collect_from_nodes(&t.block.nodes, meta),
+            Node::Filter(f) => {
+                meta.has_filters = true;
+                collect_from_nodes(&f.block.nodes, meta);
+            }
+            Node::Case(c) => collect_from_nodes(&c.block.nodes, meta),
             Node::When(w) => {
                 if let Some(ref b) = w.block {
-                    collect_from_nodes(&b.nodes, deps, blocks);
+                    collect_from_nodes(&b.nodes, meta);
                 }
             }
             Node::Conditional(c) => {
-                collect_from_nodes(&c.consequent.nodes, deps, blocks);
+                collect_from_nodes(&c.consequent.nodes, meta);
                 if let Some(ref alt) = c.alternate {
-                    collect_from_node(alt, deps, blocks);
+                    collect_from_node(alt, meta);
                 }
             }
-            Node::While(w) => collect_from_nodes(&w.block.nodes, deps, blocks),
+            Node::While(w) => collect_from_nodes(&w.block.nodes, meta),
             Node::Each(e) => {
-                collect_from_nodes(&e.block.nodes, deps, blocks);
+                collect_from_nodes(&e.block.nodes, meta);
                 if let Some(ref alt) = e.alternate {
-                    collect_from_nodes(&alt.nodes, deps, blocks);
+                    collect_from_nodes(&alt.nodes, meta);
                 }
             }
-            Node::EachOf(e) => collect_from_nodes(&e.block.nodes, deps, blocks),
+            Node::EachOf(e) => collect_from_nodes(&e.block.nodes, meta),
             Node::Mixin(m) => {
                 if let Some(ref b) = m.block {
-                    collect_from_nodes(&b.nodes, deps, blocks);
+                    collect_from_nodes(&b.nodes, meta);
                 }
             }
             _ => {}
@@ -514,19 +534,19 @@ fn collect_from_nodes(
     }
 }
 
-fn collect_from_node(
-    node: &Node,
-    deps: &mut Vec<DependencyRef>,
-    blocks: &mut Vec<DeclaredBlockMeta>,
-) {
+fn collect_from_node(node: &Node, meta: &mut AstMetadata) {
     match node {
         Node::Conditional(c) => {
-            collect_from_nodes(&c.consequent.nodes, deps, blocks);
+            collect_from_nodes(&c.consequent.nodes, meta);
             if let Some(ref alt) = c.alternate {
-                collect_from_node(alt, deps, blocks);
+                collect_from_node(alt, meta);
             }
         }
-        Node::Block(b) => collect_from_nodes(&b.nodes, deps, blocks),
-        other => collect_from_nodes(std::slice::from_ref(other), deps, blocks),
+        Node::Block(b) => collect_from_nodes(&b.nodes, meta),
+        other => collect_from_nodes(std::slice::from_ref(other), meta),
     }
+}
+
+pub fn ast_has_extends(block: &BlockNode) -> bool {
+    block.nodes.iter().any(|n| matches!(n, Node::Extends(_)))
 }

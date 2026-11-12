@@ -487,6 +487,7 @@ struct NodeHostAdapter<'env> {
     custom_resolve: bool,
     custom_read: bool,
     lex_parse_hooks: bool,
+    ast_or_codegen_hooks: bool,
 }
 
 fn has_callback_prop(callbacks: &Option<Object<'_>>, name: &str) -> Result<bool> {
@@ -510,6 +511,13 @@ impl<'env> NodeHostAdapter<'env> {
             || has_callback_prop(&callbacks, "postParse")?
             || has_callback_prop(&callbacks, "preLoad")?
             || has_callback_prop(&callbacks, "lexPluginStep")?;
+        let ast_or_codegen_hooks = has_callback_prop(&callbacks, "postLoad")?
+            || has_callback_prop(&callbacks, "preFilters")?
+            || has_callback_prop(&callbacks, "postFilters")?
+            || has_callback_prop(&callbacks, "preLink")?
+            || has_callback_prop(&callbacks, "postLink")?
+            || has_callback_prop(&callbacks, "preCodeGen")?
+            || has_callback_prop(&callbacks, "generateCode")?;
         Ok(Self {
             env,
             callbacks,
@@ -517,6 +525,7 @@ impl<'env> NodeHostAdapter<'env> {
             custom_resolve,
             custom_read,
             lex_parse_hooks,
+            ast_or_codegen_hooks,
         })
     }
 }
@@ -959,6 +968,13 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
 
     fn has_lex_parse_hooks(&self) -> bool {
         self.lex_parse_hooks
+    }
+
+    fn supports_linked_view(&self) -> bool {
+        !self.custom_resolve
+            && !self.custom_read
+            && !self.lex_parse_hooks
+            && !self.ast_or_codegen_hooks
     }
 }
 

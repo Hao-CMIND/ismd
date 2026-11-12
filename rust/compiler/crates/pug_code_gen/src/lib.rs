@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 
 use pug_ast::{
     Attribute, AttributeBlock, BlockCommentNode, BlockNode, CaseNode, CodeNode, CommentNode,
-    ConditionalNode, DoctypeNode, EachNode, EachOfNode, InterpolatedTagNode, MixinNode, Node,
-    TagNode, WhenNode, WhileNode,
+    ConditionalNode, DoctypeNode, EachNode, EachOfNode, IncludeNode, InterpolatedTagNode,
+    MixinNode, NamedBlockNode, Node, RawIncludeNode, TagNode, WhenNode, WhileNode,
 };
 use pug_attrs::{AttrsFormat, compile_attrs_fast};
 use pug_error::{ErrorOptions, PugError};
@@ -43,8 +43,46 @@ pub struct CodeGenOptions {
     pub src: Option<String>,
 }
 
+/// Resolved immutable include view supplied by an AST overlay (`LinkedView`).
+#[derive(Debug, Clone, Copy)]
+pub struct IncludedView<'ast> {
+    pub ast: &'ast BlockNode,
+    pub has_yield: bool,
+    pub default_yield_target_ptr: Option<usize>,
+}
+
+/// Read-only overlay supplying linked block overrides and resolved includes without cloning shared ASTs.
+pub trait LinkedAstOverlay<'ast> {
+    fn named_block_segments(&self, nb: &NamedBlockNode) -> Option<&[&'ast [Node]]>;
+    fn is_named_block_ignored(&self, _nb: &NamedBlockNode) -> bool {
+        false
+    }
+    fn resolve_include(&self, inc: &IncludeNode) -> Option<IncludedView<'ast>>;
+    fn resolve_raw_include(&self, raw: &RawIncludeNode) -> Option<&'ast str>;
+    fn prepended_mixins(&self) -> &[&'ast MixinNode] {
+        &[]
+    }
+}
+
 /// Generates a JavaScript template function from a Pug `BlockNode` AST.
 pub fn generate_code(ast: &BlockNode, options: &CodeGenOptions) -> Result<String, PugError> {
+    generate_code_inner(ast, options, None)
+}
+
+/// Generates a JavaScript template function from a shared immutable `BlockNode` AST and a [`LinkedAstOverlay`].
+pub fn generate_code_with_overlay<'ast>(
+    ast: &'ast BlockNode,
+    options: &CodeGenOptions,
+    overlay: &'ast dyn LinkedAstOverlay<'ast>,
+) -> Result<String, PugError> {
+    generate_code_inner(ast, options, Some(overlay))
+}
+
+fn generate_code_inner<'ast>(
+    ast: &'ast BlockNode,
+    options: &CodeGenOptions,
+    overlay: Option<&'ast dyn LinkedAstOverlay<'ast>>,
+) -> Result<String, PugError> {
     if let Some(ref dt) = options.doctype
         && (dt.contains('<') || dt.contains('>'))
     {
@@ -84,6 +122,9 @@ pub fn generate_code(ast: &BlockNode, options: &CodeGenOptions) -> Result<String
         each_count: 0,
         mixins: HashMap::new(),
         dynamic_mixins: false,
+        overlay,
+        yield_stack: Vec::new(),
+        default_yield_stack: Vec::new(),
     };
 
     if let Some(ref dt) = options.doctype
@@ -95,6 +136,11 @@ pub fn generate_code(ast: &BlockNode, options: &CodeGenOptions) -> Result<String
         generator.push_line("var pug_indent = [];");
     }
 
+    if let Some(ov) = overlay {
+        for mixin in ov.prepended_mixins() {
+            generator.visit_mixin(mixin)?;
+        }
+    }
     generator.visit_block(ast)?;
     generator.finish()
 }
@@ -146,8 +192,8 @@ fn inline_or_pug_runtime_name(inline: bool, name: &'static str) -> &'static str 
     }
 }
 
-struct CodeGenerator<'a> {
-    options: &'a CodeGenOptions,
+struct CodeGenerator<'a, 'opt> {
+    options: &'opt CodeGenOptions,
     js: String,
     runtime_functions_used: Vec<&'static str>,
     buffered_concatenation_count: usize,
@@ -165,9 +211,12 @@ struct CodeGenerator<'a> {
     each_count: usize,
     mixins: HashMap<String, MixinEntry>,
     dynamic_mixins: bool,
+    overlay: Option<&'a dyn LinkedAstOverlay<'a>>,
+    yield_stack: Vec<&'a BlockNode>,
+    default_yield_stack: Vec<(usize, &'a BlockNode)>,
 }
 
-impl<'a> CodeGenerator<'a> {
+impl<'a, 'opt> CodeGenerator<'a, 'opt> {
     #[inline]
     fn record_runtime(&mut self, name: &'static str) {
         if !self.runtime_functions_used.contains(&name) {
@@ -352,16 +401,66 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    fn visit(&mut self, node: &Node) -> Result<(), PugError> {
+    fn visit(&mut self, node: &'a Node) -> Result<(), PugError> {
         self.emit_debug_if_needed(node);
         self.visit_node(node)
     }
 
-    fn visit_node(&mut self, node: &Node) -> Result<(), PugError> {
+    fn visit_node(&mut self, node: &'a Node) -> Result<(), PugError> {
         match node {
             Node::Block(b) => self.visit_block(b),
-            Node::NamedBlock(nb) => self.visit_nodes(&nb.nodes),
-            Node::YieldBlock(_) => Ok(()),
+            Node::NamedBlock(nb) => {
+                if let Some(ov) = self.overlay {
+                    if ov.is_named_block_ignored(nb) {
+                        return Ok(());
+                    }
+                    if let Some(segments) = ov.named_block_segments(nb) {
+                        for seg in segments {
+                            self.visit_nodes(seg)?;
+                        }
+                        return Ok(());
+                    }
+                }
+                self.visit_nodes(&nb.nodes)
+            }
+            Node::Include(inc) if self.overlay.is_some() => {
+                if let Some(ov) = self.overlay
+                    && let Some(inc_view) = ov.resolve_include(inc)
+                {
+                    if inc.block.nodes.is_empty() {
+                        return self.visit_block(inc_view.ast);
+                    }
+                    if inc_view.has_yield {
+                        self.yield_stack.push(&inc.block);
+                        let res = self.visit_block(inc_view.ast);
+                        self.yield_stack.pop();
+                        return res;
+                    }
+                    if let Some(target_ptr) = inc_view.default_yield_target_ptr {
+                        self.default_yield_stack.push((target_ptr, &inc.block));
+                        let res = self.visit_block(inc_view.ast);
+                        self.default_yield_stack.pop();
+                        return res;
+                    }
+                    return self.visit_block(inc_view.ast);
+                }
+                Ok(())
+            }
+            Node::RawInclude(raw) if self.overlay.is_some() => {
+                if let Some(ov) = self.overlay
+                    && let Some(text) = ov.resolve_raw_include(raw)
+                {
+                    self.buffer(text);
+                }
+                Ok(())
+            }
+            Node::YieldBlock(_) => {
+                if let Some(yb) = self.yield_stack.last().copied() {
+                    self.visit_block(yb)
+                } else {
+                    Ok(())
+                }
+            }
             Node::MixinBlock(_) => {
                 self.visit_mixin_block();
                 Ok(())
@@ -404,8 +503,22 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    fn visit_block(&mut self, block: &BlockNode) -> Result<(), PugError> {
-        self.visit_nodes(&block.nodes)
+    fn visit_block(&mut self, block: &'a BlockNode) -> Result<(), PugError> {
+        self.visit_nodes(&block.nodes)?;
+        if !self.default_yield_stack.is_empty() {
+            let ptr = (block as *const BlockNode) as usize;
+            if self
+                .default_yield_stack
+                .last()
+                .is_some_and(|(target, _)| *target == ptr)
+            {
+                let popped = self.default_yield_stack.pop().unwrap();
+                let res = self.visit_block(popped.1);
+                self.default_yield_stack.push(popped);
+                res?;
+            }
+        }
+        Ok(())
     }
 
     fn visit_mixin_block(&mut self) {
@@ -423,7 +536,7 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    fn visit_mixin(&mut self, mixin: &MixinNode) -> Result<(), PugError> {
+    fn visit_mixin(&mut self, mixin: &'a MixinNode) -> Result<(), PugError> {
         let dynamic = mixin.name.starts_with('#');
         if dynamic {
             self.dynamic_mixins = true;
@@ -596,13 +709,21 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_nodes(&mut self, nodes: &[Node]) -> Result<(), PugError> {
+    fn visit_nodes(&mut self, nodes: &'a [Node]) -> Result<(), PugError> {
         let has_pp = self.options.pretty.is_some();
+        let overlay = self.overlay;
+        let text_val = |n: &'a Node| -> Option<&'a str> {
+            match n {
+                Node::Text(t) => Some(&t.val),
+                Node::RawInclude(raw) => overlay.and_then(|ov| ov.resolve_raw_include(raw)),
+                _ => None,
+            }
+        };
         if has_pp
             && nodes.len() > 1
             && !self.escape_pretty_mode
-            && matches!(nodes.first(), Some(Node::Text(_)))
-            && matches!(nodes.get(1), Some(Node::Text(_)))
+            && nodes.first().and_then(text_val).is_some()
+            && nodes.get(1).and_then(text_val).is_some()
         {
             self.pretty_indent(1, true);
         }
@@ -611,8 +732,9 @@ impl<'a> CodeGenerator<'a> {
             if has_pp
                 && i > 0
                 && !self.escape_pretty_mode
-                && let (Some(Node::Text(prev)), Node::Text(_)) = (nodes.get(i - 1), node)
-                && prev.val.ends_with('\n')
+                && let (Some(prev), Some(_)) =
+                    (nodes.get(i - 1).and_then(text_val), text_val(node))
+                && prev.ends_with('\n')
             {
                 self.pretty_indent(1, false);
             }
@@ -635,7 +757,7 @@ impl<'a> CodeGenerator<'a> {
         self.has_compiled_doctype = true;
     }
 
-    fn visit_tag(&mut self, tag: &TagNode) -> Result<(), PugError> {
+    fn visit_tag(&mut self, tag: &'a TagNode) -> Result<(), PugError> {
         self.indents += 1;
         let name = &tag.name;
         let has_pp = self.options.pretty.is_some();
@@ -668,7 +790,9 @@ impl<'a> CodeGenerator<'a> {
             } else {
                 self.buffer("/>");
             }
-            if tag.code.is_some() || block_has_non_whitespace_content(&tag.block) {
+            if tag.code.is_some()
+                || block_has_non_whitespace_content(&tag.block, self.overlay)
+            {
                 return Err(self.error(
                     format!(
                         "{name} is a self closing element: <{name}/> but contains nested content."
@@ -689,7 +813,11 @@ impl<'a> CodeGenerator<'a> {
             }
             self.visit_block(&tag.block)?;
 
-            if has_pp && !tag.is_inline && !is_ws_sensitive && !tag_can_inline(&tag.block) {
+            if has_pp
+                && !tag.is_inline
+                && !is_ws_sensitive
+                && !tag_can_inline(&tag.block, self.overlay)
+            {
                 self.pretty_indent(0, true);
             }
             self.buffer("</");
@@ -704,7 +832,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_interpolated_tag(&mut self, tag: &InterpolatedTagNode) -> Result<(), PugError> {
+    fn visit_interpolated_tag(&mut self, tag: &'a InterpolatedTagNode) -> Result<(), PugError> {
         self.indents += 1;
         let has_pp = self.options.pretty.is_some();
 
@@ -725,7 +853,9 @@ impl<'a> CodeGenerator<'a> {
             } else {
                 self.buffer("/>");
             }
-            if tag.code.is_some() || block_has_non_whitespace_content(&tag.block) {
+            if tag.code.is_some()
+                || block_has_non_whitespace_content(&tag.block, self.overlay)
+            {
                 return Err(self.error(
                     format!(
                         "{} is a self closing element: <{}/> but contains nested content.",
@@ -747,7 +877,7 @@ impl<'a> CodeGenerator<'a> {
             }
             self.visit_block(&tag.block)?;
 
-            if has_pp && !tag.is_inline && !tag_can_inline(&tag.block) {
+            if has_pp && !tag.is_inline && !tag_can_inline(&tag.block, self.overlay) {
                 self.pretty_indent(0, true);
             }
             self.buffer("</");
@@ -772,7 +902,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_block_comment(&mut self, comment: &BlockCommentNode) -> Result<(), PugError> {
+    fn visit_block_comment(&mut self, comment: &'a BlockCommentNode) -> Result<(), PugError> {
         if !comment.buffer {
             return Ok(());
         }
@@ -789,7 +919,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_code(&mut self, code: &CodeNode) -> Result<(), PugError> {
+    fn visit_code(&mut self, code: &'a CodeNode) -> Result<(), PugError> {
         if code.buffer {
             let val = code.val.trim();
             let mut expr = String::with_capacity(val.len() + 48);
@@ -816,7 +946,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_conditional(&mut self, cond: &ConditionalNode) -> Result<(), PugError> {
+    fn visit_conditional(&mut self, cond: &'a ConditionalNode) -> Result<(), PugError> {
         self.start_line();
         let _ = write!(self.js, "if ({}) {{", cond.test);
         self.visit_block(&cond.consequent)?;
@@ -842,7 +972,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_while(&mut self, loop_node: &WhileNode) -> Result<(), PugError> {
+    fn visit_while(&mut self, loop_node: &'a WhileNode) -> Result<(), PugError> {
         self.start_line();
         let _ = write!(self.js, "while ({}) {{", loop_node.test);
         self.visit_block(&loop_node.block)?;
@@ -850,7 +980,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_each(&mut self, each: &EachNode) -> Result<(), PugError> {
+    fn visit_each(&mut self, each: &'a EachNode) -> Result<(), PugError> {
         let count = self.each_count;
         self.each_count += 1;
 
@@ -917,7 +1047,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_each_of(&mut self, each: &EachOfNode) -> Result<(), PugError> {
+    fn visit_each_of(&mut self, each: &'a EachOfNode) -> Result<(), PugError> {
         self.start_line();
         let _ = write!(
             self.js,
@@ -929,7 +1059,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_case(&mut self, case_node: &CaseNode) -> Result<(), PugError> {
+    fn visit_case(&mut self, case_node: &'a CaseNode) -> Result<(), PugError> {
         self.start_line();
         let _ = write!(self.js, "switch ({}){{", case_node.expr);
         self.visit_block(&case_node.block)?;
@@ -937,7 +1067,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn visit_when(&mut self, when_node: &WhenNode) -> Result<(), PugError> {
+    fn visit_when(&mut self, when_node: &'a WhenNode) -> Result<(), PugError> {
         if when_node.expr == "default" {
             self.push_line("default:");
         } else {
@@ -1147,26 +1277,38 @@ impl<'a> CodeGenerator<'a> {
     }
 }
 
-fn block_has_non_whitespace_content(block: &BlockNode) -> bool {
+fn block_has_non_whitespace_content<'a>(
+    block: &BlockNode,
+    overlay: Option<&dyn LinkedAstOverlay<'a>>,
+) -> bool {
     block.nodes.iter().any(|node| match node {
         Node::Text(t) => !t.val.trim().is_empty(),
+        Node::RawInclude(raw) => overlay
+            .and_then(|ov| ov.resolve_raw_include(raw))
+            .is_none_or(|t| !t.trim().is_empty()),
         _ => true,
     })
 }
 
-fn tag_can_inline(block: &BlockNode) -> bool {
-    fn is_inline(node: &Node) -> bool {
+fn tag_can_inline<'a>(block: &BlockNode, overlay: Option<&dyn LinkedAstOverlay<'a>>) -> bool {
+    fn is_inline<'a>(node: &Node, overlay: Option<&dyn LinkedAstOverlay<'a>>) -> bool {
         match node {
-            Node::Block(b) => b.nodes.iter().all(is_inline),
+            Node::Block(b) => b.nodes.iter().all(|n| is_inline(n, overlay)),
             Node::YieldBlock(_) => true,
             Node::Text(t) => !t.val.contains('\n'),
+            Node::RawInclude(raw) => overlay
+                .and_then(|ov| ov.resolve_raw_include(raw))
+                .is_some_and(|t| !t.contains('\n')),
+            Node::Include(inc) => overlay
+                .and_then(|ov| ov.resolve_include(inc))
+                .is_some_and(|view| view.ast.nodes.iter().all(|n| is_inline(n, overlay))),
             Node::Tag(t) => t.is_inline,
             Node::InterpolatedTag(t) => t.is_inline,
             Node::Code(c) => c.is_inline,
             _ => false,
         }
     }
-    block.nodes.iter().all(is_inline)
+    block.nodes.iter().all(|n| is_inline(n, overlay))
 }
 
 fn node_line_and_filename(node: &Node) -> (usize, Option<&str>) {

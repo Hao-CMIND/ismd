@@ -1,3 +1,4 @@
+mod linked_view;
 pub mod store;
 
 use pug_ast::profile::{Stage, record_file, scope, with_counters};
@@ -181,6 +182,10 @@ pub trait CompilerHost {
     fn has_lex_parse_hooks(&self) -> bool {
         true
     }
+
+    fn supports_linked_view(&self) -> bool {
+        false
+    }
 }
 
 pub struct DefaultHost;
@@ -203,6 +208,10 @@ impl CompilerHost for DefaultHost {
 
     fn has_lex_parse_hooks(&self) -> bool {
         false
+    }
+
+    fn supports_linked_view(&self) -> bool {
+        true
     }
 }
 
@@ -435,7 +444,7 @@ impl<H: CompilerHost> Session<'_, H> {
             for warning in &warnings {
                 self.host.warn(warning);
             }
-            let (direct_dependencies, declared_blocks) = collect_ast_metadata(&ast);
+            let meta = collect_ast_metadata(&ast);
             let ast_arc = Arc::new(ast.clone());
             self.store.insert_parsed(
                 key,
@@ -445,8 +454,10 @@ impl<H: CompilerHost> Session<'_, H> {
                     content_hash,
                     filename: Arc::from(fname),
                     ast: ast_arc,
-                    direct_dependencies,
-                    declared_blocks,
+                    direct_dependencies: meta.dependencies,
+                    declared_blocks: meta.declared_blocks,
+                    has_filters: meta.has_filters,
+                    has_yield: meta.has_yield,
                     warnings,
                 },
             );
@@ -462,59 +473,7 @@ impl<H: CompilerHost> Session<'_, H> {
         filename: Option<&str>,
         with_lex_hooks: bool,
     ) -> Result<(BlockNode, Vec<String>), PugError> {
-        let ctx = FileCtx { filename, src };
-        let contents = if with_lex_hooks {
-            self.host.pre_lex_cow(src, filename)?
-        } else {
-            Cow::Borrowed(src)
-        };
-        let lex_opts = LexerOptions {
-            filename: filename.map(String::from),
-            plugin_methods: self.options.lex_plugin_methods.clone(),
-            ..LexerOptions::default()
-        };
-        let mut tokens = {
-            let _g = scope(Stage::Lexer);
-            with_counters(|c| c.lexer_count += 1);
-            record_file(filename, |fc| fc.lexer_count += 1);
-            if lex_opts.plugin_methods.is_empty() {
-                lex(&contents, &lex_opts)?
-            } else {
-                let mut bridge = HostLexBridge { host: self.host };
-                lex_with_hook(&contents, &lex_opts, &mut bridge)?
-            }
-        };
-        if with_lex_hooks {
-            tokens = self.host.post_lex(tokens, &ctx)?;
-        }
-
-        // parse adapter: append `.pug` to extensionless path tokens
-        for tok in &mut tokens {
-            if tok.token_type == "path"
-                && let Some(Value::String(ref mut p)) = tok.val
-                && node_extname(p).is_empty()
-            {
-                p.push_str(".pug");
-            }
-        }
-        tokens = {
-            let _g = scope(Stage::StripComments);
-            strip_comments(
-                tokens,
-                StripCommentsOptions::new(true, false, filename.map(String::from)),
-            )?
-        };
-        if with_lex_hooks {
-            tokens = self.host.pre_parse(tokens, &ctx)?;
-        }
-        let parse_opts = ParserOptions {
-            filename: filename.map(String::from),
-            src: Some(src.to_string()),
-        };
-        let _g = scope(Stage::Parser);
-        with_counters(|c| c.parser_count += 1);
-        record_file(filename, |fc| fc.parser_count += 1);
-        parse_owned_with_warnings(tokens, &parse_opts)
+        lex_strip_and_parse_with_store(src, filename, self.options, self.host, with_lex_hooks)
     }
 
     /// `options.lex` + `options.parse` of the baseline `compileBody` for one file, ending with `preLoad`.
@@ -531,6 +490,68 @@ impl<H: CompilerHost> Session<'_, H> {
         ast = self.host.post_parse(ast, &ctx)?;
         self.host.pre_load(ast, &ctx)
     }
+}
+
+pub(crate) fn lex_strip_and_parse_with_store<H: CompilerHost>(
+    src: &str,
+    filename: Option<&str>,
+    options: &CompileOptions,
+    host: &mut H,
+    with_lex_hooks: bool,
+) -> Result<(BlockNode, Vec<String>), PugError> {
+    let ctx = FileCtx { filename, src };
+    let contents = if with_lex_hooks {
+        host.pre_lex_cow(src, filename)?
+    } else {
+        Cow::Borrowed(src)
+    };
+    let lex_opts = LexerOptions {
+        filename: filename.map(String::from),
+        plugin_methods: options.lex_plugin_methods.clone(),
+        ..LexerOptions::default()
+    };
+    let mut tokens = {
+        let _g = scope(Stage::Lexer);
+        with_counters(|c| c.lexer_count += 1);
+        record_file(filename, |fc| fc.lexer_count += 1);
+        if lex_opts.plugin_methods.is_empty() {
+            lex(&contents, &lex_opts)?
+        } else {
+            let mut bridge = HostLexBridge { host };
+            lex_with_hook(&contents, &lex_opts, &mut bridge)?
+        }
+    };
+    if with_lex_hooks {
+        tokens = host.post_lex(tokens, &ctx)?;
+    }
+
+    // parse adapter: append `.pug` to extensionless path tokens
+    for tok in &mut tokens {
+        if tok.token_type == "path"
+            && let Some(Value::String(ref mut p)) = tok.val
+            && node_extname(p).is_empty()
+        {
+            p.push_str(".pug");
+        }
+    }
+    tokens = {
+        let _g = scope(Stage::StripComments);
+        strip_comments(
+            tokens,
+            StripCommentsOptions::new(true, false, filename.map(String::from)),
+        )?
+    };
+    if with_lex_hooks {
+        tokens = host.pre_parse(tokens, &ctx)?;
+    }
+    let parse_opts = ParserOptions {
+        filename: filename.map(String::from),
+        src: Some(src.to_string()),
+    };
+    let _g = scope(Stage::Parser);
+    with_counters(|c| c.parser_count += 1);
+    record_file(filename, |fc| fc.parser_count += 1);
+    parse_owned_with_warnings(tokens, &parse_opts)
 }
 
 /// `path.extname` (basename based; a leading dot alone is not an extension).
@@ -638,6 +659,10 @@ pub fn compile_body_with_store<H: CompilerHost>(
     store: &TemplateStore,
 ) -> Result<CompileResult, PugError> {
     let _other = scope(Stage::Other);
+    if let Some(result) = linked_view::try_compile_linked_view(source, options, host, store)? {
+        return Ok(result);
+    }
+
     let mut session = Session {
         host,
         options,
@@ -877,6 +902,80 @@ mod tests {
         assert_ne!(res_a.dependencies, res_b.dependencies);
         assert!(res_a.body.contains("a"));
         assert!(res_b.body.contains("b"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct ForceMutableHost;
+    impl CompilerHost for ForceMutableHost {
+        fn pre_lex_cow<'s>(
+            &mut self,
+            source: &'s str,
+            _filename: Option<&str>,
+        ) -> Result<Cow<'s, str>, PugError> {
+            Ok(Cow::Borrowed(source))
+        }
+        fn has_custom_resolve(&self) -> bool {
+            false
+        }
+        fn has_custom_read(&self) -> bool {
+            false
+        }
+        fn has_lex_parse_hooks(&self) -> bool {
+            false
+        }
+        fn supports_linked_view(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn linked_view_matches_mutable_linker_across_inheritance_and_yield() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug_linked_view_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("base.pug"),
+            "html\n  head\n    block head\n      title Base\n  body\n    include inc.pug\n      p YieldedFromBase\n    block content\n      p BaseContent\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("mid.pug"),
+            "extends base.pug\nmixin midMixin(x)\n  span.mid= x\nappend head\n  meta(charset=\"utf-8\")\nblock content\n  .mid\n    block inner\n      p DefaultInner\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("inc.pug"),
+            "section.card\n  .body\n    yield\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("raw.txt"), "RAW_OK").unwrap();
+
+        let page_src = "extends mid.pug\nmixin pageMixin(y)\n  em= y\nprepend head\n  link(rel=\"icon\")\nappend inner\n  +midMixin('A')\n  +pageMixin('B')\n  p\n    include raw.txt\n";
+        let opts = CompileOptions {
+            filename: Some(dir.join("page.pug").to_string_lossy().into_owned()),
+            include_sources: true,
+            ..CompileOptions::default()
+        };
+
+        let store_lv = TemplateStore::new();
+        let mut fast_host = DefaultHost;
+        let fast_res = compile_body_with_store(page_src, &opts, &mut fast_host, &store_lv).unwrap();
+
+        let store_mut = TemplateStore::new();
+        let mut mut_host = ForceMutableHost;
+        let mut_res = compile_body_with_store(page_src, &opts, &mut mut_host, &store_mut).unwrap();
+
+        assert_eq!(fast_res.body, mut_res.body);
+        assert_eq!(fast_res.dependencies, mut_res.dependencies);
+        assert!(fast_res.body.contains("YieldedFromBase"));
+        assert!(fast_res.body.contains("RAW_OK"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

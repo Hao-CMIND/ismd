@@ -561,6 +561,11 @@ export function _addWith(obj, src, exclude) {
   );
 }
 
+let cachedFilterResolve = null;
+let cachedJstransformerFn = null;
+const jstransformerPathCache = new Map();
+const jstransformerInstanceCache = new Map();
+
 function requireFilterDep(name) {
   try {
     return require(name);
@@ -569,32 +574,54 @@ function requireFilterDep(name) {
   }
 }
 
+function getFilterTransformer(name, currentDirectory) {
+  const basedir = currentDirectory || process.cwd();
+  const cacheKey = basedir + '\0' + name;
+  let trPath = jstransformerPathCache.get(cacheKey);
+  if (trPath === undefined) {
+    if (!cachedFilterResolve) {
+      cachedFilterResolve = requireFilterDep('resolve');
+    }
+    try {
+      try {
+        trPath = cachedFilterResolve.sync('jstransformer-' + name, {
+          basedir: basedir,
+        });
+      } catch (_) {
+        try {
+          trPath = require.resolve('jstransformer-' + name);
+        } catch (_2) {
+          trPath = require.resolve('jstransformer-' + name, {
+            paths: [path.join(__dirname, '../../raw/compiler/node_modules')],
+          });
+        }
+      }
+    } catch (_) {
+      return null;
+    }
+    jstransformerPathCache.set(cacheKey, trPath);
+  }
+
+  let tr = jstransformerInstanceCache.get(trPath);
+  if (!tr) {
+    if (!cachedJstransformerFn) {
+      cachedJstransformerFn = requireFilterDep('jstransformer');
+    }
+    tr = cachedJstransformerFn(require(trPath));
+    jstransformerInstanceCache.set(trPath, tr);
+  }
+  return tr;
+}
+
 function runJstransformerFilter(name, str, options, currentDirectory, funcName) {
   funcName = funcName || 'render';
-  const resolveMod = requireFilterDep('resolve');
-  const jstransformer = requireFilterDep('jstransformer');
-  let trPath;
-  try {
-    try {
-      trPath = resolveMod.sync('jstransformer-' + name, {
-        basedir: currentDirectory || process.cwd(),
-      });
-    } catch (_) {
-      try {
-        trPath = require.resolve('jstransformer-' + name);
-      } catch (_2) {
-        trPath = require.resolve('jstransformer-' + name, {
-          paths: [path.join(__dirname, '../../raw/compiler/node_modules')],
-        });
-      }
-    }
-  } catch (_) {
+  const tr = getFilterTransformer(name, currentDirectory);
+  if (!tr) {
     return {
       ok: false,
       unknownFilter: 'unknown filter ":' + name + '"',
     };
   }
-  const tr = jstransformer(require(trPath));
   let result = tr[funcName](str, options, options).body;
   if (options && options.minify) {
     const minifyName =

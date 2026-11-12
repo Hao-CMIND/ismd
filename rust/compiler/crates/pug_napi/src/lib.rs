@@ -4,7 +4,8 @@ use napi_derive::napi;
 use pug_ast::{Attribute, BlockNode, RawContent, Token};
 use pug_attrs::{AttrsFormat, compile_attrs};
 use pug_compiler::{
-    CompileOptions, CompilerHost, FileCtx, LoadedFile, TemplateStore, TemplateStoreStats,
+    BatchEntryInput, BatchEntryOutput, CompileOptions, CompilerHost, CompilerSession, FileCtx,
+    LoadedFile, TemplateStore, TemplateStoreStats, compile_batch_with_store,
     compile_body_with_store, default_global_store, default_resolve,
 };
 use pug_error::{ErrorOptions, PugError};
@@ -1602,4 +1603,173 @@ pub fn compile_attrs_sync(
         error: None,
         plain_error: None,
     })
+}
+
+fn napi_opts_to_compile_options(options: NapiCompileOptions) -> CompileOptions {
+    CompileOptions {
+        filename: options.filename,
+        basedir: options.basedir,
+        pretty: options.pretty,
+        compile_debug: options.compile_debug.unwrap_or(false),
+        doctype: options.doctype,
+        inline_runtime_functions: options.inline_runtime_functions.unwrap_or(false),
+        globals: options.globals.unwrap_or_default(),
+        use_self: options.use_self.unwrap_or(false),
+        include_sources: options.include_sources.unwrap_or(false),
+        template_name: options
+            .template_name
+            .unwrap_or_else(|| String::from("template")),
+        filter_options: options.filter_options.unwrap_or(Value::Null),
+        filter_aliases: options.filter_aliases.unwrap_or_default(),
+        lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NapiVirtualFile {
+    pub path: String,
+    pub source: String,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NapiBatchEntryInput {
+    pub id: Option<String>,
+    pub filename: Option<String>,
+    pub source: Option<String>,
+    pub options: Option<NapiCompileOptions>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NapiBatchEntryResult {
+    pub id: String,
+    pub ok: bool,
+    pub body: Option<String>,
+    pub dependencies: Vec<String>,
+    pub error: Option<NapiPugErrorDto>,
+    pub plain_error: Option<String>,
+    pub plain_error_code: Option<String>,
+}
+
+impl From<BatchEntryOutput> for NapiBatchEntryResult {
+    fn from(out: BatchEntryOutput) -> Self {
+        Self {
+            id: out.id,
+            ok: out.ok,
+            body: out.body,
+            dependencies: out.dependencies,
+            error: out.error.map(NapiPugErrorDto::from),
+            plain_error: out.plain_error,
+            plain_error_code: out.plain_error_code,
+        }
+    }
+}
+
+fn convert_batch_inputs(entries: Vec<NapiBatchEntryInput>) -> Vec<BatchEntryInput> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(idx, e)| {
+            let id = e
+                .id
+                .or_else(|| e.filename.clone())
+                .unwrap_or_else(|| format!("entry_{idx}"));
+            BatchEntryInput {
+                id,
+                filename: e.filename,
+                source: e.source,
+                options: e.options.map(napi_opts_to_compile_options),
+            }
+        })
+        .collect()
+}
+
+#[napi]
+pub struct NativeCompilerSession {
+    inner: CompilerSession,
+}
+
+#[napi]
+impl NativeCompilerSession {
+    #[napi(constructor)]
+    pub fn new(
+        default_options: Option<NapiCompileOptions>,
+        store: Option<&NativeTemplateStore>,
+    ) -> Self {
+        let opts = default_options
+            .map(napi_opts_to_compile_options)
+            .unwrap_or_default();
+        let inner = match store {
+            Some(s) => CompilerSession::with_store(Arc::clone(&s.inner), opts),
+            None => CompilerSession::new(opts),
+        };
+        Self { inner }
+    }
+
+    #[napi]
+    pub fn update_files(&self, files: Vec<NapiVirtualFile>) {
+        let pairs: Vec<(String, String)> = files
+            .into_iter()
+            .map(|f| (f.path, f.source))
+            .collect();
+        self.inner.update_files(&pairs);
+    }
+
+    #[napi]
+    pub fn invalidate_files(&self, paths: Vec<String>) {
+        self.inner.invalidate_files(&paths);
+    }
+
+    #[napi]
+    pub fn clear(&self) {
+        self.inner.clear();
+    }
+
+    #[napi]
+    pub fn stats(&self) -> NapiTemplateStoreStats {
+        NapiTemplateStoreStats::from(self.inner.stats())
+    }
+
+    #[napi]
+    pub fn compile_entries(&self, entries: Vec<NapiBatchEntryInput>) -> Result<Vec<NapiBatchEntryResult>> {
+        let _prof_session = pug_ast::profile::begin_session();
+        let batch_inputs = convert_batch_inputs(entries);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.compile_entries(&batch_inputs)
+        }));
+        match outcome {
+            Ok(results) => Ok(results.into_iter().map(NapiBatchEntryResult::from).collect()),
+            Err(_) => Err(napi::Error::from_reason(
+                "Internal Rust panic caught at FFI boundary in NativeCompilerSession::compile_entries",
+            )),
+        }
+    }
+}
+
+#[napi]
+pub fn compile_batch_sync(
+    entries: Vec<NapiBatchEntryInput>,
+    default_options: Option<NapiCompileOptions>,
+    store: Option<&NativeTemplateStore>,
+) -> Result<Vec<NapiBatchEntryResult>> {
+    let _prof_session = pug_ast::profile::begin_session();
+    let opts = default_options
+        .map(napi_opts_to_compile_options)
+        .unwrap_or_default();
+    let batch_inputs = convert_batch_inputs(entries);
+    let store_ref: &TemplateStore = match store {
+        Some(s) => s.inner.as_ref(),
+        None => default_global_store(),
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compile_batch_with_store(&batch_inputs, &opts, store_ref)
+    }));
+    match outcome {
+        Ok(results) => Ok(results.into_iter().map(NapiBatchEntryResult::from).collect()),
+        Err(_) => Err(napi::Error::from_reason(
+            "Internal Rust panic caught at FFI boundary in compile_batch_sync",
+        )),
+    }
 }

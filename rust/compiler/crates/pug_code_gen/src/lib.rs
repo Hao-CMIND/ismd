@@ -380,7 +380,14 @@ impl<'a, 'opt> CodeGenerator<'a, 'opt> {
     }
 
     fn emit_debug_if_needed(&mut self, node: &Node) {
-        if !self.options.compile_debug || matches!(node, Node::Block(_) | Node::When(_)) {
+        if !self.options.compile_debug
+            || matches!(node, Node::Block(_) | Node::When(_))
+            || (self.overlay.is_some()
+                && matches!(
+                    node,
+                    Node::Include(_) | Node::YieldBlock(_) | Node::RawInclude(_)
+                ))
+        {
             return;
         }
         if let Node::Code(c) = node
@@ -816,7 +823,7 @@ impl<'a, 'opt> CodeGenerator<'a, 'opt> {
             if has_pp
                 && !tag.is_inline
                 && !is_ws_sensitive
-                && !tag_can_inline(&tag.block, self.overlay)
+                && !tag_can_inline(&tag.block, self.overlay, self.yield_stack.last().copied())
             {
                 self.pretty_indent(0, true);
             }
@@ -877,7 +884,10 @@ impl<'a, 'opt> CodeGenerator<'a, 'opt> {
             }
             self.visit_block(&tag.block)?;
 
-            if has_pp && !tag.is_inline && !tag_can_inline(&tag.block, self.overlay) {
+            if has_pp
+                && !tag.is_inline
+                && !tag_can_inline(&tag.block, self.overlay, self.yield_stack.last().copied())
+            {
                 self.pretty_indent(0, true);
             }
             self.buffer("</");
@@ -1290,25 +1300,44 @@ fn block_has_non_whitespace_content<'a>(
     })
 }
 
-fn tag_can_inline<'a>(block: &BlockNode, overlay: Option<&dyn LinkedAstOverlay<'a>>) -> bool {
-    fn is_inline<'a>(node: &Node, overlay: Option<&dyn LinkedAstOverlay<'a>>) -> bool {
+fn tag_can_inline<'a>(
+    block: &BlockNode,
+    overlay: Option<&dyn LinkedAstOverlay<'a>>,
+    yield_block: Option<&BlockNode>,
+) -> bool {
+    fn is_inline<'a>(
+        node: &Node,
+        overlay: Option<&dyn LinkedAstOverlay<'a>>,
+        yield_block: Option<&BlockNode>,
+    ) -> bool {
         match node {
-            Node::Block(b) => b.nodes.iter().all(|n| is_inline(n, overlay)),
-            Node::YieldBlock(_) => true,
+            Node::Block(b) => b.nodes.iter().all(|n| is_inline(n, overlay, yield_block)),
+            Node::YieldBlock(_) => yield_block
+                .is_none_or(|yb| yb.nodes.iter().all(|n| is_inline(n, overlay, None))),
             Node::Text(t) => !t.val.contains('\n'),
             Node::RawInclude(raw) => overlay
                 .and_then(|ov| ov.resolve_raw_include(raw))
                 .is_some_and(|t| !t.contains('\n')),
             Node::Include(inc) => overlay
                 .and_then(|ov| ov.resolve_include(inc))
-                .is_some_and(|view| view.ast.nodes.iter().all(|n| is_inline(n, overlay))),
+                .is_some_and(|view| {
+                    let next_yield = if inc.block.nodes.is_empty() {
+                        None
+                    } else {
+                        Some(&inc.block)
+                    };
+                    view.ast
+                        .nodes
+                        .iter()
+                        .all(|n| is_inline(n, overlay, next_yield))
+                }),
             Node::Tag(t) => t.is_inline,
             Node::InterpolatedTag(t) => t.is_inline,
             Node::Code(c) => c.is_inline,
             _ => false,
         }
     }
-    block.nodes.iter().all(|n| is_inline(n, overlay))
+    block.nodes.iter().all(|n| is_inline(n, overlay, yield_block))
 }
 
 fn node_line_and_filename(node: &Node) -> (usize, Option<&str>) {

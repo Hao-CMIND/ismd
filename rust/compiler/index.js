@@ -1231,6 +1231,201 @@ export function defaultTemplateStoreStats() {
     : null;
 }
 
+function toNapiCompileOptions(options = {}) {
+  return {
+    compileDebug: options.compileDebug !== false,
+    filename: options.filename,
+    basedir: options.basedir,
+    pretty: options.pretty,
+    doctype: options.doctype,
+    inlineRuntimeFunctions: Boolean(options.inlineRuntimeFunctions),
+    globals: Array.isArray(options.globals) ? options.globals : [],
+    useSelf: Boolean(options.self),
+    includeSources: options.compileDebug === true,
+    templateName: options.templateName || 'template',
+    filterOptions:
+      options.filterOptions !== undefined ? options.filterOptions : null,
+    filterAliases: options.filterAliases || {},
+  };
+}
+
+function hasHostCustomizations(options) {
+  if (!options) return false;
+  if (Array.isArray(options.plugins) && options.plugins.length > 0) return true;
+  if (options.filters && Object.keys(options.filters).length > 0) return true;
+  return false;
+}
+
+function normalizeBatchEntries(entries) {
+  return entries.map((entry, idx) => {
+    if (typeof entry === 'string') {
+      return { id: entry, filename: entry };
+    }
+    const filename = entry.filename;
+    const id = entry.id || filename || `entry_${idx}`;
+    const out = {
+      id,
+      filename,
+      source: entry.source,
+    };
+    if (entry.options) {
+      out.options = toNapiCompileOptions(entry.options);
+    }
+    return out;
+  });
+}
+
+function batchResultToError(r) {
+  if (r.error) {
+    return dtoToJsError(r.error);
+  }
+  const err = new Error(r.plainError || 'Unknown batch compilation error');
+  if (r.plainErrorCode) {
+    err.code = r.plainErrorCode;
+  }
+  return err;
+}
+
+function wrapBatchResults(rawResults, defaultOptions, compileOpts = {}) {
+  const wrap = compileOpts.wrap !== false;
+  const throwOnError = compileOpts.throwOnError !== false;
+  const inlineDefault = Boolean(defaultOptions && defaultOptions.inlineRuntimeFunctions);
+
+  return rawResults.map((r, idx) => {
+    if (!r.ok) {
+      const err = batchResultToError(r);
+      if (throwOnError) {
+        throw err;
+      }
+      return { id: r.id, ok: false, error: err, dependencies: [] };
+    }
+    if (!wrap) {
+      return {
+        id: r.id,
+        ok: true,
+        body: r.body,
+        dependencies: r.dependencies || [],
+      };
+    }
+    const entryOpts = compileOpts.entries && compileOpts.entries[idx] && compileOpts.entries[idx].options;
+    const inline =
+      entryOpts && entryOpts.inlineRuntimeFunctions !== undefined
+        ? Boolean(entryOpts.inlineRuntimeFunctions)
+        : inlineDefault;
+    const fn = inline
+      ? new Function('', r.body + ';return template;')()
+      : runtimeWrap(r.body);
+    fn.dependencies = r.dependencies || [];
+    return {
+      id: r.id,
+      ok: true,
+      fn,
+      body: r.body,
+      dependencies: fn.dependencies,
+    };
+  });
+}
+
+function normalizeVirtualFiles(files) {
+  if (!files) return [];
+  if (Array.isArray(files)) {
+    return files.map((f) => ({ path: String(f.path), source: String(f.source) }));
+  }
+  if (files instanceof Map) {
+    return Array.from(files.entries(), ([p, s]) => ({
+      path: String(p),
+      source: String(s),
+    }));
+  }
+  return Object.entries(files).map(([p, s]) => ({
+    path: String(p),
+    source: String(s),
+  }));
+}
+
+export function createCompiler(defaultOptions = {}) {
+  const optsCopy = { ...defaultOptions };
+  const session = new native.NativeCompilerSession(
+    toNapiCompileOptions(optsCopy),
+    optsCopy.templateStore || undefined
+  );
+
+  return {
+    updateFiles(files) {
+      session.updateFiles(normalizeVirtualFiles(files));
+    },
+    invalidateFiles(paths) {
+      const list = Array.isArray(paths) ? paths : [paths];
+      session.invalidateFiles(list.map(String));
+    },
+    clear() {
+      session.clear();
+    },
+    stats() {
+      return session.stats();
+    },
+    compileEntries(entries, compileOpts = {}) {
+      if (
+        hasHostCustomizations(optsCopy) ||
+        entries.some((e) => typeof e === 'object' && hasHostCustomizations(e.options))
+      ) {
+        const out = [];
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          const isStr = typeof e === 'string';
+          const filename = isStr ? e : e.filename;
+          const id = isStr ? e : e.id || filename || `entry_${i}`;
+          const mergedOpts = isStr ? { ...optsCopy, filename } : { ...optsCopy, ...e.options, filename };
+          const src = isStr || e.source === undefined ? fs.readFileSync(filename, 'utf8') : e.source;
+          const fn = compile(src, mergedOpts);
+          out.push({ id, ok: true, fn, dependencies: fn.dependencies || [] });
+        }
+        return out;
+      }
+
+      const normalized = normalizeBatchEntries(entries);
+      const rawResults = session.compileEntries(normalized);
+      return wrapBatchResults(rawResults, optsCopy, {
+        ...compileOpts,
+        entries,
+      });
+    },
+  };
+}
+
+export function compileBatch(entries, defaultOptions = {}, compileOpts = {}) {
+  if (
+    hasHostCustomizations(defaultOptions) ||
+    entries.some((e) => typeof e === 'object' && hasHostCustomizations(e.options))
+  ) {
+    return entries.map((e, i) => {
+      const isStr = typeof e === 'string';
+      const filename = isStr ? e : e.filename;
+      const id = isStr ? e : e.id || filename || `entry_${i}`;
+      const mergedOpts = isStr
+        ? { ...defaultOptions, filename }
+        : { ...defaultOptions, ...e.options, filename };
+      const src =
+        isStr || e.source === undefined
+          ? fs.readFileSync(filename, 'utf8')
+          : e.source;
+      const fn = compile(src, mergedOpts);
+      return { id, ok: true, fn, dependencies: fn.dependencies || [] };
+    });
+  }
+
+  const normalized = normalizeBatchEntries(entries);
+  const rawResults = native.compileBatchSync(
+    normalized,
+    toNapiCompileOptions(defaultOptions),
+    defaultOptions.templateStore || undefined
+  );
+  return wrapBatchResults(rawResults, defaultOptions, {
+    ...compileOpts,
+    entries,
+  });
+}
+
 export default {
   name,
   runtime,
@@ -1256,6 +1451,8 @@ export default {
   createTemplateStore,
   clearDefaultTemplateStore,
   defaultTemplateStoreStats,
+  createCompiler,
+  compileBatch,
   compile,
   compileClientWithDependenciesTracked,
   compileClient,

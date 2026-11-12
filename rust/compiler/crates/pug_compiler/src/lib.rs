@@ -1,4 +1,5 @@
 mod linked_view;
+pub mod session;
 pub mod store;
 
 use pug_ast::profile::{Stage, record_file, scope, with_counters};
@@ -17,6 +18,9 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+pub use session::{
+    BatchEntryInput, BatchEntryOutput, CompilerSession, compile_batch_with_store,
+};
 pub use store::{
     DeclaredBlockMeta, DependencyKind, DependencyRef, ParseKey, ParsedTemplate, SourceEntry,
     TemplateId, TemplateStore, TemplateStoreStats, collect_ast_metadata, default_global_store,
@@ -371,7 +375,7 @@ impl<H: CompilerHost> LexerPluginHook for HostLexBridge<'_, H> {
     }
 }
 
-fn io_read_error(
+pub(crate) fn io_read_error(
     e: std::io::Error,
     full_path: &str,
     node_filename: Option<&str>,
@@ -976,6 +980,60 @@ mod tests {
         assert_eq!(fast_res.dependencies, mut_res.dependencies);
         assert!(fast_res.body.contains("YieldedFromBase"));
         assert!(fast_res.body.contains("RAW_OK"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compiler_session_compiles_batch_and_updates_virtual_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug_session_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout_path = dir.join("layout.pug");
+        let p1 = dir.join("p1.pug");
+        let p2 = dir.join("p2.pug");
+        std::fs::write(&layout_path, "html\n  body\n    block content\n").unwrap();
+        std::fs::write(&p1, "extends layout.pug\nblock content\n  p One\n").unwrap();
+        std::fs::write(&p2, "extends layout.pug\nblock content\n  p Two\n").unwrap();
+
+        let session = CompilerSession::new(CompileOptions {
+            basedir: Some(dir.to_string_lossy().into_owned()),
+            ..CompileOptions::default()
+        });
+        let entries = vec![
+            BatchEntryInput {
+                id: String::from("p1"),
+                filename: Some(p1.to_string_lossy().into_owned()),
+                source: None,
+                options: None,
+            },
+            BatchEntryInput {
+                id: String::from("p2"),
+                filename: Some(p2.to_string_lossy().into_owned()),
+                source: None,
+                options: None,
+            },
+        ];
+
+        let out1 = session.compile_entries(&entries);
+        assert_eq!(out1.len(), 2);
+        assert!(out1[0].ok && out1[1].ok);
+        assert!(out1[0].body.as_ref().unwrap().contains("One"));
+        assert!(out1[1].body.as_ref().unwrap().contains("Two"));
+
+        session.update_files(&[(
+            layout_path.to_string_lossy().into_owned(),
+            String::from("html\n  body.updated\n    block content\n"),
+        )]);
+        let out2 = session.compile_entries(&entries);
+        assert!(out2[0].body.as_ref().unwrap().contains("updated"));
+        assert!(out2[1].body.as_ref().unwrap().contains("updated"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -107,6 +107,8 @@ pub struct TemplateStoreStats {
     pub parse_misses: u64,
 }
 
+use crate::dag::DependencyGraph;
+
 /// Thread-safe layered template store holding immutable sources and parsed ASTs.
 pub struct TemplateStore {
     trust_cached_sources: bool,
@@ -117,9 +119,11 @@ pub struct TemplateStore {
     parse_hits: AtomicU64,
     parse_misses: AtomicU64,
     path_ids: RwLock<HashMap<String, TemplateId>>,
+    id_paths: RwLock<HashMap<TemplateId, String>>,
     sources: RwLock<HashMap<String, Arc<SourceEntry>>>,
     parsed: RwLock<HashMap<ParseKey, Arc<ParsedTemplate>>>,
     resolved: RwLock<HashMap<ResolutionKey, String>>,
+    dag: DependencyGraph,
 }
 
 impl Default for TemplateStore {
@@ -151,15 +155,39 @@ impl TemplateStore {
             parse_hits: AtomicU64::new(0),
             parse_misses: AtomicU64::new(0),
             path_ids: RwLock::new(HashMap::new()),
+            id_paths: RwLock::new(HashMap::new()),
             sources: RwLock::new(HashMap::new()),
             parsed: RwLock::new(HashMap::new()),
             resolved: RwLock::new(HashMap::new()),
+            dag: DependencyGraph::new(),
         }
     }
 
     #[inline]
     pub fn trust_cached_sources(&self) -> bool {
         self.trust_cached_sources
+    }
+
+    #[inline]
+    pub fn dag(&self) -> &DependencyGraph {
+        &self.dag
+    }
+
+    pub fn id_for_path(&self, path: &str) -> Option<TemplateId> {
+        let norm = normalize_cache_path(path);
+        self.path_ids
+            .read()
+            .expect("path_ids rwlock poisoned")
+            .get(&norm)
+            .copied()
+    }
+
+    pub fn path_for_id(&self, id: TemplateId) -> Option<String> {
+        self.id_paths
+            .read()
+            .expect("id_paths rwlock poisoned")
+            .get(&id)
+            .cloned()
     }
 
     pub fn get_or_alloc_id(&self, path: &str) -> TemplateId {
@@ -173,9 +201,16 @@ impl TemplateStore {
             return id;
         }
         let mut guard = self.path_ids.write().expect("path_ids rwlock poisoned");
-        *guard
-            .entry(norm)
-            .or_insert_with(|| TemplateId(self.next_id.fetch_add(1, Ordering::Relaxed)))
+        if let Some(&id) = guard.get(&norm) {
+            return id;
+        }
+        let id = TemplateId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        guard.insert(norm.clone(), id);
+        self.id_paths
+            .write()
+            .expect("id_paths rwlock poisoned")
+            .insert(id, norm);
+        id
     }
 
     pub fn get_cached_source(&self, full_path: &str) -> Option<Arc<SourceEntry>> {
@@ -352,6 +387,7 @@ impl TemplateStore {
             .write()
             .expect("resolved rwlock poisoned")
             .clear();
+        self.dag.clear();
         self.source_hits.store(0, Ordering::Relaxed);
         self.source_misses.store(0, Ordering::Relaxed);
         self.parse_hits.store(0, Ordering::Relaxed);

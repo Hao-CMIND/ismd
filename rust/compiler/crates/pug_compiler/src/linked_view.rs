@@ -9,6 +9,7 @@ use pug_code_gen::{CodeGenOptions, IncludedView, LinkedAstOverlay, generate_code
 use pug_error::{ErrorOptions, PugError};
 use pug_load::annotate_load_error;
 
+use crate::dag::DependencyEdge;
 use crate::store::{
     ParseKey, ParsedTemplate, SourceEntry, ast_has_extends, collect_ast_metadata, hash_bytes,
     normalize_cache_path,
@@ -133,6 +134,30 @@ pub(crate) fn try_compile_linked_view<H: CompilerHost>(
         )? {
             return Ok(None);
         }
+    }
+
+    // Record resolved direct edges for all visited templates into the dependency DAG.
+    for tpl in &arena.templates {
+        if tpl.parsed.id.0 == 0 {
+            continue;
+        }
+        let mut edges = Vec::with_capacity(tpl.parsed.direct_dependencies.len());
+        let fallback_source = (!tpl.parsed.filename.is_empty()).then_some(&*tpl.parsed.filename);
+        for dep in &tpl.parsed.direct_dependencies {
+            let source = dep.from_filename.as_deref().or(fallback_source);
+            if let Ok(full_path) =
+                store.resolve_path(&dep.raw_path, source, options.basedir.as_deref(), || {
+                    default_resolve(&dep.raw_path, source, options.basedir.as_deref())
+                })
+            {
+                let target = store.get_or_alloc_id(&full_path);
+                edges.push(DependencyEdge {
+                    target,
+                    kind: dep.kind,
+                });
+            }
+        }
+        store.dag().set_dependencies(tpl.parsed.id, edges);
     }
 
     // Check if any loaded template has filters; if so, fall back to mutable pipeline.

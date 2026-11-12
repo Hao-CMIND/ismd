@@ -1,3 +1,4 @@
+pub mod dag;
 mod linked_view;
 pub mod session;
 pub mod store;
@@ -18,6 +19,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+pub use dag::{DependencyEdge, DependencyGraph, DependencyGraphStats};
 pub use session::{
     BatchEntryInput, BatchEntryOutput, CompilerSession, DEFAULT_PARALLEL_THRESHOLD, ParallelMode,
     compile_batch_with_mode, compile_batch_with_store,
@@ -361,6 +363,7 @@ struct Session<'a, H: CompilerHost> {
     options: &'a CompileOptions,
     store: &'a TemplateStore,
     dependencies: Vec<String>,
+    dag_edges: HashMap<TemplateId, Vec<DependencyEdge>>,
     /// `debug_sources` of the baseline: insertion ordered, later writes overwrite the value in place.
     debug_sources: Vec<(String, String)>,
     last_loaded: Option<LoadedSourceMeta>,
@@ -612,6 +615,17 @@ impl<H: CompilerHost> LoadHost for Session<'_, H> {
                 raw: entry.to_raw_content(),
                 text: entry.text.to_string(),
             };
+            if let Some(parent_path) = source.or(self.options.filename.as_deref()) {
+                let parent_id = self.store.get_or_alloc_id(parent_path);
+                let child_id = entry.id;
+                self.dag_edges
+                    .entry(parent_id)
+                    .or_default()
+                    .push(DependencyEdge {
+                        target: child_id,
+                        kind: DependencyKind::Include,
+                    });
+            }
             self.dependencies.push(loaded.full_path.clone());
             if self.options.include_sources {
                 self.record_source(loaded.full_path.clone(), loaded.text.clone());
@@ -622,6 +636,17 @@ impl<H: CompilerHost> LoadHost for Session<'_, H> {
         let loaded = self
             .host
             .load_file(path, source, node_filename, node_line, self.options)?;
+        if let Some(parent_path) = source.or(self.options.filename.as_deref()) {
+            let parent_id = self.store.get_or_alloc_id(parent_path);
+            let child_id = self.store.get_or_alloc_id(&loaded.full_path);
+            self.dag_edges
+                .entry(parent_id)
+                .or_default()
+                .push(DependencyEdge {
+                    target: child_id,
+                    kind: DependencyKind::Include,
+                });
+        }
         self.dependencies.push(loaded.full_path.clone());
         if self.options.include_sources {
             self.record_source(loaded.full_path.clone(), loaded.text.clone());
@@ -673,6 +698,7 @@ pub fn compile_body_with_store<H: CompilerHost>(
         options,
         store,
         dependencies: Vec::new(),
+        dag_edges: HashMap::new(),
         debug_sources: Vec::new(),
         last_loaded: None,
     };
@@ -693,6 +719,14 @@ pub fn compile_body_with_store<H: CompilerHost>(
         load_ast(parsed, &mut session)?
     };
     ast = session.host.post_load(ast)?;
+
+    if let Some(ref fname) = options.filename {
+        let entry_id = store.get_or_alloc_id(fname);
+        session.dag_edges.entry(entry_id).or_default();
+    }
+    for (parent_id, edges) in std::mem::take(&mut session.dag_edges) {
+        store.dag().set_dependencies(parent_id, edges);
+    }
 
     let dependencies = std::mem::take(&mut session.dependencies);
     let debug_sources = std::mem::take(&mut session.debug_sources);
@@ -1092,6 +1126,116 @@ mod tests {
             assert_eq!(s.body, p.body);
             assert_eq!(s.dependencies, p.dependencies);
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dependency_dag_tracks_extends_includes_multi_page_and_cycles() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug-dag-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let base = dir.join("base.pug");
+        let layout = dir.join("layout.pug");
+        let header = dir.join("header.pug");
+        let footer = dir.join("footer.pug");
+        let nested = dir.join("nested.pug");
+        let page1 = dir.join("page1.pug");
+        let page2 = dir.join("page2.pug");
+        let page_inc = dir.join("page_inc.pug");
+
+        std::fs::write(&base, "html\n  body\n    block body\n").unwrap();
+        std::fs::write(
+            &layout,
+            "extends base.pug\nblock body\n  include header.pug\n  block content\n  include footer.pug\n",
+        )
+        .unwrap();
+        std::fs::write(&header, "header\n  include nested.pug\n").unwrap();
+        std::fs::write(&footer, "footer Footer\n").unwrap();
+        std::fs::write(&nested, "span Nested\n").unwrap();
+        let page1_src = "extends layout.pug\nblock content\n  p Page 1\n";
+        let page2_src = "extends layout.pug\nblock content\n  p Page 2\n";
+        let page_inc_src = "div\n  include header.pug\n";
+        std::fs::write(&page1, page1_src).unwrap();
+        std::fs::write(&page2, page2_src).unwrap();
+        std::fs::write(&page_inc, page_inc_src).unwrap();
+
+        let store = TemplateStore::new();
+        let mut host = DefaultHost;
+        for (path, src) in [
+            (&page1, page1_src),
+            (&page2, page2_src),
+            (&page_inc, page_inc_src),
+        ] {
+            let opts = CompileOptions {
+                filename: Some(path.to_string_lossy().into_owned()),
+                ..CompileOptions::default()
+            };
+            compile_body_with_store(src, &opts, &mut host, &store).unwrap();
+        }
+
+        let base_id = store.id_for_path(base.to_str().unwrap()).unwrap();
+        let layout_id = store.id_for_path(layout.to_str().unwrap()).unwrap();
+        let header_id = store.id_for_path(header.to_str().unwrap()).unwrap();
+        let footer_id = store.id_for_path(footer.to_str().unwrap()).unwrap();
+        let nested_id = store.id_for_path(nested.to_str().unwrap()).unwrap();
+        let page1_id = store.id_for_path(page1.to_str().unwrap()).unwrap();
+        let page2_id = store.id_for_path(page2.to_str().unwrap()).unwrap();
+        let page_inc_id = store.id_for_path(page_inc.to_str().unwrap()).unwrap();
+
+        // Forward edges: page1 -> layout -> base + header + footer, header -> nested
+        assert_eq!(store.dag().direct_dependencies(page1_id), vec![layout_id]);
+        assert_eq!(
+            store.dag().direct_dependencies(layout_id),
+            vec![base_id, header_id, footer_id]
+        );
+        assert_eq!(store.dag().direct_dependencies(header_id), vec![nested_id]);
+
+        // Reverse closure from nested.pug reaches header, layout, page1, page2, page_inc without duplicates.
+        let affected_from_nested = store.dag().collect_affected(&[nested_id]);
+        for expected in [nested_id, header_id, layout_id, page1_id, page2_id, page_inc_id] {
+            assert!(affected_from_nested.contains(&expected));
+        }
+        assert!(!affected_from_nested.contains(&base_id));
+        assert!(!affected_from_nested.contains(&footer_id));
+        let unique: std::collections::HashSet<TemplateId> =
+            affected_from_nested.iter().copied().collect();
+        assert_eq!(unique.len(), affected_from_nested.len());
+
+        // Reverse closure from footer.pug only affects layout, page1, page2 (not page_inc).
+        let affected_from_footer = store.dag().collect_affected(&[footer_id]);
+        assert!(affected_from_footer.contains(&layout_id));
+        assert!(affected_from_footer.contains(&page1_id));
+        assert!(affected_from_footer.contains(&page2_id));
+        assert!(!affected_from_footer.contains(&page_inc_id));
+
+        // Circular dependency in DependencyGraph terminates cleanly with no duplicates.
+        let cycle_dag = DependencyGraph::new();
+        let a = TemplateId(100);
+        let b = TemplateId(101);
+        cycle_dag.set_dependencies(
+            a,
+            vec![DependencyEdge {
+                target: b,
+                kind: DependencyKind::Include,
+            }],
+        );
+        cycle_dag.set_dependencies(
+            b,
+            vec![DependencyEdge {
+                target: a,
+                kind: DependencyKind::Include,
+            }],
+        );
+        let cycle_affected = cycle_dag.collect_affected(&[a]);
+        assert_eq!(cycle_affected.len(), 2);
+        assert!(cycle_affected.contains(&a) && cycle_affected.contains(&b));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -27,7 +27,7 @@ test('Phase 3C: createCompiler and compileBatch share layout/includes across bat
     }
 
     const compiler = pug.createCompiler({ basedir: dir, compileDebug: false });
-    const compiled = compiler.compileEntries(pages);
+    const compiled = compiler.compileEntries(pages, { parallel: false });
     assert.equal(compiled.length, 10);
     for (let i = 0; i < 10; i++) {
       assert.equal(compiled[i].ok, true);

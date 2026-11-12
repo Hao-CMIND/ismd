@@ -1,11 +1,12 @@
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use pug_error::PugError;
 use rayon::prelude::*;
 
 use crate::{
-    CompileOptions, DefaultHost, TemplateStore, TemplateStoreStats, compile_body_with_store,
-    io_read_error,
+    CompileOptions, DefaultHost, TemplateId, TemplateStore, TemplateStoreStats,
+    compile_body_with_store, io_read_error, normalize_cache_path,
 };
 
 pub const DEFAULT_PARALLEL_THRESHOLD: usize = 8;
@@ -52,23 +53,34 @@ pub struct BatchEntryOutput {
     pub plain_error_code: Option<String>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IncrementalUpdateReport {
+    pub changed: bool,
+    pub changed_files: Vec<String>,
+    pub invalidated_templates: Vec<String>,
+    pub affected_entries: Vec<String>,
+}
+
 pub struct CompilerSession {
     store: Arc<TemplateStore>,
     default_options: CompileOptions,
+    registered_entries: RwLock<Vec<BatchEntryInput>>,
+    entry_index_by_path: RwLock<HashMap<String, usize>>,
+    pending_affected: RwLock<Vec<usize>>,
 }
 
 impl CompilerSession {
     pub fn new(default_options: CompileOptions) -> Self {
-        Self {
-            store: Arc::new(TemplateStore::new()),
-            default_options,
-        }
+        Self::with_store(Arc::new(TemplateStore::new()), default_options)
     }
 
     pub fn with_store(store: Arc<TemplateStore>, default_options: CompileOptions) -> Self {
         Self {
             store,
             default_options,
+            registered_entries: RwLock::new(Vec::new()),
+            entry_index_by_path: RwLock::new(HashMap::new()),
+            pending_affected: RwLock::new(Vec::new()),
         }
     }
 
@@ -80,20 +92,210 @@ impl CompilerSession {
         &self.default_options
     }
 
-    pub fn update_files(&self, files: &[(String, String)]) {
-        for (path, source) in files {
-            self.store.update_virtual_source(path, source.clone());
+    pub fn register_entries(&self, entries: &[BatchEntryInput]) {
+        let mut reg = self
+            .registered_entries
+            .write()
+            .expect("registered_entries rwlock poisoned");
+        let mut by_path = self
+            .entry_index_by_path
+            .write()
+            .expect("entry_index_by_path rwlock poisoned");
+        for entry in entries {
+            let key_path = entry
+                .filename
+                .as_deref()
+                .or(entry.options.as_ref().and_then(|o| o.filename.as_deref()))
+                .unwrap_or(&entry.id);
+            let norm = normalize_cache_path(key_path);
+            if let Some(&idx) = by_path.get(&norm) {
+                reg[idx] = entry.clone();
+            } else {
+                let idx = reg.len();
+                reg.push(entry.clone());
+                by_path.insert(norm, idx);
+            }
         }
     }
 
-    pub fn invalidate_files(&self, paths: &[String]) {
-        for path in paths {
-            self.store.invalidate_path(path);
+    pub fn update_files(&self, files: &[(String, String)]) {
+        let _ = self.update_files_incremental(files);
+    }
+
+    pub fn update_files_incremental(&self, files: &[(String, String)]) -> IncrementalUpdateReport {
+        let mut changed_files = Vec::new();
+        let mut changed_ids = Vec::new();
+        for (path, source) in files {
+            let (entry, changed) = self
+                .store
+                .update_virtual_source_checked(path, source.clone());
+            if changed {
+                changed_files.push(path.clone());
+                changed_ids.push(entry.id);
+            }
         }
+
+        if changed_ids.is_empty() {
+            return IncrementalUpdateReport::default();
+        }
+
+        // If any registered entry previously had inline `source: Some(...)` and its path was updated,
+        // clear inline source so subsequent compileAffected reads the updated source from TemplateStore.
+        {
+            let changed_norms: HashSet<String> = files
+                .iter()
+                .map(|(p, _)| normalize_cache_path(p))
+                .collect();
+            let mut reg = self
+                .registered_entries
+                .write()
+                .expect("registered_entries rwlock poisoned");
+            for entry in reg.iter_mut() {
+                if entry.source.is_some() {
+                    let key_path = entry
+                        .filename
+                        .as_deref()
+                        .or(entry.options.as_ref().and_then(|o| o.filename.as_deref()))
+                        .unwrap_or(&entry.id);
+                    if changed_norms.contains(&normalize_cache_path(key_path)) {
+                        entry.source = None;
+                    }
+                }
+            }
+        }
+
+        self.build_invalidation_report(changed_files, &changed_ids)
+    }
+
+    pub fn invalidate_files(&self, paths: &[String]) {
+        let _ = self.invalidate_files_incremental(paths);
+    }
+
+    pub fn invalidate_files_incremental(&self, paths: &[String]) -> IncrementalUpdateReport {
+        let mut changed_files = Vec::new();
+        let mut changed_ids = Vec::new();
+        for path in paths {
+            if let Some(id) = self.store.invalidate_path_checked(path) {
+                changed_files.push(path.clone());
+                changed_ids.push(id);
+            }
+        }
+        if changed_ids.is_empty() {
+            return IncrementalUpdateReport::default();
+        }
+        self.build_invalidation_report(changed_files, &changed_ids)
+    }
+
+    fn build_invalidation_report(
+        &self,
+        changed_files: Vec<String>,
+        changed_ids: &[TemplateId],
+    ) -> IncrementalUpdateReport {
+        let affected_ids = self.store.dag().collect_affected(changed_ids);
+        let affected_id_set: HashSet<TemplateId> = affected_ids.iter().copied().collect();
+
+        let mut invalidated_templates = Vec::with_capacity(affected_ids.len());
+        for &id in &affected_ids {
+            if let Some(path) = self.store.path_for_id(id) {
+                invalidated_templates.push(path);
+            }
+        }
+
+        let reg = self
+            .registered_entries
+            .read()
+            .expect("registered_entries rwlock poisoned");
+        let mut affected_entries = Vec::new();
+        let mut affected_indices = Vec::new();
+        for (idx, entry) in reg.iter().enumerate() {
+            let key_path = entry
+                .filename
+                .as_deref()
+                .or(entry.options.as_ref().and_then(|o| o.filename.as_deref()))
+                .unwrap_or(&entry.id);
+            if let Some(entry_id) = self.store.id_for_path(key_path) {
+                if affected_id_set.contains(&entry_id) {
+                    affected_entries.push(entry.id.clone());
+                    affected_indices.push(idx);
+                }
+            }
+        }
+        drop(reg);
+
+        if !affected_indices.is_empty() {
+            let mut pending = self
+                .pending_affected
+                .write()
+                .expect("pending_affected rwlock poisoned");
+            let mut seen: HashSet<usize> = pending.iter().copied().collect();
+            for idx in affected_indices {
+                if seen.insert(idx) {
+                    pending.push(idx);
+                }
+            }
+        }
+
+        IncrementalUpdateReport {
+            changed: true,
+            changed_files,
+            invalidated_templates,
+            affected_entries,
+        }
+    }
+
+    pub fn affected_entries(&self) -> Vec<String> {
+        let pending = self
+            .pending_affected
+            .read()
+            .expect("pending_affected rwlock poisoned");
+        let reg = self
+            .registered_entries
+            .read()
+            .expect("registered_entries rwlock poisoned");
+        pending
+            .iter()
+            .filter_map(|&idx| reg.get(idx).map(|e| e.id.clone()))
+            .collect()
+    }
+
+    pub fn compile_affected_with_mode(&self, mode: ParallelMode) -> Vec<BatchEntryOutput> {
+        let indices: Vec<usize> = {
+            let mut pending = self
+                .pending_affected
+                .write()
+                .expect("pending_affected rwlock poisoned");
+            std::mem::take(&mut *pending)
+        };
+        if indices.is_empty() {
+            return Vec::new();
+        }
+        let entries: Vec<BatchEntryInput> = {
+            let reg = self
+                .registered_entries
+                .read()
+                .expect("registered_entries rwlock poisoned");
+            indices
+                .into_iter()
+                .filter_map(|idx| reg.get(idx).cloned())
+                .collect()
+        };
+        compile_batch_with_mode(&entries, &self.default_options, &self.store, mode)
     }
 
     pub fn clear(&self) {
         self.store.clear();
+        self.registered_entries
+            .write()
+            .expect("registered_entries rwlock poisoned")
+            .clear();
+        self.entry_index_by_path
+            .write()
+            .expect("entry_index_by_path rwlock poisoned")
+            .clear();
+        self.pending_affected
+            .write()
+            .expect("pending_affected rwlock poisoned")
+            .clear();
     }
 
     pub fn stats(&self) -> TemplateStoreStats {
@@ -101,6 +303,7 @@ impl CompilerSession {
     }
 
     pub fn compile_entries(&self, entries: &[BatchEntryInput]) -> Vec<BatchEntryOutput> {
+        self.register_entries(entries);
         compile_batch_with_store(entries, &self.default_options, &self.store)
     }
 
@@ -109,6 +312,7 @@ impl CompilerSession {
         entries: &[BatchEntryInput],
         mode: ParallelMode,
     ) -> Vec<BatchEntryOutput> {
+        self.register_entries(entries);
         compile_batch_with_mode(entries, &self.default_options, &self.store, mode)
     }
 }

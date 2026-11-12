@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 pub use dag::{DependencyEdge, DependencyGraph, DependencyGraphStats};
 pub use session::{
-    BatchEntryInput, BatchEntryOutput, CompilerSession, DEFAULT_PARALLEL_THRESHOLD, ParallelMode,
-    compile_batch_with_mode, compile_batch_with_store,
+    BatchEntryInput, BatchEntryOutput, CompilerSession, DEFAULT_PARALLEL_THRESHOLD,
+    IncrementalUpdateReport, ParallelMode, compile_batch_with_mode, compile_batch_with_store,
 };
 pub use store::{
     DeclaredBlockMeta, DependencyKind, DependencyRef, ParseKey, ParsedTemplate, SourceEntry,
@@ -1236,6 +1236,145 @@ mod tests {
         let cycle_affected = cycle_dag.collect_affected(&[a]);
         assert_eq!(cycle_affected.len(), 2);
         assert!(cycle_affected.contains(&a) && cycle_affected.contains(&b));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn incremental_invalidation_handles_page_include_layout_noop_and_sequential_edits() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug-inc-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let header = dir.join("header.pug");
+        let footer = dir.join("footer.pug");
+        let layout = dir.join("layout.pug");
+        let header_src = "header InitialHeader\n";
+        let footer_src = "footer InitialFooter\n";
+        let layout_src =
+            "html\n  body\n    include header.pug\n    block content\n    include footer.pug\n";
+        std::fs::write(&header, header_src).unwrap();
+        std::fs::write(&footer, footer_src).unwrap();
+        std::fs::write(&layout, layout_src).unwrap();
+
+        let mut entries = Vec::new();
+        let mut page_paths = Vec::new();
+        for i in 1..=10 {
+            let p = dir.join(format!("page{i}.pug"));
+            std::fs::write(
+                &p,
+                format!("extends layout.pug\nblock content\n  p Page {i}\n"),
+            )
+            .unwrap();
+            let p_str = p.to_string_lossy().into_owned();
+            entries.push(BatchEntryInput {
+                id: p_str.clone(),
+                filename: Some(p_str.clone()),
+                source: None,
+                options: None,
+            });
+            page_paths.push(p_str);
+        }
+
+        let session = CompilerSession::new(CompileOptions {
+            basedir: Some(dir.to_string_lossy().into_owned()),
+            ..CompileOptions::default()
+        });
+        let initial = session.compile_entries(&entries);
+        assert_eq!(initial.len(), 10);
+        assert!(initial.iter().all(|o| o.ok));
+
+        // Test D: Updating with identical source is a complete no-op
+        let noop_report = session.update_files_incremental(&[(
+            header.to_string_lossy().into_owned(),
+            header_src.to_string(),
+        )]);
+        assert!(!noop_report.changed);
+        assert!(noop_report.changed_files.is_empty());
+        assert!(noop_report.invalidated_templates.is_empty());
+        assert!(noop_report.affected_entries.is_empty());
+        assert!(session.compile_affected_with_mode(ParallelMode::Auto(8)).is_empty());
+
+        // Test A: Modifying a single page affects ONLY that page; layout/header/footer stay cached
+        let stats_before_page = session.stats();
+        let page5_path = page_paths[4].clone();
+        let page_report = session.update_files_incremental(&[(
+            page5_path.clone(),
+            "extends layout.pug\nblock content\n  p Page 5 Updated\n".to_string(),
+        )]);
+        assert!(page_report.changed);
+        assert_eq!(page_report.affected_entries, vec![page5_path.clone()]);
+        let page_out = session.compile_affected_with_mode(ParallelMode::Auto(8));
+        assert_eq!(page_out.len(), 1);
+        assert_eq!(page_out[0].id, page5_path);
+        assert!(page_out[0].body.as_deref().unwrap().contains("Page 5 Updated"));
+        let stats_after_page = session.stats();
+        // layout + header + footer = 3 parse cache hits
+        assert_eq!(stats_after_page.parse_hits - stats_before_page.parse_hits, 3);
+        assert_eq!(stats_after_page.parse_misses - stats_before_page.parse_misses, 1);
+
+        // Test B: Modifying header.pug affects all 10 pages, while layout/footer/pages stay parsed
+        let stats_before_header = session.stats();
+        let header_report = session.update_files_incremental(&[(
+            header.to_string_lossy().into_owned(),
+            "header HotHeader\n".to_string(),
+        )]);
+        assert!(header_report.changed);
+        assert_eq!(header_report.affected_entries.len(), 10);
+        let header_out = session.compile_affected_with_mode(ParallelMode::Auto(8));
+        assert_eq!(header_out.len(), 10);
+        assert!(header_out
+            .iter()
+            .all(|o| o.body.as_deref().unwrap().contains("HotHeader")));
+        let stats_after_header = session.stats();
+        // Only header.pug was reparsed (1 miss); layout + footer + 10 pages hit cache (or >= 20 hits)
+        assert!(stats_after_header.parse_hits > stats_before_header.parse_hits);
+
+        // Test C: Modifying layout.pug affects all 10 pages, header/footer/pages stay cached
+        let stats_before_layout = session.stats();
+        let layout_report = session.update_files_incremental(&[(
+            layout.to_string_lossy().into_owned(),
+            "html\n  body.v2\n    include header.pug\n    block content\n    include footer.pug\n"
+                .to_string(),
+        )]);
+        assert!(layout_report.changed);
+        assert_eq!(layout_report.affected_entries.len(), 10);
+        let layout_out = session.compile_affected_with_mode(ParallelMode::Auto(8));
+        assert_eq!(layout_out.len(), 10);
+        assert!(layout_out
+            .iter()
+            .all(|o| o.body.as_deref().unwrap().contains("v2")));
+        let stats_after_layout = session.stats();
+        assert!(stats_after_layout.parse_hits > stats_before_layout.parse_hits);
+
+        // Test E: Sequential edits header -> page1 -> footer leave no stale output
+        session.update_files_incremental(&[(
+            header.to_string_lossy().into_owned(),
+            "header SeqHeader\n".to_string(),
+        )]);
+        let _ = session.compile_affected_with_mode(ParallelMode::Auto(8));
+        session.update_files_incremental(&[(
+            page_paths[0].clone(),
+            "extends layout.pug\nblock content\n  p Page 1 Seq\n".to_string(),
+        )]);
+        let p1_out = session.compile_affected_with_mode(ParallelMode::Auto(8));
+        assert_eq!(p1_out.len(), 1);
+        assert!(p1_out[0].body.as_deref().unwrap().contains("SeqHeader"));
+        assert!(p1_out[0].body.as_deref().unwrap().contains("Page 1 Seq"));
+        session.update_files_incremental(&[(
+            footer.to_string_lossy().into_owned(),
+            "footer SeqFooter\n".to_string(),
+        )]);
+        let footer_out = session.compile_affected_with_mode(ParallelMode::Auto(8));
+        assert_eq!(footer_out.len(), 10);
+        assert!(footer_out[0].body.as_deref().unwrap().contains("SeqHeader"));
+        assert!(footer_out[0].body.as_deref().unwrap().contains("Page 1 Seq"));
+        assert!(footer_out[0].body.as_deref().unwrap().contains("SeqFooter"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

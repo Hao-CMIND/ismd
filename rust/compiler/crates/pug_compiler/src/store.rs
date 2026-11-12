@@ -327,6 +327,16 @@ impl TemplateStore {
 
     /// Inserts or replaces virtual/in-memory UTF-8 template source for `full_path`.
     pub fn update_virtual_source(&self, full_path: &str, text: String) -> Arc<SourceEntry> {
+        self.update_virtual_source_checked(full_path, text).0
+    }
+
+    /// Inserts or replaces virtual/in-memory UTF-8 template source for `full_path`,
+    /// returning `(entry, changed)` where `changed` is `false` if content hash & length matched.
+    pub fn update_virtual_source_checked(
+        &self,
+        full_path: &str,
+        text: String,
+    ) -> (Arc<SourceEntry>, bool) {
         let norm = normalize_cache_path(full_path);
         let byte_len = text.len() as u64;
         let content_hash = hash_bytes(text.as_bytes());
@@ -335,7 +345,7 @@ impl TemplateStore {
             let guard = self.sources.read().expect("sources rwlock poisoned");
             if let Some(existing) = guard.get(&norm) {
                 if existing.byte_len == byte_len && existing.content_hash == content_hash {
-                    return Arc::clone(existing);
+                    return (Arc::clone(existing), false);
                 }
             }
         }
@@ -353,28 +363,43 @@ impl TemplateStore {
             content_hash,
             version,
         });
-        self.sources
-            .write()
-            .expect("sources rwlock poisoned")
-            .insert(norm.clone(), Arc::clone(&entry));
+        let mut guard = self.sources.write().expect("sources rwlock poisoned");
+        if let Some(existing) = guard.get(&norm) {
+            if existing.byte_len == byte_len && existing.content_hash == content_hash {
+                return (Arc::clone(existing), false);
+            }
+        }
+        guard.insert(norm.clone(), Arc::clone(&entry));
+        drop(guard);
         self.prune_parsed_for_path(&norm, version);
-        entry
+        (entry, true)
     }
 
     pub fn invalidate_path(&self, path: &str) {
+        let _ = self.invalidate_path_checked(path);
+    }
+
+    /// Invalidates cached source and parsed ASTs for `path`, returning its `TemplateId` if known.
+    pub fn invalidate_path_checked(&self, path: &str) -> Option<TemplateId> {
         let norm = normalize_cache_path(path);
-        self.sources
+        let removed_source = self
+            .sources
             .write()
             .expect("sources rwlock poisoned")
-            .remove(&norm);
-        self.parsed
-            .write()
-            .expect("parsed rwlock poisoned")
-            .retain(|k, _| k.normalized_path != norm);
-        self.resolved
-            .write()
-            .expect("resolved rwlock poisoned")
-            .clear();
+            .remove(&norm)
+            .is_some();
+        let mut parsed_guard = self.parsed.write().expect("parsed rwlock poisoned");
+        let before_len = parsed_guard.len();
+        parsed_guard.retain(|k, _| k.normalized_path != norm);
+        let removed_parsed = parsed_guard.len() != before_len;
+        drop(parsed_guard);
+        if removed_source || removed_parsed {
+            self.resolved
+                .write()
+                .expect("resolved rwlock poisoned")
+                .clear();
+        }
+        self.id_for_path(&norm)
     }
 
     pub fn clear(&self) {

@@ -1003,7 +1003,8 @@ function compileBody(str, options) {
       filterAliases: options.filterAliases || undefined,
       lexPluginMethods: lexBridge.methods,
     },
-    hostCallbacks
+    hostCallbacks,
+    options.templateStore || undefined
   );
 
   if (!outcome.ok && outcome.plainError) {
@@ -1080,6 +1081,7 @@ export function compile(str, options) {
     filterOptions: options.filterOptions,
     filterAliases: options.filterAliases,
     plugins: options.plugins,
+    templateStore: options.templateStore,
   });
 
   const res = options.inlineRuntimeFunctions
@@ -1110,6 +1112,7 @@ export function compileClientWithDependenciesTracked(str, options) {
     filterOptions: options.filterOptions,
     filterAliases: options.filterAliases,
     plugins: options.plugins,
+    templateStore: options.templateStore,
   });
 
   let body = parsed.body;
@@ -1212,6 +1215,22 @@ export function getLastProfileJson() {
     : null;
 }
 
+export function createTemplateStore() {
+  return new native.NativeTemplateStore();
+}
+
+export function clearDefaultTemplateStore() {
+  if (typeof native.clearDefaultTemplateStore === 'function') {
+    native.clearDefaultTemplateStore();
+  }
+}
+
+export function defaultTemplateStoreStats() {
+  return typeof native.defaultTemplateStoreStats === 'function'
+    ? native.defaultTemplateStoreStats()
+    : null;
+}
+
 export default {
   name,
   runtime,
@@ -1234,6 +1253,9 @@ export default {
   _link,
   _compileAttrs,
   _getLastProfileJson: getLastProfileJson,
+  createTemplateStore,
+  clearDefaultTemplateStore,
+  defaultTemplateStoreStats,
   compile,
   compileClientWithDependenciesTracked,
   compileClient,

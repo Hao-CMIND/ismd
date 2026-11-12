@@ -3,7 +3,10 @@ use napi::{Env, JsValue};
 use napi_derive::napi;
 use pug_ast::{Attribute, BlockNode, RawContent, Token};
 use pug_attrs::{AttrsFormat, compile_attrs};
-use pug_compiler::{CompileOptions, CompilerHost, FileCtx, LoadedFile, compile_body, default_resolve};
+use pug_compiler::{
+    CompileOptions, CompilerHost, FileCtx, LoadedFile, TemplateStore, TemplateStoreStats,
+    compile_body_with_store, default_global_store, default_resolve,
+};
 use pug_error::{ErrorOptions, PugError};
 use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
 use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
@@ -14,6 +17,7 @@ use pug_strip_comments::{StripCommentsOptions, strip_comments_json};
 use pug_walk::walk_json_ast;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
@@ -480,6 +484,41 @@ struct NodeHostAdapter<'env> {
     env: Env,
     callbacks: Option<Object<'env>>,
     pending_js_error: Option<napi::Error>,
+    custom_resolve: bool,
+    custom_read: bool,
+    lex_parse_hooks: bool,
+}
+
+fn has_callback_prop(callbacks: &Option<Object<'_>>, name: &str) -> Result<bool> {
+    let Some(obj) = callbacks else {
+        return Ok(false);
+    };
+    if !obj.has_named_property(name)? {
+        return Ok(false);
+    }
+    let val: Unknown<'_> = obj.get_named_property(name)?;
+    Ok(val.get_type()? != ValueType::Undefined && val.get_type()? != ValueType::Null)
+}
+
+impl<'env> NodeHostAdapter<'env> {
+    fn new(env: Env, callbacks: Option<Object<'env>>) -> Result<Self> {
+        let custom_resolve = has_callback_prop(&callbacks, "resolve")?;
+        let custom_read = has_callback_prop(&callbacks, "read")?;
+        let lex_parse_hooks = has_callback_prop(&callbacks, "preLex")?
+            || has_callback_prop(&callbacks, "postLex")?
+            || has_callback_prop(&callbacks, "preParse")?
+            || has_callback_prop(&callbacks, "postParse")?
+            || has_callback_prop(&callbacks, "preLoad")?
+            || has_callback_prop(&callbacks, "lexPluginStep")?;
+        Ok(Self {
+            env,
+            callbacks,
+            pending_js_error: None,
+            custom_resolve,
+            custom_read,
+            lex_parse_hooks,
+        })
+    }
 }
 
 fn unknown_to_raw_content<'env>(
@@ -909,6 +948,18 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
             Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
         invoke_js_lex_step(self.env, &cb, method, state, &mut self.pending_js_error)
     }
+
+    fn has_custom_resolve(&self) -> bool {
+        self.custom_resolve
+    }
+
+    fn has_custom_read(&self) -> bool {
+        self.custom_read
+    }
+
+    fn has_lex_parse_hooks(&self) -> bool {
+        self.lex_parse_hooks
+    }
 }
 
 fn invoke_js_filter<'env>(
@@ -1323,12 +1374,84 @@ pub fn link_sync(ast: Value) -> Result<NapiJsonOutcome> {
     }
 }
 
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct NapiTemplateStoreStats {
+    pub sources: u32,
+    pub parsed: u32,
+    pub resolved: u32,
+    pub source_hits: f64,
+    pub source_misses: f64,
+    pub parse_hits: f64,
+    pub parse_misses: f64,
+}
+
+impl From<TemplateStoreStats> for NapiTemplateStoreStats {
+    fn from(s: TemplateStoreStats) -> Self {
+        Self {
+            sources: s.sources as u32,
+            parsed: s.parsed as u32,
+            resolved: s.resolved as u32,
+            source_hits: s.source_hits as f64,
+            source_misses: s.source_misses as f64,
+            parse_hits: s.parse_hits as f64,
+            parse_misses: s.parse_misses as f64,
+        }
+    }
+}
+
+#[napi]
+pub struct NativeTemplateStore {
+    inner: Arc<TemplateStore>,
+}
+
+#[napi]
+impl NativeTemplateStore {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(TemplateStore::new()),
+        }
+    }
+
+    #[napi]
+    pub fn invalidate_path(&self, path: String) {
+        self.inner.invalidate_path(&path);
+    }
+
+    #[napi]
+    pub fn update_virtual_source(&self, path: String, source: String) {
+        self.inner.update_virtual_source(&path, source);
+    }
+
+    #[napi]
+    pub fn clear(&self) {
+        self.inner.clear();
+    }
+
+    #[napi]
+    pub fn stats(&self) -> NapiTemplateStoreStats {
+        NapiTemplateStoreStats::from(self.inner.stats())
+    }
+}
+
+#[napi]
+pub fn clear_default_template_store() {
+    default_global_store().clear();
+}
+
+#[napi]
+pub fn default_template_store_stats() -> NapiTemplateStoreStats {
+    NapiTemplateStoreStats::from(default_global_store().stats())
+}
+
 #[napi]
 pub fn compile_body_sync(
     env: Env,
     source: String,
     options: NapiCompileOptions,
     callbacks: Option<Object>,
+    store: Option<&NativeTemplateStore>,
 ) -> Result<NapiCompileOutcome> {
     let _prof_session = pug_ast::profile::begin_session();
     let entry_scope = pug_ast::profile::scope(pug_ast::profile::Stage::NapiEntry);
@@ -1350,15 +1473,15 @@ pub fn compile_body_sync(
         lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
     };
 
-    let mut host = NodeHostAdapter {
-        env,
-        callbacks,
-        pending_js_error: None,
+    let mut host = NodeHostAdapter::new(env, callbacks)?;
+    let store_ref: &TemplateStore = match store {
+        Some(s) => s.inner.as_ref(),
+        None => default_global_store(),
     };
     drop(entry_scope);
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile_body(&source, &compile_opts, &mut host)
+        compile_body_with_store(&source, &compile_opts, &mut host, store_ref)
     }));
 
     let _prof_return = pug_ast::profile::scope(pug_ast::profile::Stage::NapiReturn);

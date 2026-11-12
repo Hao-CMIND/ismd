@@ -109,6 +109,15 @@ impl Stage {
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct FileProfileCounters {
+    pub read_count: u64,
+    pub lexer_count: u64,
+    pub parser_count: u64,
+    pub source_cache_hit_count: u64,
+    pub parse_cache_hit_count: u64,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct ProfileCounters {
     pub lexer_count: u64,
     pub parser_count: u64,
@@ -124,6 +133,11 @@ pub struct ProfileCounters {
     pub layout_parse_count: u64,
     pub include_parse_count: u64,
     pub allocator_create_count: u64,
+    pub source_cache_hit_count: u64,
+    pub parse_cache_hit_count: u64,
+    pub ast_clone_count: u64,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub per_file: std::collections::BTreeMap<String, FileProfileCounters>,
 }
 
 #[cfg(feature = "profile")]
@@ -290,6 +304,22 @@ mod imp {
         });
     }
 
+    pub fn record_file(
+        filename: Option<&str>,
+        f: impl FnOnce(&mut super::FileProfileCounters),
+    ) {
+        let Some(name) = filename else {
+            return;
+        };
+        STATE.with(|cell| {
+            let mut st = cell.borrow_mut();
+            if st.active {
+                let entry = st.counters.per_file.entry(name.to_string()).or_default();
+                f(entry);
+            }
+        });
+    }
+
     pub fn last_report_json() -> Option<String> {
         STATE.with(|cell| cell.borrow().last_json.clone())
     }
@@ -297,7 +327,7 @@ mod imp {
 
 #[cfg(not(feature = "profile"))]
 mod imp {
-    use super::{ProfileCounters, Stage};
+    use super::{FileProfileCounters, ProfileCounters, Stage};
 
     pub struct ScopeGuard;
     pub struct SessionGuard;
@@ -316,9 +346,14 @@ mod imp {
     pub fn with_counters(_f: impl FnOnce(&mut ProfileCounters)) {}
 
     #[inline(always)]
+    pub fn record_file(_filename: Option<&str>, _f: impl FnOnce(&mut FileProfileCounters)) {}
+
+    #[inline(always)]
     pub fn last_report_json() -> Option<String> {
         None
     }
 }
 
-pub use imp::{ScopeGuard, SessionGuard, begin_session, last_report_json, scope, with_counters};
+pub use imp::{
+    ScopeGuard, SessionGuard, begin_session, last_report_json, record_file, scope, with_counters,
+};

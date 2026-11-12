@@ -1,4 +1,6 @@
-use pug_ast::profile::{Stage, scope, with_counters};
+pub mod store;
+
+use pug_ast::profile::{Stage, record_file, scope, with_counters};
 use pug_ast::{BlockNode, RawContent, Token};
 use pug_code_gen::{CodeGenOptions, generate_code};
 use pug_error::PugError;
@@ -13,6 +15,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
+pub use store::{
+    DeclaredBlockMeta, DependencyKind, DependencyRef, ParseKey, ParsedTemplate, SourceEntry,
+    TemplateId, TemplateStore, TemplateStoreStats, collect_ast_metadata, default_global_store,
+    hash_bytes, normalize_cache_path,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompileOptions {
@@ -161,6 +169,18 @@ pub trait CompilerHost {
         let _ = (method, state);
         Ok(false)
     }
+
+    fn has_custom_resolve(&self) -> bool {
+        true
+    }
+
+    fn has_custom_read(&self) -> bool {
+        true
+    }
+
+    fn has_lex_parse_hooks(&self) -> bool {
+        true
+    }
 }
 
 pub struct DefaultHost;
@@ -171,6 +191,18 @@ impl CompilerHost for DefaultHost {
         _filename: Option<&str>,
     ) -> Result<Cow<'s, str>, PugError> {
         Ok(Cow::Borrowed(source))
+    }
+
+    fn has_custom_resolve(&self) -> bool {
+        false
+    }
+
+    fn has_custom_read(&self) -> bool {
+        false
+    }
+
+    fn has_lex_parse_hooks(&self) -> bool {
+        false
     }
 }
 
@@ -302,12 +334,22 @@ pub fn default_resolve(
 // Compilation session: Lexer -> StripComments -> Parser (+hooks) -> Loader.
 // ---------------------------------------------------------------------------
 
+struct LoadedSourceMeta {
+    path: String,
+    id: TemplateId,
+    version: u64,
+    content_hash: u64,
+    byte_len: u64,
+}
+
 struct Session<'a, H: CompilerHost> {
     host: &'a mut H,
     options: &'a CompileOptions,
+    store: &'a TemplateStore,
     dependencies: Vec<String>,
     /// `debug_sources` of the baseline: insertion ordered, later writes overwrite the value in place.
     debug_sources: Vec<(String, String)>,
+    last_loaded: Option<LoadedSourceMeta>,
 }
 
 struct HostLexBridge<'a, H: CompilerHost> {
@@ -320,6 +362,26 @@ impl<H: CompilerHost> LexerPluginHook for HostLexBridge<'_, H> {
     }
 }
 
+fn io_read_error(
+    e: std::io::Error,
+    full_path: &str,
+    node_filename: Option<&str>,
+    node_line: usize,
+) -> PugError {
+    let pug_err = match e.kind() {
+        std::io::ErrorKind::NotFound => PugError::host_exception_with_code(
+            "ENOENT",
+            format!("ENOENT: no such file or directory, open '{full_path}'"),
+        ),
+        std::io::ErrorKind::PermissionDenied => PugError::host_exception_with_code(
+            "EACCES",
+            format!("EACCES: permission denied, open '{full_path}'"),
+        ),
+        _ => PugError::host_exception(format!("{e}, open '{full_path}'")),
+    };
+    annotate_load_error(pug_err, node_filename, node_line)
+}
+
 impl<H: CompilerHost> Session<'_, H> {
     fn record_source(&mut self, key: String, text: String) {
         if let Some(entry) = self.debug_sources.iter_mut().find(|(k, _)| *k == key) {
@@ -329,12 +391,83 @@ impl<H: CompilerHost> Session<'_, H> {
         }
     }
 
-    /// `options.lex` + `options.parse` of the baseline `compileBody` for one file, ending with `preLoad`.
     fn lex_and_parse(&mut self, src: &str, filename: Option<&str>) -> Result<BlockNode, PugError> {
-        let ctx = FileCtx { filename, src };
+        let can_use_parse_cache = !self.host.has_lex_parse_hooks()
+            && self.options.lex_plugin_methods.is_empty();
 
-        // lex: preLex -> lexer -> postLex
-        let contents = self.host.pre_lex_cow(src, filename)?;
+        if can_use_parse_cache && let Some(fname) = filename {
+            let (id, source_version, content_hash, byte_len) =
+                if let Some(ref meta) = self.last_loaded
+                    && meta.path == fname
+                {
+                    (meta.id, meta.version, meta.content_hash, meta.byte_len)
+                } else {
+                    (
+                        self.store.get_or_alloc_id(fname),
+                        0,
+                        hash_bytes(src.as_bytes()),
+                        src.len() as u64,
+                    )
+                };
+
+            let key = ParseKey {
+                normalized_path: normalize_cache_path(fname),
+                filename: fname.to_string(),
+                content_hash,
+                byte_len,
+                source_version,
+                lex_plugin_methods: Vec::new(),
+            };
+
+            if let Some(cached) = self.store.get_parsed(&key) {
+                with_counters(|c| {
+                    c.parse_cache_hit_count += 1;
+                    c.ast_clone_count += 1;
+                });
+                record_file(Some(fname), |fc| fc.parse_cache_hit_count += 1);
+                for warning in &cached.warnings {
+                    self.host.warn(warning);
+                }
+                return Ok((*cached.ast).clone());
+            }
+
+            let (ast, warnings) = self.lex_strip_and_parse(src, Some(fname), false)?;
+            for warning in &warnings {
+                self.host.warn(warning);
+            }
+            let (direct_dependencies, declared_blocks) = collect_ast_metadata(&ast);
+            let ast_arc = Arc::new(ast.clone());
+            self.store.insert_parsed(
+                key,
+                ParsedTemplate {
+                    id,
+                    source_version,
+                    content_hash,
+                    filename: Arc::from(fname),
+                    ast: ast_arc,
+                    direct_dependencies,
+                    declared_blocks,
+                    warnings,
+                },
+            );
+            return Ok(ast);
+        }
+
+        self.lex_and_parse_uncached(src, filename)
+    }
+
+    fn lex_strip_and_parse(
+        &mut self,
+        src: &str,
+        filename: Option<&str>,
+        with_lex_hooks: bool,
+    ) -> Result<(BlockNode, Vec<String>), PugError> {
+        let ctx = FileCtx { filename, src };
+        let contents = if with_lex_hooks {
+            self.host.pre_lex_cow(src, filename)?
+        } else {
+            Cow::Borrowed(src)
+        };
         let lex_opts = LexerOptions {
             filename: filename.map(String::from),
             plugin_methods: self.options.lex_plugin_methods.clone(),
@@ -343,6 +476,7 @@ impl<H: CompilerHost> Session<'_, H> {
         let mut tokens = {
             let _g = scope(Stage::Lexer);
             with_counters(|c| c.lexer_count += 1);
+            record_file(filename, |fc| fc.lexer_count += 1);
             if lex_opts.plugin_methods.is_empty() {
                 lex(&contents, &lex_opts)?
             } else {
@@ -350,7 +484,9 @@ impl<H: CompilerHost> Session<'_, H> {
                 lex_with_hook(&contents, &lex_opts, &mut bridge)?
             }
         };
-        tokens = self.host.post_lex(tokens, &ctx)?;
+        if with_lex_hooks {
+            tokens = self.host.post_lex(tokens, &ctx)?;
+        }
 
         // parse adapter: append `.pug` to extensionless path tokens
         for tok in &mut tokens {
@@ -368,16 +504,27 @@ impl<H: CompilerHost> Session<'_, H> {
                 StripCommentsOptions::new(true, false, filename.map(String::from)),
             )?
         };
-        tokens = self.host.pre_parse(tokens, &ctx)?;
+        if with_lex_hooks {
+            tokens = self.host.pre_parse(tokens, &ctx)?;
+        }
         let parse_opts = ParserOptions {
             filename: filename.map(String::from),
             src: Some(src.to_string()),
         };
-        let (mut ast, warnings) = {
-            let _g = scope(Stage::Parser);
-            with_counters(|c| c.parser_count += 1);
-            parse_owned_with_warnings(tokens, &parse_opts)?
-        };
+        let _g = scope(Stage::Parser);
+        with_counters(|c| c.parser_count += 1);
+        record_file(filename, |fc| fc.parser_count += 1);
+        parse_owned_with_warnings(tokens, &parse_opts)
+    }
+
+    /// `options.lex` + `options.parse` of the baseline `compileBody` for one file, ending with `preLoad`.
+    fn lex_and_parse_uncached(
+        &mut self,
+        src: &str,
+        filename: Option<&str>,
+    ) -> Result<BlockNode, PugError> {
+        let ctx = FileCtx { filename, src };
+        let (mut ast, warnings) = self.lex_strip_and_parse(src, filename, true)?;
         for warning in warnings {
             self.host.warn(&warning);
         }
@@ -409,6 +556,43 @@ impl<H: CompilerHost> LoadHost for Session<'_, H> {
         node_filename: Option<&str>,
         node_line: usize,
     ) -> Result<LoadedFile, PugError> {
+        if !self.host.has_custom_resolve() && !self.host.has_custom_read() {
+            let full_path = {
+                let _prof_res = scope(Stage::Resolve);
+                with_counters(|c| c.resolve_count += 1);
+                self.store.resolve_path(
+                    path,
+                    source,
+                    self.options.basedir.as_deref(),
+                    || {
+                        default_resolve(path, source, self.options.basedir.as_deref())
+                            .map_err(|e| annotate_load_error(e, node_filename, node_line))
+                    },
+                )?
+            };
+            let (entry, _hit) = self
+                .store
+                .load_or_read_disk(&full_path)
+                .map_err(|e| io_read_error(e, &full_path, node_filename, node_line))?;
+            self.last_loaded = Some(LoadedSourceMeta {
+                path: full_path.clone(),
+                id: entry.id,
+                version: entry.version,
+                content_hash: entry.content_hash,
+                byte_len: entry.byte_len,
+            });
+            let loaded = LoadedFile {
+                full_path,
+                raw: entry.to_raw_content(),
+                text: entry.text.to_string(),
+            };
+            self.dependencies.push(loaded.full_path.clone());
+            if self.options.include_sources {
+                self.record_source(loaded.full_path.clone(), loaded.text.clone());
+            }
+            return Ok(loaded);
+        }
+
         let loaded = self
             .host
             .load_file(path, source, node_filename, node_line, self.options)?;
@@ -444,12 +628,23 @@ pub fn compile_body<H: CompilerHost>(
     options: &CompileOptions,
     host: &mut H,
 ) -> Result<CompileResult, PugError> {
+    compile_body_with_store(source, options, host, default_global_store())
+}
+
+pub fn compile_body_with_store<H: CompilerHost>(
+    source: &str,
+    options: &CompileOptions,
+    host: &mut H,
+    store: &TemplateStore,
+) -> Result<CompileResult, PugError> {
     let _other = scope(Stage::Other);
     let mut session = Session {
         host,
         options,
+        store,
         dependencies: Vec::new(),
         debug_sources: Vec::new(),
+        last_loaded: None,
     };
     if options.include_sources {
         session.record_source(
@@ -568,5 +763,121 @@ mod tests {
         assert_eq!(node_extname(".hidden"), "");
         assert_eq!(node_extname("a."), ".");
         assert_eq!(node_extname("dir.d/a"), "");
+    }
+
+    #[test]
+    fn template_store_shares_layout_and_includes_across_pages() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug_store_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout_path = dir.join("layout.pug");
+        let header_path = dir.join("header.pug");
+        let footer_path = dir.join("footer.pug");
+        std::fs::write(&header_path, "header.site Header\n").unwrap();
+        std::fs::write(&footer_path, "footer.site Footer\n").unwrap();
+        std::fs::write(
+            &layout_path,
+            "html\n  body\n    include header.pug\n    block content\n    include footer.pug\n",
+        )
+        .unwrap();
+
+        let store = TemplateStore::new();
+        let mut results = Vec::new();
+        for i in 1..=5 {
+            let page_path = dir.join(format!("page{i}.pug"));
+            let page_src = format!("extends layout.pug\nblock content\n  p Page {i}\n");
+            let opts = CompileOptions {
+                filename: Some(page_path.to_string_lossy().into_owned()),
+                ..CompileOptions::default()
+            };
+            let mut host = DefaultHost;
+            let res = compile_body_with_store(&page_src, &opts, &mut host, &store).unwrap();
+            assert!(res.body.contains(&format!("Page {i}")));
+            assert_eq!(res.dependencies.len(), 3);
+            results.push(res.body);
+        }
+
+        let stats = store.stats();
+        // 3 dependency sources read & parsed once across 5 pages -> 4 misses (1 each for layout/header/footer? 3 misses!),
+        // then 4 hits on pages 2..5 => 3 * 4 = 12 source hits & 12 parse hits!
+        assert_eq!(stats.sources, 3);
+        assert_eq!(stats.source_misses, 3);
+        assert_eq!(stats.source_hits, 12);
+        assert_eq!(stats.parse_hits, 12);
+
+        // Update header in virtual store and confirm invalidation/re-parse updates output cleanly.
+        store.update_virtual_source(
+            &header_path.to_string_lossy(),
+            String::from("header.site UpdatedHeader\n"),
+        );
+        let page_opts = CompileOptions {
+            filename: Some(dir.join("page1.pug").to_string_lossy().into_owned()),
+            ..CompileOptions::default()
+        };
+        let mut host = DefaultHost;
+        let updated = compile_body_with_store(
+            "extends layout.pug\nblock content\n  p Page 1\n",
+            &page_opts,
+            &mut host,
+            &store,
+        )
+        .unwrap();
+        assert!(updated.body.contains("UpdatedHeader"));
+        assert!(!updated.body.contains(">Header<"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn template_store_isolates_different_filename_parse_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "pug_store_key_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("a/inc.pug"), "p same\n").unwrap();
+        std::fs::write(dir.join("b/inc.pug"), "p same\n").unwrap();
+
+        let store = TemplateStore::new();
+        let mut host = DefaultHost;
+        let res_a = compile_body_with_store(
+            "include inc.pug",
+            &CompileOptions {
+                filename: Some(dir.join("a/main.pug").to_string_lossy().into_owned()),
+                compile_debug: true,
+                ..CompileOptions::default()
+            },
+            &mut host,
+            &store,
+        )
+        .unwrap();
+        let res_b = compile_body_with_store(
+            "include inc.pug",
+            &CompileOptions {
+                filename: Some(dir.join("b/main.pug").to_string_lossy().into_owned()),
+                compile_debug: true,
+                ..CompileOptions::default()
+            },
+            &mut host,
+            &store,
+        )
+        .unwrap();
+
+        assert_ne!(res_a.dependencies, res_b.dependencies);
+        assert!(res_a.body.contains("a"));
+        assert!(res_b.body.contains("b"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

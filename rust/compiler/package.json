@@ -4,6 +4,9 @@
   "description": "Rust + Oxc implementation of the Pug template compiler, compatible with pug@2.0.4",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "pug-rust": "./bin/pug-rust.js"
+  },
   "exports": {
     ".": "./index.js",
     "./register": "./register.js",
@@ -13,6 +16,7 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "bin/",
     "register.js",
     "runtime/",
     "pug-napi.win32-x64-msvc.node",

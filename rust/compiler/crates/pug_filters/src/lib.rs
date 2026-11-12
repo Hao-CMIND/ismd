@@ -35,8 +35,24 @@ pub struct FilterInvocation<'a> {
     pub node_filename: Option<&'a str>,
 }
 
+pub type FilterRequest<'a> = FilterInvocation<'a>;
+
 pub trait FilterHost {
     fn run_filter(&mut self, call: &FilterInvocation<'_>) -> Result<String, PugError>;
+}
+
+/// Boundary trait for external/optional filter executors (native or JS adapter).
+pub trait FilterExecutor {
+    fn execute(&mut self, request: &FilterRequest<'_>) -> Result<String, PugError>;
+}
+
+/// Adapter bridging any [`FilterExecutor`] into [`FilterHost`].
+pub struct FilterExecutorHost<'a, E: FilterExecutor + ?Sized>(pub &'a mut E);
+
+impl<E: FilterExecutor + ?Sized> FilterHost for FilterExecutorHost<'_, E> {
+    fn run_filter(&mut self, call: &FilterInvocation<'_>) -> Result<String, PugError> {
+        self.0.execute(call)
+    }
 }
 
 impl<F> FilterHost for F

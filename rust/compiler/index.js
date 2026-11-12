@@ -561,100 +561,57 @@ export function _addWith(obj, src, exclude) {
   );
 }
 
-let cachedFilterResolve = null;
-let cachedJstransformerFn = null;
-const jstransformerPathCache = new Map();
-const jstransformerInstanceCache = new Map();
-
-function requireFilterDep(name) {
-  try {
-    return require(name);
-  } catch (_) {
-    return require(path.join(__dirname, '../../raw/compiler/node_modules', name));
-  }
-}
-
-function getFilterTransformer(name, currentDirectory) {
-  const basedir = currentDirectory || process.cwd();
-  const cacheKey = basedir + '\0' + name;
-  let trPath = jstransformerPathCache.get(cacheKey);
-  if (trPath === undefined) {
-    if (!cachedFilterResolve) {
-      cachedFilterResolve = requireFilterDep('resolve');
-    }
+let cachedFilterAdapter = null;
+function loadFilterAdapter() {
+  if (!cachedFilterAdapter) {
     try {
-      try {
-        trPath = cachedFilterResolve.sync('jstransformer-' + name, {
-          basedir: basedir,
-        });
-      } catch (_) {
-        try {
-          trPath = require.resolve('jstransformer-' + name);
-        } catch (_2) {
-          trPath = require.resolve('jstransformer-' + name, {
-            paths: [path.join(__dirname, '../../raw/compiler/node_modules')],
-          });
-        }
-      }
+      cachedFilterAdapter = require('@pug-rust/filters');
     } catch (_) {
-      return null;
+      try {
+        cachedFilterAdapter = require(path.join(__dirname, '../../packages/filters/index.cjs'));
+      } catch (_2) {
+        return null;
+      }
     }
-    jstransformerPathCache.set(cacheKey, trPath);
   }
-
-  let tr = jstransformerInstanceCache.get(trPath);
-  if (!tr) {
-    if (!cachedJstransformerFn) {
-      cachedJstransformerFn = requireFilterDep('jstransformer');
-    }
-    tr = cachedJstransformerFn(require(trPath));
-    jstransformerInstanceCache.set(trPath, tr);
-  }
-  return tr;
+  return cachedFilterAdapter;
 }
 
-function runJstransformerFilter(name, str, options, currentDirectory, funcName) {
-  funcName = funcName || 'render';
-  const tr = getFilterTransformer(name, currentDirectory);
-  if (!tr) {
-    return {
-      ok: false,
-      unknownFilter: 'unknown filter ":' + name + '"',
+function makeFilterHostCallback(filtersSet, filterExecutor) {
+  if (filterExecutor === false) {
+    return function disabledFilterHostCallback(filterName) {
+      return {
+        ok: false,
+        unknownFilter: 'unknown filter ":' + filterName + '"',
+      };
     };
   }
-  let result = tr[funcName](str, options, options).body;
-  if (options && options.minify) {
-    const minifyName =
-      tr.outputFormat === 'js'
-        ? 'uglify-js'
-        : tr.outputFormat === 'css'
-          ? 'clean-css'
-          : null;
-    if (minifyName) {
-      try {
-        const minRes = runJstransformerFilter(
-          minifyName,
-          result,
-          null,
-          currentDirectory,
-          'render'
-        );
-        if (minRes.ok) {
-          result = minRes.value;
-        }
-      } catch (_) {}
-    }
+  if (typeof filterExecutor === 'function') {
+    return filterExecutor;
   }
-  if (typeof result !== 'string') {
-    throw new TypeError(
-      'Expected filter ":' + name + '" to return a string, got ' + typeof result
-    );
+  if (filterExecutor && typeof filterExecutor.execute === 'function') {
+    return function customFilterExecutorCallback(
+      filterName,
+      mode,
+      text,
+      fullPath,
+      rawVal,
+      attrsObj,
+      dir
+    ) {
+      return filterExecutor.execute(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
+    };
   }
-  return { ok: true, value: result };
-}
-
-function makeFilterHostCallback(filtersSet) {
-  return function(filterName, mode, text, fullPath, rawVal, attrsObj, dir) {
+  let resolved = null;
+  return function lazyFilterHostCallback(
+    filterName,
+    mode,
+    text,
+    fullPath,
+    rawVal,
+    attrsObj,
+    dir
+  ) {
     if (filtersSet && filtersSet[filterName]) {
       const custom = filtersSet[filterName];
       const out =
@@ -668,13 +625,17 @@ function makeFilterHostCallback(filtersSet) {
       }
       return { ok: true, value: out };
     }
-    return runJstransformerFilter(
-      filterName,
-      mode === 'rawFile' ? fullPath : text,
-      attrsObj,
-      dir,
-      mode === 'rawFile' ? 'renderFile' : 'render'
-    );
+    if (!resolved) {
+      const adapter = loadFilterAdapter();
+      if (!adapter) {
+        return {
+          ok: false,
+          unknownFilter: 'unknown filter ":' + filterName + '"',
+        };
+      }
+      resolved = adapter.createFilterCallback(filtersSet || {});
+    }
+    return resolved(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
   };
 }
 
@@ -794,7 +755,10 @@ function compileBody(str, options) {
   const hasModuleFilters = Object.keys(filters).length > 0;
   const hasOptionFilters =
     Boolean(options.filters) && Object.keys(options.filters).length > 0;
-  let filterCallback = defaultFilterCallback;
+  let filterCallback =
+    options.filterExecutor !== undefined
+      ? makeFilterHostCallback(null, options.filterExecutor)
+      : defaultFilterCallback;
   if (hasModuleFilters || hasOptionFilters) {
     const filtersSet = {};
     if (hasModuleFilters) {
@@ -807,7 +771,7 @@ function compileBody(str, options) {
         filtersSet[key] = options.filters[key];
       });
     }
-    filterCallback = makeFilterHostCallback(filtersSet);
+    filterCallback = makeFilterHostCallback(filtersSet, options.filterExecutor);
   }
 
   const customResolve = plugins.length ? findReplacementFunc(plugins, 'resolve') : null;
@@ -1080,6 +1044,7 @@ export function compile(str, options) {
     filters: options.filters,
     filterOptions: options.filterOptions,
     filterAliases: options.filterAliases,
+    filterExecutor: options.filterExecutor,
     plugins: options.plugins,
     templateStore: options.templateStore,
   });
@@ -1111,6 +1076,7 @@ export function compileClientWithDependenciesTracked(str, options) {
     filters: options.filters,
     filterOptions: options.filterOptions,
     filterAliases: options.filterAliases,
+    filterExecutor: options.filterExecutor,
     plugins: options.plugins,
     templateStore: options.templateStore,
   });

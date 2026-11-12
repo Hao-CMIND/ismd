@@ -353,10 +353,21 @@ pub fn is_constant(src: &str) -> bool {
 
 /// Evaluates `src` to a `ConstVal` if it is a compile-time constant expression.
 pub fn eval_constant(src: &str) -> Option<ConstVal> {
+    let _prof_const = pug_ast::profile::scope(pug_ast::profile::Stage::ConstantEvaluation);
+    pug_ast::profile::with_counters(|c| {
+        c.eval_constant_count += 1;
+    });
     let allocator = Allocator::default();
-    let expr = Parser::new(&allocator, src, SourceType::script())
-        .parse_expression()
-        .ok()?;
+    let expr = {
+        let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
+        pug_ast::profile::with_counters(|c| {
+            c.oxc_parse_count += 1;
+            c.allocator_create_count += 1;
+        });
+        Parser::new(&allocator, src, SourceType::script())
+            .parse_expression()
+            .ok()?
+    };
     match eval_expr(&expr, true) {
         ConstEvalOutcome::Constant(v) => Some(v),
         _ => None,
@@ -366,6 +377,10 @@ pub fn eval_constant(src: &str) -> Option<ConstVal> {
 /// Evaluates a filter option expression without `{ pug, pug_interp }`, distinguishing
 /// `NotConstant` from `Unsupported` constant constructs.
 pub fn eval_filter_constant(src: &str) -> ConstEvalOutcome {
+    let _prof_const = pug_ast::profile::scope(pug_ast::profile::Stage::ConstantEvaluation);
+    pug_ast::profile::with_counters(|c| {
+        c.eval_constant_count += 1;
+    });
     if crate::expression::validate_expression(
         src,
         crate::expression::ExpressionOptions {
@@ -378,8 +393,16 @@ pub fn eval_filter_constant(src: &str) -> ConstEvalOutcome {
         return ConstEvalOutcome::NotConstant;
     }
     let allocator = Allocator::default();
-    let Ok(expr) = Parser::new(&allocator, src, SourceType::cjs()).parse_expression() else {
-        return ConstEvalOutcome::NotConstant;
+    let expr = {
+        let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
+        pug_ast::profile::with_counters(|c| {
+            c.oxc_parse_count += 1;
+            c.allocator_create_count += 1;
+        });
+        let Ok(expr) = Parser::new(&allocator, src, SourceType::cjs()).parse_expression() else {
+            return ConstEvalOutcome::NotConstant;
+        };
+        expr
     };
     eval_expr(&expr, false)
 }

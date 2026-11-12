@@ -1,3 +1,4 @@
+use pug_ast::profile::{Stage, scope, with_counters};
 use pug_ast::{BlockNode, RawContent, Token};
 use pug_code_gen::{CodeGenOptions, generate_code};
 use pug_error::PugError;
@@ -322,11 +323,15 @@ impl<H: CompilerHost> Session<'_, H> {
             plugin_methods: self.options.lex_plugin_methods.clone(),
             ..LexerOptions::default()
         };
-        let mut tokens = if lex_opts.plugin_methods.is_empty() {
-            lex(&contents, &lex_opts)?
-        } else {
-            let mut bridge = HostLexBridge { host: self.host };
-            lex_with_hook(&contents, &lex_opts, &mut bridge)?
+        let mut tokens = {
+            let _g = scope(Stage::Lexer);
+            with_counters(|c| c.lexer_count += 1);
+            if lex_opts.plugin_methods.is_empty() {
+                lex(&contents, &lex_opts)?
+            } else {
+                let mut bridge = HostLexBridge { host: self.host };
+                lex_with_hook(&contents, &lex_opts, &mut bridge)?
+            }
         };
         tokens = self.host.post_lex(tokens, &ctx)?;
 
@@ -339,16 +344,23 @@ impl<H: CompilerHost> Session<'_, H> {
                 p.push_str(".pug");
             }
         }
-        tokens = strip_comments(
-            tokens,
-            StripCommentsOptions::new(true, false, filename.map(String::from)),
-        )?;
+        tokens = {
+            let _g = scope(Stage::StripComments);
+            strip_comments(
+                tokens,
+                StripCommentsOptions::new(true, false, filename.map(String::from)),
+            )?
+        };
         tokens = self.host.pre_parse(tokens, &ctx)?;
         let parse_opts = ParserOptions {
             filename: filename.map(String::from),
             src: Some(src.to_string()),
         };
-        let (mut ast, warnings) = parse_with_warnings(&tokens, &parse_opts)?;
+        let (mut ast, warnings) = {
+            let _g = scope(Stage::Parser);
+            with_counters(|c| c.parser_count += 1);
+            parse_with_warnings(&tokens, &parse_opts)?
+        };
         for warning in warnings {
             self.host.warn(&warning);
         }
@@ -413,6 +425,7 @@ pub fn compile_body<H: CompilerHost>(
     options: &CompileOptions,
     host: &mut H,
 ) -> Result<CompileResult, PugError> {
+    let _other = scope(Stage::Other);
     let mut session = Session {
         host,
         options,
@@ -429,7 +442,10 @@ pub fn compile_body<H: CompilerHost>(
 
     // 1. lex + parse the entry file, then load every dependency recursively
     let parsed = session.lex_and_parse(source, options.filename.as_deref())?;
-    let mut ast = load_ast(parsed, &mut session)?;
+    let mut ast = {
+        let _g = scope(Stage::Loader);
+        load_ast(parsed, &mut session)?
+    };
     ast = session.host.post_load(ast)?;
 
     let dependencies = std::mem::take(&mut session.dependencies);
@@ -438,17 +454,23 @@ pub fn compile_body<H: CompilerHost>(
 
     // 2. preFilters -> handleFilters -> postFilters
     ast = host.pre_filters(ast)?;
-    ast = handle_filters(
-        ast,
-        &options.filter_options,
-        &options.filter_aliases,
-        &mut |call: &FilterInvocation<'_>| host.run_filter(call),
-    )?;
+    ast = {
+        let _g = scope(Stage::Filters);
+        handle_filters(
+            ast,
+            &options.filter_options,
+            &options.filter_aliases,
+            &mut |call: &FilterInvocation<'_>| host.run_filter(call),
+        )?
+    };
     ast = host.post_filters(ast)?;
 
     // 3. preLink -> Linker -> postLink
     ast = host.pre_link(ast)?;
-    ast = link(ast)?;
+    ast = {
+        let _g = scope(Stage::Linker);
+        link(ast)?
+    };
     ast = host.post_link(ast)?;
 
     // 4. preCodeGen -> generateCode -> postCodeGen
@@ -479,7 +501,10 @@ pub fn compile_body<H: CompilerHost>(
     };
     let js = match host.custom_generate_code(&ast)? {
         Some(custom_js) => custom_js,
-        None => generate_code(&ast, &code_gen_opts)?,
+        None => {
+            let _g = scope(Stage::Codegen);
+            generate_code(&ast, &code_gen_opts)?
+        }
     };
     let js = host.post_code_gen(js)?;
 

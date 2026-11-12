@@ -8,6 +8,10 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+profile = ["pug_ast/profile"]
+
 [dependencies]
 napi.workspace = true
 napi-derive.workspace = true

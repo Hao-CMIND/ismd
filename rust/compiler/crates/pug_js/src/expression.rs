@@ -163,6 +163,11 @@ pub fn validate_expression(
         });
     }
 
+    pug_ast::profile::with_counters(|c| {
+        c.oxc_parse_count += 1;
+        c.allocator_create_count += 1;
+    });
+    let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
     let allocator = Allocator::default();
     let source_type = if options.strict {
         SourceType::mjs()
@@ -189,6 +194,10 @@ pub fn validate_expression(
             } else {
                 format!("(\n{src}\n)")
             };
+            pug_ast::profile::with_counters(|c| {
+                c.oxc_parse_count += 1;
+                c.allocator_create_count += 1;
+            });
             let wrap_alloc = Allocator::default();
             let wrap_ret = Parser::new(&wrap_alloc, &full_wrap, SourceType::cjs()).parse();
             if let Some(first_err) = wrap_ret.diagnostics.first() {

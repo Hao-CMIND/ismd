@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod profile;
 pub mod span;
 pub mod token;
 

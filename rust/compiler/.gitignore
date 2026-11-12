@@ -1,4 +1,5 @@
 /target/
+/target-profile/
 /node_modules/
 *.node
 *.dll

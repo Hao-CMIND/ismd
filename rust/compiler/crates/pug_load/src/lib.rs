@@ -50,13 +50,19 @@ pub fn load_ast<H: LoadHost + ?Sized>(
     let pending: RefCell<Option<PugError>> = RefCell::new(None);
 
     let mut before = |node: &Node, ctx: &mut ReplaceContext, _parents: &[Node]| -> Result<bool, String> {
-        let (file, node_filename, node_line, with_ast): (&FileReferenceNode, Option<&str>, usize, bool) =
-            match node {
-                Node::Include(n) => (&n.file, n.filename.as_deref(), n.line, true),
-                Node::Extends(n) => (&n.file, n.filename.as_deref(), n.line, true),
-                Node::RawInclude(n) => (&n.file, n.filename.as_deref(), n.line, false),
-                _ => return Ok(true),
-            };
+        let (file, node_filename, node_line, with_ast, is_extends, is_include): (
+            &FileReferenceNode,
+            Option<&str>,
+            usize,
+            bool,
+            bool,
+            bool,
+        ) = match node {
+            Node::Include(n) => (&n.file, n.filename.as_deref(), n.line, true, false, true),
+            Node::Extends(n) => (&n.file, n.filename.as_deref(), n.line, true, true, false),
+            Node::RawInclude(n) => (&n.file, n.filename.as_deref(), n.line, false, false, false),
+            _ => return Ok(true),
+        };
 
         let result: Result<FileReferenceNode, PugError> = (|| {
             if file.node_type != "FileReference" {
@@ -70,6 +76,13 @@ pub fn load_ast<H: LoadHost + ?Sized>(
             file.str = Some(loaded.text.clone());
             file.raw = Some(loaded.raw);
             if with_ast {
+                pug_ast::profile::with_counters(|c| {
+                    if is_extends {
+                        c.layout_parse_count += 1;
+                    } else if is_include {
+                        c.include_parse_count += 1;
+                    }
+                });
                 let parsed = host.parse_source(&loaded.text, &loaded.full_path)?;
                 file.ast = Some(Box::new(load_ast(parsed, host)?));
             }

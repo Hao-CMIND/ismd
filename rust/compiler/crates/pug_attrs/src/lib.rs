@@ -24,6 +24,7 @@ pub fn compile_attrs<R>(
 where
     R: FnMut(&str) -> String,
 {
+    let _prof_attrs = pug_ast::profile::scope(pug_ast::profile::Stage::Attrs);
     let mut buf: Vec<String> = Vec::new();
     let mut classes: Vec<(String, bool)> = Vec::new();
     let mut class_escaping: Vec<bool> = Vec::new();

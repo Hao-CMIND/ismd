@@ -545,6 +545,24 @@ impl<'env> NodeHostAdapter<'env> {
         PugError::host_exception(msg)
     }
 
+    fn hook_profile_info(hook_name: &str) -> (pug_ast::profile::Stage, bool, bool) {
+        use pug_ast::profile::Stage;
+        match hook_name {
+            "postLex" => (Stage::PostLexCallback, false, true),
+            "preParse" => (Stage::PreParseCallback, false, true),
+            "postParse" => (Stage::PostParseCallback, true, false),
+            "preLoad" => (Stage::PreLoadCallback, true, false),
+            "postLoad" => (Stage::PostLoadCallback, true, false),
+            "preFilters" => (Stage::PreFiltersCallback, true, false),
+            "postFilters" => (Stage::PostFiltersCallback, true, false),
+            "preLink" => (Stage::PreLinkCallback, true, false),
+            "postLink" => (Stage::PostLinkCallback, true, false),
+            "preCodeGen" => (Stage::PreCodegenCallback, true, false),
+            "postCodeGen" => (Stage::PostCodegenCallback, false, false),
+            _ => (Stage::Other, false, false),
+        }
+    }
+
     fn call_json_hook<T>(&mut self, hook_name: &str, value: T) -> std::result::Result<T, PugError>
     where
         T: serde::Serialize + serde::de::DeserializeOwned,
@@ -553,6 +571,18 @@ impl<'env> NodeHostAdapter<'env> {
         let Some(cb) = cb_opt else {
             return Ok(value);
         };
+
+        let (stage, is_ast, is_token) = Self::hook_profile_info(hook_name);
+        let _prof_cb = pug_ast::profile::scope(stage);
+        pug_ast::profile::with_counters(|c| {
+            c.host_callback_count += 1;
+            if is_ast {
+                c.ast_roundtrip_count += 1;
+            }
+            if is_token {
+                c.token_roundtrip_count += 1;
+            }
+        });
 
         let json_val = serde_json::to_value(&value).map_err(|e| {
             PugError::host_exception(format!("Failed to serialize {hook_name}: {e}"))
@@ -584,6 +614,18 @@ impl<'env> NodeHostAdapter<'env> {
         let Some(cb) = cb_opt else {
             return Ok(value);
         };
+
+        let (stage, is_ast, is_token) = Self::hook_profile_info(hook_name);
+        let _prof_cb = pug_ast::profile::scope(stage);
+        pug_ast::profile::with_counters(|c| {
+            c.host_callback_count += 1;
+            if is_ast {
+                c.ast_roundtrip_count += 1;
+            }
+            if is_token {
+                c.token_roundtrip_count += 1;
+            }
+        });
 
         let json_val = serde_json::to_value(&value).map_err(|e| {
             PugError::host_exception(format!("Failed to serialize {hook_name}: {e}"))
@@ -621,6 +663,10 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
         let Some(val) = val_opt else {
             return Ok(source);
         };
+        let _prof_cb = pug_ast::profile::scope(pug_ast::profile::Stage::PreLexCallback);
+        pug_ast::profile::with_counters(|c| {
+            c.host_callback_count += 1;
+        });
         let cb: Function<'env, FnArgs<(String, Option<String>)>, String> =
             Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
         cb.call(FnArgs::from((source, filename.map(String::from))))
@@ -667,33 +713,49 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
         node_line: usize,
         options: &CompileOptions,
     ) -> std::result::Result<LoadedFile, PugError> {
-        let resolve_val = self
-            .get_optional_val("resolve")
-            .map_err(|e| self.record_js_err(e))?;
+        let full_path = {
+            let _prof_res = pug_ast::profile::scope(pug_ast::profile::Stage::Resolve);
+            pug_ast::profile::with_counters(|c| {
+                c.resolve_count += 1;
+            });
+            let resolve_val = self
+                .get_optional_val("resolve")
+                .map_err(|e| self.record_js_err(e))?;
 
-        let full_path = if let Some(val) = resolve_val {
-            let cb: Function<
-                'env,
-                FnArgs<(String, Option<String>, Option<String>, u32)>,
-                String,
-            > = Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
-            cb.call(FnArgs::from((
-                path.to_string(),
-                source.map(String::from),
-                node_filename.map(String::from),
-                node_line as u32,
-            )))
-            .map_err(|e| self.record_js_err(e))?
-        } else {
-            default_resolve(path, source, options.basedir.as_deref())
-                .map_err(|e| annotate_load_error(e, node_filename, node_line))?
+            if let Some(val) = resolve_val {
+                pug_ast::profile::with_counters(|c| {
+                    c.host_callback_count += 1;
+                });
+                let cb: Function<
+                    'env,
+                    FnArgs<(String, Option<String>, Option<String>, u32)>,
+                    String,
+                > = Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
+                cb.call(FnArgs::from((
+                    path.to_string(),
+                    source.map(String::from),
+                    node_filename.map(String::from),
+                    node_line as u32,
+                )))
+                .map_err(|e| self.record_js_err(e))?
+            } else {
+                default_resolve(path, source, options.basedir.as_deref())
+                    .map_err(|e| annotate_load_error(e, node_filename, node_line))?
+            }
         };
 
+        let _prof_read = pug_ast::profile::scope(pug_ast::profile::Stage::FileRead);
+        pug_ast::profile::with_counters(|c| {
+            c.file_read_count += 1;
+        });
         let read_val = self
             .get_optional_val("read")
             .map_err(|e| self.record_js_err(e))?;
 
         if let Some(val) = read_val {
+            pug_ast::profile::with_counters(|c| {
+                c.host_callback_count += 1;
+            });
             let cb: Function<'env, FnArgs<(String, Option<String>, u32)>, Unknown<'env>> =
                 Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
             let ret = cb
@@ -740,6 +802,12 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
         let cb_val = self
             .get_optional_val("filter")
             .map_err(|e| self.record_js_err(e))?;
+        let _prof_flt = pug_ast::profile::scope(pug_ast::profile::Stage::FilterCallback);
+        if cb_val.is_some() {
+            pug_ast::profile::with_counters(|c| {
+                c.host_callback_count += 1;
+            });
+        }
         invoke_js_filter(self.env, cb_val, call, &mut self.pending_js_error)
     }
 
@@ -1239,6 +1307,8 @@ pub fn compile_body_sync(
     options: NapiCompileOptions,
     callbacks: Option<Object>,
 ) -> Result<NapiCompileOutcome> {
+    let _prof_session = pug_ast::profile::begin_session();
+    let entry_scope = pug_ast::profile::scope(pug_ast::profile::Stage::NapiEntry);
     let compile_opts = CompileOptions {
         filename: options.filename,
         basedir: options.basedir,
@@ -1262,11 +1332,13 @@ pub fn compile_body_sync(
         callbacks,
         pending_js_error: None,
     };
+    drop(entry_scope);
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compile_body(&source, &compile_opts, &mut host)
     }));
 
+    let _prof_return = pug_ast::profile::scope(pug_ast::profile::Stage::NapiReturn);
     match outcome {
         Ok(Ok(res)) => Ok(NapiCompileOutcome {
             ok: true,
@@ -1300,6 +1372,11 @@ pub fn compile_body_sync(
             "Internal Rust panic caught at FFI boundary in compile_body_sync",
         )),
     }
+}
+
+#[napi]
+pub fn get_last_profile_json() -> Option<String> {
+    pug_ast::profile::last_report_json()
 }
 
 #[napi]

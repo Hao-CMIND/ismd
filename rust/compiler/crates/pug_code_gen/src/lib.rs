@@ -914,7 +914,10 @@ impl<'a> CodeGenerator<'a> {
             );
         }
 
-        let runtime_prefix = pug_runtime::build(&self.runtime_functions_used);
+        let runtime_prefix = {
+            let _prof_rt = pug_ast::profile::scope(pug_ast::profile::Stage::RuntimeBuild);
+            pug_runtime::build(&self.runtime_functions_used)
+        };
         Ok(format!(
             "{runtime_prefix}function {fn_name}(locals) {{var pug_html = \"\", pug_mixins = {{}}, pug_interp;{js};return pug_html;}}"
         ))

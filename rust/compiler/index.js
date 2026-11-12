@@ -11,6 +11,23 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 function loadNativeAddon() {
+  if (process.env.PUG_PROFILE === '1' && process.env.PUG_PROFILE_ADDON) {
+    const profileAddon = path.resolve(process.env.PUG_PROFILE_ADDON);
+    if (!fs.existsSync(profileAddon)) {
+      throw new Error(`PUG_PROFILE_ADDON not found: ${profileAddon}`);
+    }
+    if (profileAddon.endsWith('.dll')) {
+      const nodePath = profileAddon.slice(0, -4) + '.node';
+      if (
+        !fs.existsSync(nodePath) ||
+        fs.statSync(profileAddon).mtimeMs > fs.statSync(nodePath).mtimeMs
+      ) {
+        fs.copyFileSync(profileAddon, nodePath);
+      }
+      return require(nodePath);
+    }
+    return require(profileAddon);
+  }
   const candidates = [
     path.join(__dirname, 'pug-napi.win32-x64-msvc.node'),
     path.join(__dirname, 'target/release/pug_napi.dll'),
@@ -1091,6 +1108,12 @@ export function __express(path, options, fn) {
   renderFile(path, options, fn);
 }
 
+export function getLastProfileJson() {
+  return typeof native.getLastProfileJson === 'function'
+    ? native.getLastProfileJson()
+    : null;
+}
+
 export default {
   name,
   runtime,
@@ -1112,6 +1135,7 @@ export default {
   _handleFilters,
   _link,
   _compileAttrs,
+  _getLastProfileJson: getLastProfileJson,
   compile,
   compileClientWithDependenciesTracked,
   compileClient,

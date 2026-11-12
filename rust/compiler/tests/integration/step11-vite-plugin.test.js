@@ -69,11 +69,7 @@ test('Phase 5D: Vite plugin persistent CompilerSession, HMR (page/include/layout
   try {
     plugin.configResolved({ root: site.dir, command: 'serve' });
     plugin.configureServer(fakeServer);
-    const initialResults = plugin.buildStart();
-
-    assert.equal(initialResults.length, 3);
-    assert.ok(initialResults[0].fn({}).includes('Page 1 V1'));
-    assert.ok(initialResults[0].fn({}).includes('Header V1'));
+    plugin.buildStart();
 
     let metrics = plugin.getMetrics();
     assert.equal(metrics.sessionCreates, 1);
@@ -81,8 +77,10 @@ test('Phase 5D: Vite plugin persistent CompilerSession, HMR (page/include/layout
     assert.ok(metrics.stats.parseMisses <= 6, `layout/includes parsed only once, got ${metrics.stats.parseMisses}`);
 
     // 1. Transform reuse (same persistent session, no new session created)
-    const transformed = plugin.transform(fs.readFileSync(site.page1Path, 'utf8'), site.page1Path);
+    const transformHook = typeof plugin.transform === 'function' ? plugin.transform : plugin.transform.handler;
+    const transformed = transformHook.call(plugin, fs.readFileSync(site.page1Path, 'utf8'), site.page1Path);
     assert.ok(transformed.code.includes('Page 1 V1'));
+    assert.equal(transformed.moduleType, 'js');
     assert.equal(plugin.getMetrics().sessionCreates, 1);
 
     // 2. No-op HMR save -> 0 compile
@@ -143,7 +141,7 @@ test('Phase 5D: Vite plugin persistent CompilerSession, HMR (page/include/layout
       read: async () => fs.readFileSync(site.page2Path, 'utf8'),
     });
     assert.equal(atomicMods.length, 1);
-    assert.ok(plugin.transform(fs.readFileSync(site.page2Path, 'utf8'), site.page2Path).code.includes('Page 2 Atomic'));
+    assert.ok(transformHook.call(plugin, fs.readFileSync(site.page2Path, 'utf8'), site.page2Path).code.includes('Page 2 Atomic'));
 
     // 7. Add + Rename (unlink + add) via watcher events
     const page4Path = path.join(site.dir, 'pages', 'page4.pug');
@@ -178,8 +176,8 @@ test('Phase 5D: Vite production build disposes CompilerSession on closeBundle', 
 
   try {
     plugin.configResolved({ root: site.dir, command: 'build' });
-    const res = plugin.buildStart();
-    assert.equal(res.length, 2);
+    plugin.buildStart();
+    assert.equal(plugin.getMetrics().initialBatchCompiles, 1);
     assert.ok(plugin.getMetrics().stats !== null);
     plugin.closeBundle();
     assert.equal(plugin.getMetrics().disposes, 1);

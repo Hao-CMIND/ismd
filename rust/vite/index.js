@@ -171,11 +171,9 @@ export function pugRustPlugin(options = {}) {
             ? { id: path.resolve(entry), filename: path.resolve(entry) }
             : { ...entry, id: entry.id || path.resolve(entry.filename), filename: path.resolve(entry.filename || entry.id) }
         );
-        const results = active.compileBatch(batch);
+        active.compileBatch(batch);
         metrics.initialBatchCompiles += 1;
-        return results;
       }
-      return undefined;
     },
 
     configureServer(server) {
@@ -198,6 +196,11 @@ export function pugRustPlugin(options = {}) {
       }
     },
 
+    closeServer() {
+      disposeSession();
+    },
+
+    // Future: Vite Environment API / hotUpdate migration
     async handleHotUpdate(ctx) {
       if (!ctx || !isPugFile(ctx.file)) return undefined;
       const result = await handleFileChange(ctx.file, ctx.read ? () => ctx.read() : undefined);
@@ -208,12 +211,19 @@ export function pugRustPlugin(options = {}) {
       const affectedModules = [];
       const modGraph = (ctx.server && ctx.server.moduleGraph) || (serverRef && serverRef.moduleGraph);
       if (modGraph && typeof modGraph.getModulesByFile === 'function') {
+        const seen = new Set();
         for (const item of result.affected) {
-          const mods = modGraph.getModulesByFile(item.id);
+          const posixId = String(item.id).replace(/\\/g, '/');
+          const mods =
+            modGraph.getModulesByFile(posixId) ||
+            (posixId !== item.id ? modGraph.getModulesByFile(item.id) : undefined);
           if (mods) {
             for (const m of mods) {
-              modGraph.invalidateModule(m);
-              affectedModules.push(m);
+              if (!seen.has(m)) {
+                seen.add(m);
+                modGraph.invalidateModule(m);
+                affectedModules.push(m);
+              }
             }
           }
         }
@@ -229,24 +239,31 @@ export function pugRustPlugin(options = {}) {
       return affectedModules.length > 0 ? affectedModules : ctx.modules || [];
     },
 
-    transform(code, id) {
-      const cleanId = stripQuery(id);
-      if (!isPugFile(cleanId)) return null;
+    transform: {
+      filter: {
+        id: /\.pug(?:\?|$)/i,
+      },
 
-      const active = ensureSession();
-      const abs = path.resolve(cleanId);
-      registeredEntries.add(abs);
+      handler(code, id) {
+        const cleanId = stripQuery(id);
+        if (!isPugFile(cleanId)) return null;
 
-      const results = active.compileEntries([
-        { id: abs, filename: abs, source: code },
-      ]);
-      const entry = results[0];
-      const html = entry.fn(resolveLocals(abs, { id: abs }));
+        const active = ensureSession();
+        const abs = path.resolve(cleanId);
+        registeredEntries.add(abs);
 
-      return {
-        code: `export default ${JSON.stringify(html)};\n`,
-        map: null,
-      };
+        const results = active.compileEntries([
+          { id: abs, filename: abs, source: code },
+        ]);
+        const entry = results[0];
+        const html = entry.fn(resolveLocals(abs, { id: abs }));
+
+        return {
+          code: `export default ${JSON.stringify(html)};\n`,
+          map: null,
+          moduleType: 'js',
+        };
+      },
     },
 
     closeBundle() {

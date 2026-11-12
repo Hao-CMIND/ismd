@@ -110,19 +110,27 @@ impl StripState {
 /// Strips comment tokens and their associated pipeless text blocks from a `Vec<Token>`,
 /// matching `pug-strip-comments@1.0.4`.
 pub fn strip_comments(
-    tokens: Vec<Token>,
+    mut tokens: Vec<Token>,
     options: StripCommentsOptions,
 ) -> Result<Vec<Token>, PugError> {
     let mut state = StripState::default();
-    let mut out = Vec::with_capacity(tokens.len());
-    for tok in tokens {
-        let tok_buffer = tok.buffer.unwrap_or(false);
-        let tok_line = tok.loc.start.line as i64;
-        if state.keep_token(&tok.token_type, tok_buffer, tok_line, &options)? {
-            out.push(tok);
+    let mut write_idx = 0;
+    for read_idx in 0..tokens.len() {
+        let keep = {
+            let tok = &tokens[read_idx];
+            let tok_buffer = tok.buffer.unwrap_or(false);
+            let tok_line = tok.loc.start.line as i64;
+            state.keep_token(&tok.token_type, tok_buffer, tok_line, &options)?
+        };
+        if keep {
+            if write_idx != read_idx {
+                tokens.swap(write_idx, read_idx);
+            }
+            write_idx += 1;
         }
     }
-    Ok(out)
+    tokens.truncate(write_idx);
+    Ok(tokens)
 }
 
 /// Strips comment tokens from arbitrary JSON token objects (used by standalone `pug-strip-comments`

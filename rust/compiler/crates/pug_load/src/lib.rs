@@ -1,7 +1,6 @@
 use pug_ast::{BlockNode, FileReferenceNode, Node, RawContent};
 use pug_error::PugError;
-use pug_walk::{ReplaceContext, WalkOptions, walk_ast};
-use std::cell::RefCell;
+use pug_walk::walk_mut;
 
 /// Result of resolving and reading one dependency (`resolve` -> `read` -> `toString('utf8')`).
 #[derive(Debug, Clone)]
@@ -44,88 +43,73 @@ fn append_location(err: &mut PugError, node_filename: Option<&str>, node_line: u
 /// The AST is walked in the baseline's `pug-walk` order without `includeDependencies`, so nested
 /// dependencies are loaded when their parent dependency is loaded (depth first).
 pub fn load_ast<H: LoadHost + ?Sized>(
-    ast: BlockNode,
+    mut ast: BlockNode,
     host: &mut H,
 ) -> Result<BlockNode, PugError> {
-    let pending: RefCell<Option<PugError>> = RefCell::new(None);
-
-    let mut before = |node: &Node, ctx: &mut ReplaceContext, _parents: &[Node]| -> Result<bool, String> {
+    walk_mut(&mut ast, false, &mut |node: &mut Node| -> Result<bool, PugError> {
         let (file, node_filename, node_line, with_ast, is_extends, is_include): (
-            &FileReferenceNode,
+            &mut FileReferenceNode,
             Option<&str>,
             usize,
             bool,
             bool,
             bool,
         ) = match node {
-            Node::Include(n) => (&n.file, n.filename.as_deref(), n.line, true, false, true),
-            Node::Extends(n) => (&n.file, n.filename.as_deref(), n.line, true, true, false),
-            Node::RawInclude(n) => (&n.file, n.filename.as_deref(), n.line, false, false, false),
+            Node::Include(n) => (
+                &mut n.file,
+                n.filename.as_deref(),
+                n.line,
+                true,
+                false,
+                true,
+            ),
+            Node::Extends(n) => (
+                &mut n.file,
+                n.filename.as_deref(),
+                n.line,
+                true,
+                true,
+                false,
+            ),
+            Node::RawInclude(n) => (
+                &mut n.file,
+                n.filename.as_deref(),
+                n.line,
+                false,
+                false,
+                false,
+            ),
             _ => return Ok(true),
         };
 
-        let result: Result<FileReferenceNode, PugError> = (|| {
-            if file.node_type != "FileReference" {
-                return Err(PugError::host_exception(
-                    "Expected file.type to be \"FileReference\"",
-                ));
-            }
-            let mut file = file.clone();
-            let loaded = host.load_file(&file.path, file.filename.as_deref(), node_filename, node_line)?;
-            file.full_path = Some(loaded.full_path.clone());
-            file.str = Some(loaded.text.clone());
-            file.raw = Some(loaded.raw);
-            if with_ast {
-                pug_ast::profile::with_counters(|c| {
-                    if is_extends {
-                        c.layout_parse_count += 1;
-                    } else if is_include {
-                        c.include_parse_count += 1;
-                    }
-                });
-                let parsed = host.parse_source(&loaded.text, &loaded.full_path)?;
-                file.ast = Some(Box::new(load_ast(parsed, host)?));
-            }
-            Ok(file)
-        })();
-
-        match result {
-            Ok(new_file) => {
-                let mut updated = node.clone();
-                match &mut updated {
-                    Node::Include(n) => n.file = new_file,
-                    Node::Extends(n) => n.file = new_file,
-                    Node::RawInclude(n) => n.file = new_file,
-                    _ => {}
-                }
-                ctx.replace_single(updated);
-                Ok(true)
-            }
-            Err(e) => {
-                let message = e.message.clone();
-                *pending.borrow_mut() = Some(e);
-                Err(message)
-            }
+        if file.node_type != "FileReference" {
+            return Err(PugError::host_exception(
+                "Expected file.type to be \"FileReference\"",
+            ));
         }
-    };
-    let mut after = |_n: &Node, _c: &mut ReplaceContext, _p: &[Node]| -> Result<(), String> { Ok(()) };
-
-    let mut parents: Vec<Node> = Vec::new();
-    let walked = walk_ast(
-        Node::Block(ast),
-        &mut before,
-        &mut after,
-        &WalkOptions::default(),
-        &mut parents,
-    );
-    match walked {
-        Ok(outcome) => outcome
-            .into_block()
-            .map_err(PugError::host_exception),
-        Err(msg) => Err(pending
-            .into_inner()
-            .unwrap_or_else(|| PugError::host_exception(msg))),
-    }
+        let loaded = host.load_file(
+            &file.path,
+            file.filename.as_deref(),
+            node_filename,
+            node_line,
+        )?;
+        if with_ast {
+            pug_ast::profile::with_counters(|c| {
+                if is_extends {
+                    c.layout_parse_count += 1;
+                } else if is_include {
+                    c.include_parse_count += 1;
+                }
+            });
+            let parsed = host.parse_source(&loaded.text, &loaded.full_path)?;
+            file.ast = Some(Box::new(load_ast(parsed, host)?));
+        }
+        file.full_path = Some(loaded.full_path);
+        file.str = Some(loaded.text);
+        file.raw = Some(loaded.raw);
+        Ok(true)
+    })?;
+    Ok(ast)
 }
 
 /// Appends the baseline's `\n    at <filename> line <line>` suffix; exported for host implementations.

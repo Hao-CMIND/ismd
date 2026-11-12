@@ -35,9 +35,72 @@ pub fn parse_with_warnings(
     tokens: &[Token],
     options: &ParserOptions,
 ) -> Result<(BlockNode, Vec<String>), PugError> {
-    let mut parser = Parser::new(tokens.to_vec(), options);
+    parse_owned_with_warnings(tokens.to_vec(), options)
+}
+
+/// Parses an owned `Vec<Token>` into a `BlockNode` AST without cloning the token stream.
+pub fn parse_owned_with_warnings(
+    tokens: Vec<Token>,
+    options: &ParserOptions,
+) -> Result<(BlockNode, Vec<String>), PugError> {
+    let mut parser = Parser::new(tokens, options);
     let ast = parser.parse_root()?;
     Ok((ast, parser.warnings))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExprKind {
+    Tag,
+    Mixin,
+    Block,
+    MixinBlock,
+    Case,
+    Extends,
+    Include,
+    Doctype,
+    Filter,
+    Comment,
+    TextOrInterp,
+    TextHtml,
+    Dot,
+    Each,
+    EachOf,
+    Code,
+    BlockCode,
+    If,
+    While,
+    Call,
+    Interpolation,
+    Yield,
+    IdOrClass,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextKind {
+    Text,
+    InterpolatedCode,
+    Newline,
+    StartPugInterpolation,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TagAttrKind {
+    IdOrClass,
+    StartAttributes,
+    StartAttributeBlocks,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TagTailKind {
+    TextOrInterp,
+    Code,
+    Colon,
+    Newline,
+    Slash,
+    Other,
 }
 
 /// Parses raw JSON token objects (including legacy `line`/`col` tokens in `pug-parser/test/cases/*.tokens.json`)
@@ -313,11 +376,13 @@ impl Parser {
     pub fn parse_root(&mut self) -> Result<BlockNode, PugError> {
         let mut block = self.empty_block(0);
 
-        while self.peek()?.token_type != "eos" {
-            let next_type = self.peek()?.token_type.clone();
-            if next_type == "newline" {
+        loop {
+            let tt = self.peek()?.token_type.as_str();
+            if tt == "eos" {
+                break;
+            } else if tt == "newline" {
                 self.advance()?;
-            } else if next_type == "text-html" {
+            } else if tt == "text-html" {
                 let html_nodes = self.parse_text_html()?;
                 block.nodes.extend(html_nodes);
             } else {
@@ -334,42 +399,68 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Node, PugError> {
-        let tok_type = self.peek()?.token_type.clone();
-        match tok_type.as_str() {
-            "tag" => self.parse_tag(),
-            "mixin" => self.parse_mixin(),
-            "block" => self.parse_block(),
-            "mixin-block" => self.parse_mixin_block(),
-            "case" => self.parse_case(),
-            "extends" => self.parse_extends(),
-            "include" => self.parse_include(),
-            "doctype" => self.parse_doctype(),
-            "filter" => self.parse_filter(),
-            "comment" => self.parse_comment(),
-            "text" | "interpolated-code" | "start-pug-interpolation" => self.parse_text(true),
-            "text-html" => {
+        let kind = match self.peek()?.token_type.as_str() {
+            "tag" => ExprKind::Tag,
+            "mixin" => ExprKind::Mixin,
+            "block" => ExprKind::Block,
+            "mixin-block" => ExprKind::MixinBlock,
+            "case" => ExprKind::Case,
+            "extends" => ExprKind::Extends,
+            "include" => ExprKind::Include,
+            "doctype" => ExprKind::Doctype,
+            "filter" => ExprKind::Filter,
+            "comment" => ExprKind::Comment,
+            "text" | "interpolated-code" | "start-pug-interpolation" => ExprKind::TextOrInterp,
+            "text-html" => ExprKind::TextHtml,
+            "dot" => ExprKind::Dot,
+            "each" => ExprKind::Each,
+            "eachOf" => ExprKind::EachOf,
+            "code" => ExprKind::Code,
+            "blockcode" => ExprKind::BlockCode,
+            "if" => ExprKind::If,
+            "while" => ExprKind::While,
+            "call" => ExprKind::Call,
+            "interpolation" => ExprKind::Interpolation,
+            "yield" => ExprKind::Yield,
+            "id" | "class" => ExprKind::IdOrClass,
+            _ => ExprKind::Other,
+        };
+        match kind {
+            ExprKind::Tag => self.parse_tag(),
+            ExprKind::Mixin => self.parse_mixin(),
+            ExprKind::Block => self.parse_block(),
+            ExprKind::MixinBlock => self.parse_mixin_block(),
+            ExprKind::Case => self.parse_case(),
+            ExprKind::Extends => self.parse_extends(),
+            ExprKind::Include => self.parse_include(),
+            ExprKind::Doctype => self.parse_doctype(),
+            ExprKind::Filter => self.parse_filter(),
+            ExprKind::Comment => self.parse_comment(),
+            ExprKind::TextOrInterp => self.parse_text(true),
+            ExprKind::TextHtml => {
                 let line = self.peek()?.loc.start.line;
                 let nodes = self.parse_text_html()?;
                 Ok(Node::Block(self.init_block(line, nodes)))
             }
-            "dot" => self.parse_dot(),
-            "each" => self.parse_each(),
-            "eachOf" => self.parse_each_of(),
-            "code" => Ok(Node::Code(self.parse_code(false)?)),
-            "blockcode" => self.parse_block_code(),
-            "if" => self.parse_conditional(),
-            "while" => self.parse_while(),
-            "call" => self.parse_call(),
-            "interpolation" => self.parse_interpolation(),
-            "yield" => self.parse_yield(),
-            "id" | "class" => {
+            ExprKind::Dot => self.parse_dot(),
+            ExprKind::Each => self.parse_each(),
+            ExprKind::EachOf => self.parse_each_of(),
+            ExprKind::Code => Ok(Node::Code(self.parse_code(false)?)),
+            ExprKind::BlockCode => self.parse_block_code(),
+            ExprKind::If => self.parse_conditional(),
+            ExprKind::While => self.parse_while(),
+            ExprKind::Call => self.parse_call(),
+            ExprKind::Interpolation => self.parse_interpolation(),
+            ExprKind::Yield => self.parse_yield(),
+            ExprKind::IdOrClass => {
                 let loc = self.peek()?.loc.clone();
                 let div_tok = Token::new("tag", loc).with_str_val("div");
                 self.defer(div_tok);
                 self.parse_expr()
             }
-            other => {
+            ExprKind::Other => {
                 let tok = self.peek()?.clone();
+                let other = tok.token_type.as_str();
                 Err(self.error("INVALID_TOKEN", format!("unexpected token \"{other}\""), &tok))
             }
         }
@@ -388,22 +479,28 @@ impl Parser {
         let lineno = self.peek()?.loc.start.line;
 
         loop {
-            let next_type = self.peek()?.token_type.clone();
-            match next_type.as_str() {
-                "text" => {
-                    let tok = self.advance()?;
+            let kind = match self.peek()?.token_type.as_str() {
+                "text" => TextKind::Text,
+                "interpolated-code" => TextKind::InterpolatedCode,
+                "newline" => TextKind::Newline,
+                "start-pug-interpolation" => TextKind::StartPugInterpolation,
+                _ => TextKind::Other,
+            };
+            match kind {
+                TextKind::Text => {
+                    let mut tok = self.advance()?;
                     tags.push(Node::Text(TextNode {
-                        val: token_str_val(&tok),
+                        val: token_str_val_take(&mut tok),
                         line: Some(tok.loc.start.line),
                         column: Some(tok.loc.start.column),
                         filename: self.filename.clone(),
                         is_html: None,
                     }));
                 }
-                "interpolated-code" => {
-                    let tok = self.advance()?;
+                TextKind::InterpolatedCode => {
+                    let mut tok = self.advance()?;
                     tags.push(Node::Code(CodeNode {
-                        val: token_str_val(&tok),
+                        val: token_str_val_take(&mut tok),
                         buffer: tok.buffer.unwrap_or(false),
                         must_escape: tok.must_escape != Some(false),
                         is_inline: true,
@@ -414,7 +511,7 @@ impl Parser {
                         filename: self.filename.clone(),
                     }));
                 }
-                "newline" => {
+                TextKind::Newline => {
                     if !block_opt {
                         break;
                     }
@@ -430,13 +527,13 @@ impl Parser {
                         }));
                     }
                 }
-                "start-pug-interpolation" => {
+                TextKind::StartPugInterpolation => {
                     self.advance()?;
                     let expr = self.parse_expr()?;
                     tags.push(expr);
                     self.expect("end-pug-interpolation")?;
                 }
-                _ => break,
+                TextKind::Other => break,
             }
         }
 
@@ -451,53 +548,49 @@ impl Parser {
         let mut nodes: Vec<Node> = Vec::new();
 
         loop {
-            let next_type = self.peek()?.token_type.clone();
-            match next_type.as_str() {
-                "text-html" => {
-                    let text = self.advance()?;
-                    let text_val = token_str_val(&text);
-                    if let Some(Node::Text(last_text)) = nodes.last_mut()
-                        && last_text.is_html == Some(true)
-                    {
-                        last_text.val.push('\n');
-                        last_text.val.push_str(&text_val);
-                    } else {
-                        nodes.push(Node::Text(TextNode {
-                            val: text_val,
-                            filename: self.filename.clone(),
-                            line: Some(text.loc.start.line),
-                            column: Some(text.loc.start.column),
-                            is_html: Some(true),
-                        }));
-                    }
+            let tt = self.peek()?.token_type.as_str();
+            if tt == "text-html" {
+                let mut text = self.advance()?;
+                let text_val = token_str_val_take(&mut text);
+                if let Some(Node::Text(last_text)) = nodes.last_mut()
+                    && last_text.is_html == Some(true)
+                {
+                    last_text.val.push('\n');
+                    last_text.val.push_str(&text_val);
+                } else {
+                    nodes.push(Node::Text(TextNode {
+                        val: text_val,
+                        filename: self.filename.clone(),
+                        line: Some(text.loc.start.line),
+                        column: Some(text.loc.start.column),
+                        is_html: Some(true),
+                    }));
                 }
-                "indent" => {
-                    let block = self.block()?;
-                    for node in block.nodes {
-                        if let Node::Text(ref t) = node
-                            && t.is_html == Some(true)
+            } else if tt == "indent" {
+                let block = self.block()?;
+                for node in block.nodes {
+                    if let Node::Text(ref t) = node
+                        && t.is_html == Some(true)
+                    {
+                        if let Some(Node::Text(last_text)) = nodes.last_mut()
+                            && last_text.is_html == Some(true)
                         {
-                            if let Some(Node::Text(last_text)) = nodes.last_mut()
-                                && last_text.is_html == Some(true)
-                            {
-                                last_text.val.push('\n');
-                                last_text.val.push_str(&t.val);
-                            } else {
-                                nodes.push(node);
-                            }
+                            last_text.val.push('\n');
+                            last_text.val.push_str(&t.val);
                         } else {
                             nodes.push(node);
                         }
+                    } else {
+                        nodes.push(node);
                     }
                 }
-                "code" => {
-                    let code_node = self.parse_code(true)?;
-                    nodes.push(Node::Code(code_node));
-                }
-                "newline" => {
-                    self.advance()?;
-                }
-                _ => break,
+            } else if tt == "code" {
+                let code_node = self.parse_code(true)?;
+                nodes.push(Node::Code(code_node));
+            } else if tt == "newline" {
+                self.advance()?;
+            } else {
+                break;
             }
         }
 
@@ -1108,11 +1201,13 @@ impl Parser {
     fn block(&mut self) -> Result<BlockNode, PugError> {
         let tok = self.expect("indent")?;
         let mut block = self.empty_block(tok.loc.start.line);
-        while self.peek()?.token_type != "outdent" {
-            let next_type = self.peek()?.token_type.clone();
-            if next_type == "newline" {
+        loop {
+            let tt = self.peek()?.token_type.as_str();
+            if tt == "outdent" {
+                break;
+            } else if tt == "newline" {
                 self.advance()?;
-            } else if next_type == "text-html" {
+            } else if tt == "text-html" {
                 let html_nodes = self.parse_text_html()?;
                 block.nodes.extend(html_nodes);
             } else {
@@ -1129,9 +1224,9 @@ impl Parser {
     }
 
     fn parse_interpolation(&mut self) -> Result<Node, PugError> {
-        let tok = self.advance()?;
+        let mut tok = self.advance()?;
         let interp = InterpolatedTagNode {
-            expr: token_str_val(&tok),
+            expr: token_str_val_take(&mut tok),
             self_closing: false,
             block: self.empty_block(tok.loc.start.line),
             attrs: Vec::new(),
@@ -1152,15 +1247,16 @@ impl Parser {
     }
 
     fn parse_tag(&mut self) -> Result<Node, PugError> {
-        let tok = self.advance()?;
-        let name = token_str_val(&tok);
+        let mut tok = self.advance()?;
+        let name = token_str_val_take(&mut tok);
+        let is_inline = is_inline_tag(&name);
         let tag_node = TagNode {
-            name: name.clone(),
+            name,
             self_closing: false,
             block: self.empty_block(tok.loc.start.line),
             attrs: Vec::new(),
             attribute_blocks: Vec::new(),
-            is_inline: is_inline_tag(&name),
+            is_inline,
             line: tok.loc.start.line,
             column: Some(tok.loc.start.column),
             filename: self.filename.clone(),
@@ -1180,10 +1276,15 @@ impl Parser {
         let mut seen_attrs = false;
 
         loop {
-            let next_type = self.peek()?.token_type.clone();
-            match next_type.as_str() {
-                "id" | "class" => {
-                    let tok = self.advance()?;
+            let kind = match self.peek()?.token_type.as_str() {
+                "id" | "class" => TagAttrKind::IdOrClass,
+                "start-attributes" => TagAttrKind::StartAttributes,
+                "&attributes" => TagAttrKind::StartAttributeBlocks,
+                _ => TagAttrKind::Other,
+            };
+            match kind {
+                TagAttrKind::IdOrClass => {
+                    let mut tok = self.advance()?;
                     if tok.token_type == "id" {
                         if attribute_names.iter().any(|n| n == "id") {
                             return Err(self.error(
@@ -1194,9 +1295,13 @@ impl Parser {
                         }
                         attribute_names.push(String::from("id"));
                     }
-                    let val_str = format!("'{}'", token_str_val(&tok));
+                    let raw = token_str_val_take(&mut tok);
+                    let mut val_str = String::with_capacity(raw.len() + 2);
+                    val_str.push('\'');
+                    val_str.push_str(&raw);
+                    val_str.push('\'');
                     tag.attrs_mut().push(Attribute {
-                        name: tok.token_type.clone(),
+                        name: tok.token_type,
                         val: Value::String(val_str),
                         line: Some(tok.loc.start.line),
                         column: Some(tok.loc.start.column),
@@ -1204,7 +1309,7 @@ impl Parser {
                         must_escape: false,
                     });
                 }
-                "start-attributes" => {
+                TagAttrKind::StartAttributes => {
                     if seen_attrs {
                         let line = self.peek()?.loc.start.line;
                         let fname = self.filename.as_deref().unwrap_or("undefined");
@@ -1216,17 +1321,17 @@ impl Parser {
                     let new_attrs = self.attrs(Some(&mut attribute_names))?;
                     tag.attrs_mut().extend(new_attrs);
                 }
-                "&attributes" => {
-                    let tok = self.advance()?;
+                TagAttrKind::StartAttributeBlocks => {
+                    let mut tok = self.advance()?;
                     tag.attribute_blocks_mut().push(AttributeBlock {
                         node_type: String::from("AttributeBlock"),
-                        val: token_str_val(&tok),
+                        val: token_str_val_take(&mut tok),
                         line: tok.loc.start.line,
                         column: Some(tok.loc.start.column),
                         filename: self.filename.clone(),
                     });
                 }
-                _ => break,
+                TagAttrKind::Other => break,
             }
         }
 
@@ -1235,9 +1340,17 @@ impl Parser {
             self.advance()?;
         }
 
-        let next_type = self.peek()?.token_type.clone();
-        match next_type.as_str() {
-            "text" | "interpolated-code" => {
+        let kind = match self.peek()?.token_type.as_str() {
+            "text" | "interpolated-code" => TagTailKind::TextOrInterp,
+            "code" => TagTailKind::Code,
+            ":" => TagTailKind::Colon,
+            "newline" | "indent" | "outdent" | "eos" | "start-pipeless-text"
+            | "end-pug-interpolation" => TagTailKind::Newline,
+            "slash" => TagTailKind::Slash,
+            _ => TagTailKind::Other,
+        };
+        match kind {
+            TagTailKind::TextOrInterp => {
                 let text = self.parse_text(false)?;
                 let filename = self.filename.clone();
                 let block = tag.block_mut(&filename);
@@ -1247,12 +1360,12 @@ impl Parser {
                     block.nodes.push(text);
                 }
             }
-            "code" => {
+            TagTailKind::Code => {
                 let code_node = self.parse_code(true)?;
                 let filename = self.filename.clone();
                 tag.block_mut(&filename).nodes.push(Node::Code(code_node));
             }
-            ":" => {
+            TagTailKind::Colon => {
                 self.advance()?;
                 let expr = self.parse_expr()?;
                 let block = match expr {
@@ -1261,18 +1374,14 @@ impl Parser {
                 };
                 tag.set_block(block);
             }
-            "newline"
-            | "indent"
-            | "outdent"
-            | "eos"
-            | "start-pipeless-text"
-            | "end-pug-interpolation" => {}
-            "slash" if self_closing_allowed => {
+            TagTailKind::Newline => {}
+            TagTailKind::Slash if self_closing_allowed => {
                 self.advance()?;
                 tag.set_self_closing(true);
             }
-            other => {
+            TagTailKind::Slash | TagTailKind::Other => {
                 let err_tok = self.peek()?.clone();
+                let other = err_tok.token_type.as_str();
                 let slash_part = if self_closing_allowed { ", `slash`" } else { "" };
                 return Err(self.error(
                     "INVALID_TOKEN",
@@ -1310,7 +1419,7 @@ impl Parser {
         let mut attrs = Vec::new();
         let mut tok = self.advance()?;
         while tok.token_type == "attribute" {
-            let attr_name = tok.name.clone().unwrap_or_default();
+            let attr_name = tok.name.take().unwrap_or_default();
             if attr_name != "class"
                 && let Some(ref mut names) = attribute_names
             {
@@ -1325,7 +1434,7 @@ impl Parser {
             }
             attrs.push(Attribute {
                 name: attr_name,
-                val: tok.val.clone().unwrap_or(Value::Bool(true)),
+                val: tok.val.take().unwrap_or(Value::Bool(true)),
                 line: Some(tok.loc.start.line),
                 column: Some(tok.loc.start.column),
                 filename: self.filename.clone(),
@@ -1336,6 +1445,14 @@ impl Parser {
         self.defer(tok);
         self.expect("end-attributes")?;
         Ok(attrs)
+    }
+}
+
+fn token_str_val_take(tok: &mut Token) -> String {
+    match tok.val.take() {
+        Some(Value::String(s)) => s,
+        Some(other) => other.to_string(),
+        None => String::new(),
     }
 }
 

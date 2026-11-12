@@ -7,10 +7,11 @@ use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
 use pug_linker::link;
 pub use pug_load::LoadedFile;
 use pug_load::{LoadHost, annotate_load_error, load_ast};
-use pug_parser::{ParserOptions, parse_with_warnings};
+use pug_parser::{ParserOptions, parse_owned_with_warnings};
 use pug_strip_comments::{StripCommentsOptions, strip_comments};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -48,6 +49,14 @@ pub trait CompilerHost {
     fn pre_lex(&mut self, source: String, filename: Option<&str>) -> Result<String, PugError> {
         let _ = filename;
         Ok(source)
+    }
+
+    fn pre_lex_cow<'s>(
+        &mut self,
+        source: &'s str,
+        filename: Option<&str>,
+    ) -> Result<Cow<'s, str>, PugError> {
+        self.pre_lex(source.to_string(), filename).map(Cow::Owned)
     }
 
     fn post_lex(&mut self, tokens: Vec<Token>, ctx: &FileCtx) -> Result<Vec<Token>, PugError> {
@@ -155,7 +164,15 @@ pub trait CompilerHost {
 }
 
 pub struct DefaultHost;
-impl CompilerHost for DefaultHost {}
+impl CompilerHost for DefaultHost {
+    fn pre_lex_cow<'s>(
+        &mut self,
+        source: &'s str,
+        _filename: Option<&str>,
+    ) -> Result<Cow<'s, str>, PugError> {
+        Ok(Cow::Borrowed(source))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // `load.resolve` (pug-load) with Node `path.join` / `path.dirname` semantics.
@@ -317,7 +334,7 @@ impl<H: CompilerHost> Session<'_, H> {
         let ctx = FileCtx { filename, src };
 
         // lex: preLex -> lexer -> postLex
-        let contents = self.host.pre_lex(src.to_string(), filename)?;
+        let contents = self.host.pre_lex_cow(src, filename)?;
         let lex_opts = LexerOptions {
             filename: filename.map(String::from),
             plugin_methods: self.options.lex_plugin_methods.clone(),
@@ -359,7 +376,7 @@ impl<H: CompilerHost> Session<'_, H> {
         let (mut ast, warnings) = {
             let _g = scope(Stage::Parser);
             with_counters(|c| c.parser_count += 1);
-            parse_with_warnings(&tokens, &parse_opts)?
+            parse_owned_with_warnings(tokens, &parse_opts)?
         };
         for warning in warnings {
             self.host.warn(&warning);
@@ -396,7 +413,9 @@ impl<H: CompilerHost> LoadHost for Session<'_, H> {
             .host
             .load_file(path, source, node_filename, node_line, self.options)?;
         self.dependencies.push(loaded.full_path.clone());
-        self.record_source(loaded.full_path.clone(), loaded.text.clone());
+        if self.options.include_sources {
+            self.record_source(loaded.full_path.clone(), loaded.text.clone());
+        }
         Ok(loaded)
     }
 
@@ -432,13 +451,15 @@ pub fn compile_body<H: CompilerHost>(
         dependencies: Vec::new(),
         debug_sources: Vec::new(),
     };
-    session.record_source(
-        options
-            .filename
-            .clone()
-            .unwrap_or_else(|| String::from("undefined")),
-        source.to_string(),
-    );
+    if options.include_sources {
+        session.record_source(
+            options
+                .filename
+                .clone()
+                .unwrap_or_else(|| String::from("undefined")),
+            source.to_string(),
+        );
+    }
 
     // 1. lex + parse the entry file, then load every dependency recursively
     let parsed = session.lex_and_parse(source, options.filename.as_deref())?;

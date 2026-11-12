@@ -11,7 +11,7 @@ use pug_error::{ErrorOptions, PugError};
 
 /// Links `Extends`, `Include`, `RawInclude`, `NamedBlock`, and `YieldBlock` nodes
 /// according to `raw/compiler/packages/pug-linker/index.js`.
-pub fn link(ast: BlockNode) -> Result<BlockNode, PugError> {
+pub fn link(mut ast: BlockNode) -> Result<BlockNode, PugError> {
     if ast.node_type != "Block" {
         return Err(PugError::new(
             "INVALID_AST",
@@ -25,8 +25,51 @@ pub fn link(ast: BlockNode) -> Result<BlockNode, PugError> {
         ));
     }
 
+    if !ast_needs_link(&ast) {
+        if ast.declared_blocks.is_none() {
+            ast.declared_blocks = Some(BTreeMap::new());
+        }
+        return Ok(ast);
+    }
+
     let lblock = link_block(LBlock::from_ast(ast))?;
     Ok(lblock.into_ast())
+}
+
+fn ast_needs_link(block: &BlockNode) -> bool {
+    block.nodes.iter().any(node_needs_link)
+}
+
+fn node_needs_link(node: &Node) -> bool {
+    match node {
+        Node::Extends(_) | Node::Include(_) | Node::RawInclude(_) | Node::NamedBlock(_) => true,
+        Node::Block(b) => ast_needs_link(b),
+        Node::Tag(t) => ast_needs_link(&t.block),
+        Node::InterpolatedTag(t) => ast_needs_link(&t.block),
+        Node::BlockComment(bc) => ast_needs_link(&bc.block),
+        Node::Filter(f) => ast_needs_link(&f.block),
+        Node::Case(c) => ast_needs_link(&c.block),
+        Node::When(w) => w.block.as_ref().is_some_and(ast_needs_link),
+        Node::Conditional(c) => {
+            ast_needs_link(&c.consequent)
+                || c.alternate.as_deref().is_some_and(node_needs_link)
+        }
+        Node::While(w) => ast_needs_link(&w.block),
+        Node::Each(e) => {
+            ast_needs_link(&e.block) || e.alternate.as_ref().is_some_and(ast_needs_link)
+        }
+        Node::EachOf(e) => ast_needs_link(&e.block),
+        Node::Mixin(m) => m.block.as_ref().is_some_and(ast_needs_link),
+        Node::Code(c) => c.block.as_ref().is_some_and(ast_needs_link),
+        Node::Attrs(_)
+        | Node::Comment(_)
+        | Node::Doctype(_)
+        | Node::FileReference(_)
+        | Node::IncludeFilter(_)
+        | Node::MixinBlock(_)
+        | Node::YieldBlock(_)
+        | Node::Text(_) => false,
+    }
 }
 
 #[derive(Debug, Clone)]

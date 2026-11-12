@@ -1,9 +1,8 @@
-use pug_ast::{Attribute, BlockNode, Node, RawContent, TextNode};
+use pug_ast::{Attribute, BlockNode, Node, RawContent, TextNode, YieldBlockNode};
 use pug_error::{ErrorOptions, PugError};
 use pug_js::{ConstEvalOutcome, ConstVal, eval_filter_constant};
-use pug_walk::{ReplaceContext, WalkOptions, walk_ast};
+use pug_walk::walk_mut;
 use serde_json::Value;
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,23 +51,27 @@ where
 /// Processes `Node::Filter` and filtered `Node::RawInclude` nodes across the AST
 /// (including loaded `Include` / `Extends` dependencies), matching `pug-filters@3.1.1`.
 pub fn handle_filters<H: FilterHost + ?Sized>(
-    ast: BlockNode,
+    mut ast: BlockNode,
     filter_options: &Value,
     filter_aliases: &HashMap<String, String>,
     host: &mut H,
 ) -> Result<BlockNode, PugError> {
-    let pending_err: RefCell<Option<PugError>> = RefCell::new(None);
+    walk_mut(&mut ast, true, &mut |node: &mut Node| -> Result<bool, PugError> {
+        match node {
+            Node::Filter(_) => {
+                let Node::Filter(mut f) = std::mem::replace(
+                    node,
+                    Node::YieldBlock(YieldBlockNode {
+                        line: 0,
+                        column: None,
+                        filename: None,
+                    }),
+                ) else {
+                    unreachable!()
+                };
 
-    let mut before = |node: &Node, ctx: &mut ReplaceContext, _parents: &[Node]| -> Result<bool, String> {
-        let res: Result<Option<Node>, PugError> = (|| match node {
-            Node::Filter(f) => {
-                let mut f = f.clone();
                 if matches!(f.block.nodes.first(), Some(Node::Filter(_))) {
-                    let inner_block =
-                        std::mem::replace(&mut f.block, BlockNode::empty(f.line, f.filename.clone()));
-                    let processed =
-                        handle_filters(inner_block, filter_options, filter_aliases, host)?;
-                    f.block = processed;
+                    f.block = handle_filters(f.block, filter_options, filter_aliases, host)?;
                 }
 
                 let mut text = String::new();
@@ -110,16 +113,27 @@ pub fn handle_filters<H: FilterHost + ?Sized>(
                     node_filename: f.filename.as_deref(),
                 })?;
 
-                Ok(Some(Node::Text(TextNode {
+                *node = Node::Text(TextNode {
                     val: rendered,
                     line: Some(f.line),
                     column: f.column,
                     filename: f.filename,
                     is_html: None,
-                })))
+                });
+                Ok(true)
             }
             Node::RawInclude(raw_inc) if !raw_inc.filters.is_empty() => {
-                let mut raw_inc = raw_inc.clone();
+                let Node::RawInclude(mut raw_inc) = std::mem::replace(
+                    node,
+                    Node::YieldBlock(YieldBlockNode {
+                        line: 0,
+                        column: None,
+                        filename: None,
+                    }),
+                ) else {
+                    unreachable!()
+                };
+
                 let dir = raw_inc.filename.as_deref().map(node_dirname);
                 let full_path = raw_inc.file.full_path.as_deref();
                 let file_str = raw_inc.file.str.as_deref().unwrap_or("");
@@ -191,49 +205,19 @@ pub fn handle_filters<H: FilterHost + ?Sized>(
                     })?;
                 }
 
-                Ok(Some(Node::Text(TextNode {
+                *node = Node::Text(TextNode {
                     val,
                     line: Some(raw_inc.line),
                     column: raw_inc.column,
                     filename: raw_inc.filename,
                     is_html: None,
-                })))
-            }
-            _ => Ok(None),
-        })();
-
-        match res {
-            Ok(Some(replacement)) => {
-                ctx.replace_single(replacement);
+                });
                 Ok(true)
             }
-            Ok(None) => Ok(true),
-            Err(e) => {
-                let msg = e.message.clone();
-                *pending_err.borrow_mut() = Some(e);
-                Err(msg)
-            }
+            _ => Ok(true),
         }
-    };
-    let mut after = |_n: &Node, _c: &mut ReplaceContext, _p: &[Node]| -> Result<(), String> { Ok(()) };
-
-    let mut parents = Vec::new();
-    let walked = walk_ast(
-        Node::Block(ast),
-        &mut before,
-        &mut after,
-        &WalkOptions {
-            include_dependencies: true,
-        },
-        &mut parents,
-    );
-
-    match walked {
-        Ok(outcome) => outcome.into_block().map_err(PugError::host_exception),
-        Err(msg) => Err(pending_err
-            .into_inner()
-            .unwrap_or_else(|| PugError::host_exception(msg))),
-    }
+    })?;
+    Ok(ast)
 }
 
 fn eval_filter_attrs(

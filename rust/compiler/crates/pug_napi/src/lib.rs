@@ -653,6 +653,28 @@ impl<'env> NodeHostAdapter<'env> {
 }
 
 impl<'env> CompilerHost for NodeHostAdapter<'env> {
+    fn pre_lex_cow<'s>(
+        &mut self,
+        source: &'s str,
+        filename: Option<&str>,
+    ) -> std::result::Result<std::borrow::Cow<'s, str>, PugError> {
+        let val_opt = self
+            .get_optional_val("preLex")
+            .map_err(|e| self.record_js_err(e))?;
+        let Some(val) = val_opt else {
+            return Ok(std::borrow::Cow::Borrowed(source));
+        };
+        let _prof_cb = pug_ast::profile::scope(pug_ast::profile::Stage::PreLexCallback);
+        pug_ast::profile::with_counters(|c| {
+            c.host_callback_count += 1;
+        });
+        let cb: Function<'env, FnArgs<(String, Option<String>)>, String> =
+            Function::from_unknown(val).map_err(|e| self.record_js_err(e))?;
+        cb.call(FnArgs::from((source.to_string(), filename.map(String::from))))
+            .map(std::borrow::Cow::Owned)
+            .map_err(|e| self.record_js_err(e))
+    }
+
     fn pre_lex(
         &mut self,
         source: String,

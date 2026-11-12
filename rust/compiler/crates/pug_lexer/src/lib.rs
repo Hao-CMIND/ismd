@@ -39,14 +39,15 @@ enum IndentMode {
     Spaces,
 }
 
-struct AttributeValueResponse {
+struct AttributeValueResponse<'s> {
     val: Option<String>,
     must_escape: bool,
-    remaining_source: String,
+    remaining_source: &'s str,
 }
 
 pub struct Lexer<'h> {
-    pub input: String,
+    input_buf: String,
+    pos: usize,
     pub original_input: String,
     pub filename: Option<String>,
     pub interpolated: bool,
@@ -75,13 +76,26 @@ pub fn lex_with_hook(
     lexer.get_tokens()
 }
 
+#[inline]
 fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
+    if s.is_ascii() {
+        s.len()
+    } else {
+        s.chars().map(char::len_utf16).sum()
+    }
 }
 
 /// Converts a UTF-16 code unit offset in `s` to a UTF-8 byte index in `s`.
 /// Clamps to `s.len()`.
+#[inline]
 fn utf16_to_byte_idx(s: &str, u16_offset: usize) -> usize {
+    if let Some(prefix) = s.as_bytes().get(..u16_offset) {
+        if prefix.is_ascii() {
+            return u16_offset;
+        }
+    } else if s.is_ascii() {
+        return s.len();
+    }
     let mut acc = 0usize;
     for (byte_idx, ch) in s.char_indices() {
         if acc >= u16_offset {
@@ -90,6 +104,17 @@ fn utf16_to_byte_idx(s: &str, u16_offset: usize) -> usize {
         acc += ch.len_utf16();
     }
     s.len()
+}
+
+#[inline]
+fn utf16_at(s: &str, u16_offset: usize) -> u16 {
+    if let Some(&b) = s.as_bytes().get(u16_offset)
+        && s.as_bytes()[..u16_offset].is_ascii()
+        && b < 0x80
+    {
+        return u16::from(b);
+    }
+    s.encode_utf16().nth(u16_offset).unwrap_or(0)
 }
 
 /// Equivalent to JS `s.substr(start_u16)`.
@@ -177,9 +202,11 @@ impl<'h> Lexer<'h> {
         hook: Option<&'h mut dyn LexerPluginHook>,
     ) -> Self {
         let normalized = SourceIndex::normalize_pug_input(str_input);
+        let token_cap = (normalized.len() / 16).clamp(16, 1024);
         Self {
             original_input: normalized.clone(),
-            input: normalized,
+            input_buf: normalized,
+            pos: 0,
             filename: options.filename.clone(),
             interpolated: options.interpolated,
             lineno: options.starting_line.unwrap_or(1),
@@ -187,14 +214,23 @@ impl<'h> Lexer<'h> {
             indent_stack: vec![0],
             indent_mode: None,
             interpolation_allowed: true,
-            tokens: Vec::new(),
+            tokens: Vec::with_capacity(token_cap),
             ended: false,
             plugin_methods: options.plugin_methods.clone(),
             hook,
         }
     }
 
+    #[inline(always)]
+    fn rest(&self) -> &str {
+        &self.input_buf[self.pos..]
+    }
+
+    #[inline(always)]
     fn run_plugin_step(&mut self, method: &str) -> Result<bool, PugError> {
+        if self.hook.is_none() || self.plugin_methods.is_empty() {
+            return Ok(false);
+        }
         if !self.plugin_methods.iter().any(|m| m == method) {
             return Ok(false);
         }
@@ -202,7 +238,7 @@ impl<'h> Lexer<'h> {
             return Ok(false);
         };
         let mut state = LexerState {
-            input: std::mem::take(&mut self.input),
+            input: self.rest().to_string(),
             filename: self.filename.clone(),
             lineno: self.lineno,
             colno: self.colno,
@@ -212,7 +248,8 @@ impl<'h> Lexer<'h> {
         };
         let res = hook.call_lex(method, &mut state);
         self.hook = Some(hook);
-        self.input = state.input;
+        self.input_buf = state.input;
+        self.pos = 0;
         self.lineno = state.lineno;
         self.colno = state.colno;
         self.tokens = state.tokens;
@@ -298,9 +335,10 @@ impl<'h> Lexer<'h> {
         }
     }
 
+    #[inline]
     fn consume_u16(&mut self, len_u16: usize) {
-        let byte_idx = utf16_to_byte_idx(&self.input, len_u16);
-        self.input.drain(..byte_idx);
+        let byte_idx = utf16_to_byte_idx(self.rest(), len_u16);
+        self.pos += byte_idx;
     }
 
     fn scan_exact(&mut self, cap0_u16: usize, cap1: Option<String>, token_type: &str) -> Token {
@@ -318,28 +356,37 @@ impl<'h> Lexer<'h> {
         cap1: Option<String>,
         token_type: &str,
     ) -> Option<Token> {
-        let cap0 = &self.input[..cap0_bytes];
-        let cap0_u16 = utf16_len(cap0);
-        let mut whitespace_len = 0usize;
-        if cap0.starts_with(' ') {
-            let leading_spaces = cap0.bytes().take_while(|&b| b == b' ').count();
-            whitespace_len = leading_spaces;
-            self.increment_column(whitespace_len as isize);
-        }
-        let new_input = &self.input[cap0_bytes..];
-        if new_input.starts_with(':') {
-            self.input = new_input.to_string();
-            let tok = self.tok(token_type, cap1.map(Value::String));
-            self.increment_column((cap0_u16 - whitespace_len) as isize);
-            return Some(tok);
-        }
-        let trailing_ws_bytes = new_input
-            .bytes()
-            .take_while(|&b| b == b' ' || b == b'\t')
-            .count();
-        let after_ws = &new_input[trailing_ws_bytes..];
-        if after_ws.is_empty() || after_ws.starts_with('\n') {
-            self.input = after_ws.to_string();
+        let (cap0_u16, whitespace_len, advance_bytes) = {
+            let rem = &self.input_buf[self.pos..];
+            let cap0 = &rem[..cap0_bytes];
+            let cap0_u16 = utf16_len(cap0);
+            let whitespace_len = if cap0.starts_with(' ') {
+                cap0.bytes().take_while(|&b| b == b' ').count()
+            } else {
+                0
+            };
+            let new_input = &rem[cap0_bytes..];
+            if new_input.starts_with(':') {
+                (cap0_u16, whitespace_len, Some(cap0_bytes))
+            } else {
+                let trailing_ws_bytes = new_input
+                    .bytes()
+                    .take_while(|&b| b == b' ' || b == b'\t')
+                    .count();
+                let after_ws = &new_input[trailing_ws_bytes..];
+                if after_ws.is_empty() || after_ws.starts_with('\n') {
+                    (cap0_u16, whitespace_len, Some(cap0_bytes + trailing_ws_bytes))
+                } else {
+                    (cap0_u16, whitespace_len, None)
+                }
+            }
+        };
+
+        if let Some(advance) = advance_bytes {
+            if whitespace_len > 0 {
+                self.increment_column(whitespace_len as isize);
+            }
+            self.pos += advance;
             let tok = self.tok(token_type, cap1.map(Value::String));
             self.increment_column((cap0_u16 - whitespace_len) as isize);
             return Some(tok);
@@ -353,8 +400,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn bracket_expression(&mut self, skip_u16: usize) -> Result<ParseUntilRange, PugError> {
-        let units: Vec<u16> = self.input.encode_utf16().collect();
-        let start_u = units.get(skip_u16).copied().unwrap_or(0);
+        let start_u = utf16_at(self.rest(), skip_u16);
         let end_delim = match start_u {
             x if x == b'(' as u16 => ")",
             x if x == b'{' as u16 => "}",
@@ -370,10 +416,11 @@ impl<'h> Lexer<'h> {
             start: skip_u16 + 1,
             ..NestingOptions::default()
         };
-        match parse_until(&self.input, end_delim, opts) {
+        match parse_until(self.rest(), end_delim, opts) {
             Ok(range) => Ok(range),
             Err(ex) => {
                 if let Some(mut idx) = ex.index {
+                    let units: Vec<u16> = self.rest().encode_utf16().collect();
                     // Exact port of pug-lexer lines 258-271
                     let find_newline_u16 = |start_pos: usize| -> isize {
                         units[start_pos..]
@@ -444,11 +491,11 @@ impl<'h> Lexer<'h> {
     }
 
     fn scan_indentation(&mut self) -> Option<(usize, usize)> {
-        Self::scan_indentation_on(&mut self.indent_mode, &self.input)
+        Self::scan_indentation_on(&mut self.indent_mode, &self.input_buf[self.pos..])
     }
 
     fn eos(&mut self) -> Result<bool, PugError> {
-        if !self.input.is_empty() {
+        if !self.rest().is_empty() {
             return Ok(false);
         }
         if self.interpolated {
@@ -470,7 +517,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn blank(&mut self) -> Result<bool, PugError> {
-        if let Some(rest) = self.input.strip_prefix('\n') {
+        if let Some(rest) = self.rest().strip_prefix('\n') {
             let ws_bytes = rest
                 .bytes()
                 .take_while(|&b| b == b' ' || b == b'\t')
@@ -486,8 +533,8 @@ impl<'h> Lexer<'h> {
     }
 
     fn comment(&mut self) -> Result<bool, PugError> {
-        if let Some(after_slashes) = self.input.strip_prefix("//") {
-            let line = first_line(&self.input);
+        if let Some(after_slashes) = self.rest().strip_prefix("//") {
+            let line = first_line(self.rest());
             let cap0_u16 = utf16_len(line);
             let (is_unbuffered, comment_body) =
                 if let Some(stripped) = after_slashes.strip_prefix('-') {
@@ -510,7 +557,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn interpolation(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with("#{") {
+        if self.rest().starts_with("#{") {
             let match_range = self.bracket_expression(1)?;
             self.consume_u16(match_range.end + 1);
             let mut tok = self.tok_str("interpolation", match_range.src.clone());
@@ -529,7 +576,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn tag(&mut self) -> Result<bool, PugError> {
-        let mut chars = self.input.char_indices();
+        let mut chars = self.rest().char_indices();
         let Some((_, first)) = chars.next() else {
             return Ok(false);
         };
@@ -546,7 +593,7 @@ impl<'h> Lexer<'h> {
                 break;
             }
         }
-        let name = self.input[..last_word_end].to_string();
+        let name = self.rest()[..last_word_end].to_string();
         let len_u16 = utf16_len(&name);
         self.consume_u16(len_u16);
         let mut tok = self.tok_str("tag", name);
@@ -557,7 +604,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn filter(&mut self, in_include: bool) -> Result<bool, PugError> {
-        if let Some(after_colon) = self.input.strip_prefix(':') {
+        if let Some(after_colon) = self.rest().strip_prefix(':') {
             let name_bytes: usize = after_colon
                 .chars()
                 .take_while(|&c| is_word_char(c) || c == '-')
@@ -582,7 +629,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn doctype(&mut self) -> Result<bool, PugError> {
-        if let Some(after_kw) = self.input.strip_prefix("doctype") {
+        if let Some(after_kw) = self.rest().strip_prefix("doctype") {
             let line_rest = first_line(after_kw);
             // Wait: `^doctype *([^\n]*)` matches even `doctypefoo`!
             // Because `scanEndOfLine` checks if `newInput` (after the line) is `:` or `^[ \t]*(\n|$)`,
@@ -604,7 +651,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn id(&mut self) -> Result<bool, PugError> {
-        if let Some(after_hash) = self.input.strip_prefix('#') {
+        if let Some(after_hash) = self.rest().strip_prefix('#') {
             let id_bytes: usize = after_hash
                 .chars()
                 .take_while(|&c| is_word_char(c) || c == '-')
@@ -647,7 +694,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn class_name(&mut self) -> Result<bool, PugError> {
-        if let Some(after_dot) = self.input.strip_prefix('.') {
+        if let Some(after_dot) = self.rest().strip_prefix('.') {
             let cand_bytes: usize = after_dot
                 .chars()
                 .take_while(|&c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -684,7 +731,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn end_interpolation(&mut self) -> Result<bool, PugError> {
-        if self.interpolated && self.input.starts_with(']') {
+        if self.interpolated && self.rest().starts_with(']') {
             self.consume_u16(1);
             self.ended = true;
             return Ok(true);
@@ -796,14 +843,15 @@ impl<'h> Lexer<'h> {
                 if let Some(hook) = self.hook.take() {
                     let mut child = Lexer::with_hook(child_input, &child_opts, hook);
                     let res = child.get_tokens();
-                    let rem = child.input;
+                    let rem = child.rest().to_string();
                     let col = child.colno;
                     self.hook = child.hook.take();
                     (res, rem, col)
                 } else {
                     let mut child = Lexer::new(child_input, &child_opts);
                     let res = child.get_tokens();
-                    (res, child.input, child.colno)
+                    let rem = child.rest().to_string();
+                    (res, rem, child.colno)
                 };
             let interpolated_tokens = match interpolated_res {
                 Ok(toks) => toks,
@@ -837,7 +885,11 @@ impl<'h> Lexer<'h> {
             }
             self.ended = true;
             let after_bracket = substr_u16(value, index_of_end + 1);
-            self.input = format!("{after_bracket}{}", self.input);
+            let mut next = String::with_capacity(after_bracket.len() + self.rest().len());
+            next.push_str(after_bracket);
+            next.push_str(self.rest());
+            self.input_buf = next;
+            self.pos = 0;
             return Ok(());
         }
 
@@ -912,7 +964,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn text(&mut self) -> Result<bool, PugError> {
-        let line = first_line(&self.input);
+        let line = first_line(self.rest());
         // 1. `/^(?:\| ?| )([^\n]+)/`
         if let Some(prefix_len) = if line.starts_with("| ") {
             Some(2)
@@ -935,7 +987,7 @@ impl<'h> Lexer<'h> {
             }
         }
         // 2. `/^( )/`
-        if self.input.starts_with(' ') {
+        if self.rest().starts_with(' ') {
             let tok = self.scan_exact(1, Some(String::from(" ")), "text");
             let text_val = tok
                 .val
@@ -945,7 +997,7 @@ impl<'h> Lexer<'h> {
             return Ok(true);
         }
         // 3. `/^\|( ?)/`
-        if let Some(after_pipe) = self.input.strip_prefix('|') {
+        if let Some(after_pipe) = self.rest().strip_prefix('|') {
             let (cap0_u16, cap1) = if after_pipe.starts_with(' ') {
                 (2, String::from(" "))
             } else {
@@ -963,8 +1015,8 @@ impl<'h> Lexer<'h> {
     }
 
     fn text_html(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with('<') {
-            let line = first_line(&self.input).to_string();
+        if self.rest().starts_with('<') {
+            let line = first_line(self.rest()).to_string();
             let line_u16 = utf16_len(&line);
             let tok = self.scan_exact(line_u16, Some(line), "text-html");
             let text_val = tok
@@ -978,7 +1030,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn dot(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with('.') {
+        if self.rest().starts_with('.') {
             if let Some(tok) = self.scan_end_of_line(1, None, "dot") {
                 let ended = self.tok_end(tok);
                 self.tokens.push(ended);
@@ -991,15 +1043,15 @@ impl<'h> Lexer<'h> {
 
     fn extends_tok(&mut self) -> Result<bool, PugError> {
         // `/^extends?(?= |$|\n)/`
-        let kw_len = if self.input.starts_with("extends") {
+        let kw_len = if self.rest().starts_with("extends") {
             Some(7)
-        } else if self.input.starts_with("extend") {
+        } else if self.rest().starts_with("extend") {
             Some(6)
         } else {
             None
         };
         if let Some(len) = kw_len {
-            let rest = &self.input[len..];
+            let rest = &self.rest()[len..];
             if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\n') {
                 let tok = self.scan_exact(len, None, "extends");
                 let ended = self.tok_end(tok);
@@ -1018,7 +1070,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn block_like(&mut self, mode: &str) -> Result<bool, PugError> {
-        let line = first_line(&self.input);
+        let line = first_line(self.rest());
         let rest_after_kw = match mode {
             "prepend" => {
                 if let Some(after_block) = line.strip_prefix("block ") {
@@ -1065,16 +1117,9 @@ impl<'h> Lexer<'h> {
         let cap0_u16 = utf16_len(line);
         let comment_u16 = utf16_len(&comment);
         let total_without_comment_u16 = cap0_u16 - comment_u16;
-        let mut len_u16 = total_without_comment_u16;
-        let units: Vec<u16> = self.input.encode_utf16().collect();
-        while len_u16 > 0 {
-            let u = units[len_u16 - 1];
-            if u == b' ' as u16 || u == b'\t' as u16 || u == b'\n' as u16 {
-                len_u16 -= 1;
-            } else {
-                break;
-            }
-        }
+        let line_without_comment = &line[..utf16_to_byte_idx(line, total_without_comment_u16)];
+        let trimmed_line = line_without_comment.trim_end_matches([' ', '\t', '\n']);
+        let len_u16 = utf16_len(trimmed_line);
         let mut tok = self.tok_str("block", name);
         self.increment_column(len_u16 as isize);
         tok.mode = Some(mode.to_string());
@@ -1098,7 +1143,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn mixin_block(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with("block") {
+        if self.rest().starts_with("block") {
             if let Some(tok) = self.scan_end_of_line(5, None, "mixin-block") {
                 let ended = self.tok_end(tok);
                 self.tokens.push(ended);
@@ -1109,7 +1154,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn yield_tok(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with("yield") {
+        if self.rest().starts_with("yield") {
             if let Some(tok) = self.scan_end_of_line(5, None, "yield") {
                 let ended = self.tok_end(tok);
                 self.tokens.push(ended);
@@ -1120,7 +1165,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn include(&mut self) -> Result<bool, PugError> {
-        if let Some(rest) = self.input.strip_prefix("include") {
+        if let Some(rest) = self.rest().strip_prefix("include") {
             if rest.is_empty()
                 || rest.starts_with(':')
                 || rest.starts_with(' ')
@@ -1132,7 +1177,7 @@ impl<'h> Lexer<'h> {
                 while self.filter(true)? {}
                 if !self.path()? {
                     if self
-                        .input
+                        .rest()
                         .chars()
                         .next()
                         .is_some_and(|c| c != ' ' && c != '\n')
@@ -1153,7 +1198,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn path(&mut self) -> Result<bool, PugError> {
-        if let Some(after_space) = self.input.strip_prefix(' ') {
+        if let Some(after_space) = self.rest().strip_prefix(' ') {
             let line_rest = first_line(after_space);
             if !line_rest.is_empty() {
                 let cap0_bytes = 1 + line_rest.len();
@@ -1178,10 +1223,10 @@ impl<'h> Lexer<'h> {
     }
 
     fn case_tok(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with("case") {
-            let is_word_boundary = !self.input[4..].chars().next().is_some_and(is_word_char);
-            if self.input[4..].starts_with(' ') {
-                let line = first_line(&self.input);
+        if self.rest().starts_with("case") {
+            let is_word_boundary = !self.rest()[4..].chars().next().is_some_and(is_word_char);
+            if self.rest()[4..].starts_with(' ') {
+                let line = first_line(self.rest());
                 let spaces = line[4..].bytes().take_while(|&b| b == b' ').count();
                 let expr = &line[4 + spaces..];
                 if !expr.is_empty() {
@@ -1208,10 +1253,10 @@ impl<'h> Lexer<'h> {
     }
 
     fn when(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with("when") {
-            let is_word_boundary = !self.input[4..].chars().next().is_some_and(is_word_char);
-            if self.input[4..].starts_with(' ') {
-                let line = first_line(&self.input);
+        if self.rest().starts_with("when") {
+            let is_word_boundary = !self.rest()[4..].chars().next().is_some_and(is_word_char);
+            if self.rest()[4..].starts_with(' ') {
+                let line = first_line(self.rest());
                 let spaces = line[4..].bytes().take_while(|&b| b == b' ').count();
                 let after_spaces = &line[4 + spaces..];
                 let non_colon_bytes: usize = after_spaces
@@ -1230,7 +1275,7 @@ impl<'h> Lexer<'h> {
                         while parser.as_ref().map_or(true, |s| {
                             s.is_nesting(NestingOptions::default()) || s.is_string()
                         }) {
-                            let Some(after_colon) = self.input.strip_prefix(':') else {
+                            let Some(after_colon) = self.rest().strip_prefix(':') else {
                                 break;
                             };
                             let seg_bytes: usize = after_colon
@@ -1241,7 +1286,7 @@ impl<'h> Lexer<'h> {
                             if seg_bytes == 0 {
                                 break;
                             }
-                            let seg = &self.input[..1 + seg_bytes];
+                            let seg = &self.rest()[..1 + seg_bytes];
                             let seg_u16 = utf16_len(seg);
                             val_str.push_str(seg);
                             self.consume_u16(seg_u16);
@@ -1268,8 +1313,8 @@ impl<'h> Lexer<'h> {
     }
 
     fn default_tok(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with("default") {
-            let is_word_boundary = !self.input[7..].chars().next().is_some_and(is_word_char);
+        if self.rest().starts_with("default") {
+            let is_word_boundary = !self.rest()[7..].chars().next().is_some_and(is_word_char);
             if let Some(tok) = self.scan_end_of_line(7, None, "default") {
                 let ended = self.tok_end(tok);
                 self.tokens.push(ended);
@@ -1288,7 +1333,7 @@ impl<'h> Lexer<'h> {
 
     fn call(&mut self) -> Result<bool, PugError> {
         // `/^\+(\s*)(([-\w]+)|(#\{))/`
-        if let Some(after_plus) = self.input.strip_prefix('+') {
+        if let Some(after_plus) = self.rest().strip_prefix('+') {
             let ws_bytes: usize = after_plus
                 .chars()
                 .take_while(|&c| is_js_space(c))
@@ -1324,8 +1369,8 @@ impl<'h> Lexer<'h> {
             tok.args = Some(Value::Null);
 
             // Check for `^ *\(`
-            let leading_spaces = self.input.bytes().take_while(|&b| b == b' ').count();
-            if self.input[leading_spaces..].starts_with('(') {
+            let leading_spaces = self.rest().bytes().take_while(|&b| b == b' ').count();
+            if self.rest()[leading_spaces..].starts_with('(') {
                 let range = self.bracket_expression(leading_spaces)?;
                 // `!/^\s*[-\w]+ *=/.test(range.src)`
                 if !Self::looks_like_attr_assignment(&range.src) {
@@ -1367,7 +1412,7 @@ impl<'h> Lexer<'h> {
 
     fn mixin(&mut self) -> Result<bool, PugError> {
         // `/^mixin +([-\w]+)(?: *\((.*)\))? */`
-        let line = first_line(&self.input);
+        let line = first_line(self.rest());
         if let Some(after_kw) = line.strip_prefix("mixin ") {
             let spaces1 = after_kw.bytes().take_while(|&b| b == b' ').count();
             let after_s1 = &after_kw[spaces1..];
@@ -1425,7 +1470,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn conditional(&mut self) -> Result<bool, PugError> {
-        let line = first_line(&self.input);
+        let line = first_line(self.rest());
         let kw = if line.starts_with("else if")
             && !line[7..].chars().next().is_some_and(is_word_char)
         {
@@ -1479,7 +1524,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn while_tok(&mut self) -> Result<bool, PugError> {
-        let line = first_line(&self.input);
+        let line = first_line(self.rest());
         if let Some(after_kw) = line.strip_prefix("while") {
             if after_kw.starts_with(' ') {
                 let spaces = after_kw.bytes().take_while(|&b| b == b' ').count();
@@ -1555,7 +1600,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn each(&mut self) -> Result<bool, PugError> {
-        let line = first_line(&self.input).to_string();
+        let line = first_line(self.rest()).to_string();
         if let Some((val_id, key_id, code_str)) = Self::parse_each_in_line(&line) {
             let cap0_u16 = utf16_len(&line);
             let code_u16 = utf16_len(&code_str);
@@ -1571,12 +1616,12 @@ impl<'h> Lexer<'h> {
             return Ok(true);
         }
 
-        let kw = if self.input.starts_with("each")
-            && !self.input[4..].chars().next().is_some_and(is_word_char)
+        let kw = if self.rest().starts_with("each")
+            && !self.rest()[4..].chars().next().is_some_and(is_word_char)
         {
             Some(("each", 4))
-        } else if self.input.starts_with("for")
-            && !self.input[3..].chars().next().is_some_and(is_word_char)
+        } else if self.rest().starts_with("for")
+            && !self.rest()[3..].chars().next().is_some_and(is_word_char)
         {
             Some(("for", 3))
         } else {
@@ -1607,7 +1652,7 @@ impl<'h> Lexer<'h> {
 
     fn each_of(&mut self) -> Result<bool, PugError> {
         // `/^(?:each|for) (.*?) of *([^\n]+)/`
-        let line = first_line(&self.input).to_string();
+        let line = first_line(self.rest()).to_string();
         if let Some(after_kw) = line
             .strip_prefix("each ")
             .or_else(|| line.strip_prefix("for "))
@@ -1674,7 +1719,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn block_code(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with('-') {
+        if self.rest().starts_with('-') {
             if let Some(tok) = self.scan_end_of_line(1, None, "blockcode") {
                 let ended = self.tok_end(tok);
                 self.tokens.push(ended);
@@ -1688,7 +1733,7 @@ impl<'h> Lexer<'h> {
 
     fn code(&mut self) -> Result<bool, PugError> {
         // `/^(!?=|-)[ \t]*([^\n]+)/`
-        let line = first_line(&self.input);
+        let line = first_line(self.rest());
         let flags_len = if line.starts_with("!=") {
             Some(2)
         } else if line.starts_with('=') || line.starts_with('-') {
@@ -1755,13 +1800,14 @@ impl<'h> Lexer<'h> {
         Ok(false)
     }
 
-    fn attribute(&mut self, str_in: &str) -> Result<String, PugError> {
-        let chars: Vec<(usize, char)> = str_in.char_indices().collect();
-        let mut i = 0usize;
-
-        while i < chars.len() {
-            let ch = chars[i].1;
+    fn attribute<'s>(&mut self, str_in: &'s str) -> Result<&'s str, PugError> {
+        let mut char_iter = str_in.char_indices();
+        let mut after_ws_byte = str_in.len();
+        let mut first_non_ws: Option<(usize, char)> = None;
+        for (b_idx, ch) in &mut char_iter {
             if !is_whitespace_char(ch) {
+                after_ws_byte = b_idx;
+                first_non_ws = Some((b_idx, ch));
                 break;
             }
             if ch == '\n' {
@@ -1769,45 +1815,46 @@ impl<'h> Lexer<'h> {
             } else {
                 self.increment_column(1);
             }
-            i += 1;
         }
 
-        if i == chars.len() {
-            return Ok(String::new());
-        }
+        let Some((start_b, first_ch)) = first_non_ws else {
+            return Ok("");
+        };
 
         let mut tok = self.tok("attribute", None);
         let mut quote: Option<char> = None;
-        if matches!(chars[i].1, '\'' | '"') {
-            quote = Some(chars[i].1);
+        let mut key_start_byte = start_b;
+        if matches!(first_ch, '\'' | '"') {
+            quote = Some(first_ch);
             self.increment_column(1);
-            i += 1;
+            key_start_byte = start_b + first_ch.len_utf8();
         }
 
-        let mut key = String::new();
-        while i < chars.len() {
-            let ch = chars[i].1;
+        let mut after_key_byte = str_in.len();
+        let mut key_end_byte = str_in.len();
+        for (b_idx, ch) in str_in[key_start_byte..].char_indices() {
+            let abs_b = key_start_byte + b_idx;
             if let Some(q) = quote {
                 if ch == q {
                     self.increment_column(1);
-                    i += 1;
+                    key_end_byte = abs_b;
+                    after_key_byte = abs_b + ch.len_utf8();
                     break;
                 }
             } else if is_whitespace_char(ch) || matches!(ch, '!' | '=' | ',') {
+                key_end_byte = abs_b;
+                after_key_byte = abs_b;
                 break;
             }
-            key.push(ch);
             if ch == '\n' {
                 self.increment_line(1);
             } else {
                 self.increment_column(ch.len_utf16() as isize);
             }
-            i += 1;
         }
 
-        tok.name = Some(key);
+        tok.name = Some(str_in[key_start_byte..key_end_byte].to_string());
 
-        let after_key_byte = chars.get(i).map(|&(b, _)| b).unwrap_or(str_in.len());
         let value_response = self.attribute_value(&str_in[after_key_byte..])?;
 
         if let Some(val_str) = value_response.val {
@@ -1822,11 +1869,12 @@ impl<'h> Lexer<'h> {
         self.tokens.push(tok);
 
         let rem = value_response.remaining_source;
-        let rem_chars: Vec<(usize, char)> = rem.char_indices().collect();
-        let mut j = 0usize;
-        while j < rem_chars.len() {
-            let ch = rem_chars[j].1;
+        let mut next_byte = rem.len();
+        let mut saw_non_ws: Option<(usize, char)> = None;
+        for (b_idx, ch) in rem.char_indices() {
             if !is_whitespace_char(ch) {
+                next_byte = b_idx;
+                saw_non_ws = Some((b_idx, ch));
                 break;
             }
             if ch == '\n' {
@@ -1834,19 +1882,156 @@ impl<'h> Lexer<'h> {
             } else {
                 self.increment_column(1);
             }
-            j += 1;
         }
 
-        if j < rem_chars.len() && rem_chars[j].1 == ',' {
+        if let Some((b_idx, ',')) = saw_non_ws {
             self.increment_column(1);
-            j += 1;
+            next_byte = b_idx + 1;
         }
 
-        let next_byte = rem_chars.get(j).map(|&(b, _)| b).unwrap_or(rem.len());
-        Ok(rem[next_byte..].to_string())
+        let _ = after_ws_byte;
+        Ok(&rem[next_byte..])
     }
 
-    fn attribute_value(&mut self, str_in: &str) -> Result<AttributeValueResponse, PugError> {
+    fn attribute_value<'s>(&mut self, str_in: &'s str) -> Result<AttributeValueResponse<'s>, PugError> {
+        if str_in.is_ascii() {
+            let bytes = str_in.as_bytes();
+            let mut escape_attr = true;
+            let mut state = default_state();
+            let mut col = self.colno;
+            let mut line = self.lineno;
+            let mut i = 0usize;
+
+            let is_ws_b = |b: u8| b == b' ' || b == b'\n' || b == b'\t';
+
+            while i < bytes.len() && is_ws_b(bytes[i]) {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                    col = 1;
+                } else {
+                    col += 1;
+                }
+                i += 1;
+            }
+
+            if i == bytes.len() {
+                return Ok(AttributeValueResponse {
+                    val: None,
+                    must_escape: true,
+                    remaining_source: str_in,
+                });
+            }
+
+            if bytes[i] == b'!' {
+                escape_attr = false;
+                col += 1;
+                i += 1;
+                if bytes.get(i) != Some(&b'=') {
+                    let unexpected = bytes
+                        .get(i)
+                        .map(|&b| char::from(b).to_string())
+                        .unwrap_or_else(|| String::from("undefined"));
+                    return Err(self.error(
+                        "INVALID_KEY_CHARACTER",
+                        format!("Unexpected character {unexpected} expected `=`"),
+                    ));
+                }
+            }
+
+            if bytes.get(i) != Some(&b'=') {
+                if i == 0 && !bytes.is_empty() && !is_ws_b(bytes[0]) && bytes[0] != b',' {
+                    let ch0 = char::from(bytes[0]).to_string();
+                    return Err(self.error(
+                        "INVALID_KEY_CHARACTER",
+                        format!("Unexpected character {ch0} expected `=`"),
+                    ));
+                } else {
+                    return Ok(AttributeValueResponse {
+                        val: None,
+                        must_escape: true,
+                        remaining_source: str_in,
+                    });
+                }
+            }
+
+            self.lineno = line;
+            self.colno = col + 1;
+            i += 1;
+
+            while i < bytes.len() && is_ws_b(bytes[i]) {
+                if bytes[i] == b'\n' {
+                    self.increment_line(1);
+                } else {
+                    self.increment_column(1);
+                }
+                i += 1;
+            }
+
+            line = self.lineno;
+            col = self.colno;
+            let val_start = i;
+
+            while i < bytes.len() {
+                if !(state.is_nesting(NestingOptions::default()) || state.is_string()) {
+                    if is_ws_b(bytes[i]) {
+                        let mut done = false;
+                        let mut x = i;
+                        while x < bytes.len() {
+                            if !is_ws_b(bytes[x]) {
+                                let b_x = bytes[x];
+                                let is_not_punctuator = !is_punctuator_u16(Some(u16::from(b_x)));
+                                let is_quote = b_x == b'\'' || b_x == b'"';
+                                let is_colon = b_x == b':';
+                                let is_spread = x + 2 < bytes.len()
+                                    && bytes[x] == b'.'
+                                    && bytes[x + 1] == b'.'
+                                    && bytes[x + 2] == b'.';
+                                if is_not_punctuator || is_quote || is_colon || is_spread {
+                                    let current_val = &str_in[val_start..i];
+                                    if self.assert_expression(current_val, true)? {
+                                        done = true;
+                                    }
+                                }
+                                break;
+                            }
+                            x += 1;
+                        }
+                        if done || x == bytes.len() {
+                            break;
+                        }
+                    }
+
+                    if bytes[i] == b',' {
+                        let current_val = &str_in[val_start..i];
+                        if self.assert_expression(current_val, true)? {
+                            break;
+                        }
+                    }
+                }
+
+                let _ = parse_char_u16(u16::from(bytes[i]), &mut state);
+                if bytes[i] == b'\n' {
+                    line += 1;
+                    col = 1;
+                } else {
+                    col += 1;
+                }
+                i += 1;
+            }
+
+            let val_str = &str_in[val_start..i];
+            self.assert_expression(val_str, false)?;
+
+            self.lineno = line;
+            self.colno = col;
+
+            return Ok(AttributeValueResponse {
+                val: Some(val_str.to_string()),
+                must_escape: escape_attr,
+                remaining_source: &str_in[i..],
+            });
+        }
+
         let units: Vec<u16> = str_in.encode_utf16().collect();
         let mut val_units: Vec<u16> = Vec::new();
         let mut escape_attr = true;
@@ -1874,7 +2059,7 @@ impl<'h> Lexer<'h> {
             return Ok(AttributeValueResponse {
                 val: None,
                 must_escape: true,
-                remaining_source: str_in.to_string(),
+                remaining_source: str_in,
             });
         }
 
@@ -1908,7 +2093,7 @@ impl<'h> Lexer<'h> {
                 return Ok(AttributeValueResponse {
                     val: None,
                     must_escape: true,
-                    remaining_source: str_in.to_string(),
+                    remaining_source: str_in,
                 });
             }
         }
@@ -1988,7 +2173,7 @@ impl<'h> Lexer<'h> {
         self.lineno = line;
         self.colno = col;
 
-        let rem_str = substr_u16(str_in, i).to_string();
+        let rem_str = substr_u16(str_in, i);
         Ok(AttributeValueResponse {
             val: Some(val_str),
             must_escape: escape_attr,
@@ -1997,10 +2182,10 @@ impl<'h> Lexer<'h> {
     }
 
     fn attrs(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with('(') {
+        if self.rest().starts_with('(') {
             let start_tok = self.tok("start-attributes", None);
             let index = self.bracket_expression(0)?.end;
-            let mut str_inside = substr_u16_len(&self.input, 1, index - 1).to_string();
+            let str_inside = substr_u16_len(self.rest(), 1, index - 1).to_string();
 
             self.increment_column(1);
             let ended_start = self.tok_end(start_tok);
@@ -2008,8 +2193,9 @@ impl<'h> Lexer<'h> {
             self.assert_nesting_correct(&str_inside)?;
             self.consume_u16(index + 1);
 
-            while !str_inside.is_empty() {
-                str_inside = self.attribute(&str_inside)?;
+            let mut rem = str_inside.as_str();
+            while !rem.is_empty() {
+                rem = self.attribute(rem)?;
             }
 
             let end_tok = self.tok("end-attributes", None);
@@ -2022,7 +2208,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn attributes_block(&mut self) -> Result<bool, PugError> {
-        if let Some(rest) = self.input.strip_prefix("&attributes") {
+        if let Some(rest) = self.rest().strip_prefix("&attributes") {
             if !rest.chars().next().is_some_and(is_word_char) {
                 let consumed = 11usize;
                 self.consume_u16(consumed);
@@ -2046,7 +2232,7 @@ impl<'h> Lexer<'h> {
             self.increment_line(1);
             self.consume_u16(indents + 1);
 
-            if self.input.starts_with(' ') || self.input.starts_with('\t') {
+            if self.rest().starts_with(' ') || self.rest().starts_with('\t') {
                 return Err(self.error(
                     "INVALID_INDENTATION",
                     "Invalid indentation, you can use tabs or spaces but not both",
@@ -2054,7 +2240,7 @@ impl<'h> Lexer<'h> {
             }
 
             // blank line
-            if self.input.starts_with('\n') {
+            if self.rest().starts_with('\n') {
                 self.interpolation_allowed = true;
                 return Ok(true);
             }
@@ -2116,16 +2302,16 @@ impl<'h> Lexer<'h> {
             let mut tokens_list: Vec<String> = Vec::new();
             let mut token_indent: Vec<bool> = Vec::new();
             let mut string_ptr_u16 = 0usize;
-            let input_u16_len = utf16_len(&self.input);
+            let input_u16_len = utf16_len(self.rest());
 
             loop {
                 // `var i = this.input.substr(stringPtr + 1).indexOf('\n');`
-                let after_nl = substr_u16(&self.input, string_ptr_u16 + 1);
+                let after_nl = substr_u16(self.rest(), string_ptr_u16 + 1);
                 let i_u16 = match after_nl.find('\n') {
                     Some(byte_pos) => utf16_len(&after_nl[..byte_pos]),
                     None => input_u16_len - string_ptr_u16 - 1,
                 };
-                let str_line = substr_u16_len(&self.input, string_ptr_u16 + 1, i_u16);
+                let str_line = substr_u16_len(&self.input_buf[self.pos..], string_ptr_u16 + 1, i_u16);
                 let line_with_nl = format!("\n{str_line}");
                 let line_captures = Self::scan_indentation_on(&mut self.indent_mode, &line_with_nl);
                 let line_indents = line_captures.map(|(_, ind)| ind).unwrap_or(0);
@@ -2145,7 +2331,7 @@ impl<'h> Lexer<'h> {
             }
 
             self.consume_u16(string_ptr_u16);
-            while self.input.is_empty() && tokens_list.last().is_some_and(|s| s.is_empty()) {
+            while self.rest().is_empty() && tokens_list.last().is_some_and(|s| s.is_empty()) {
                 tokens_list.pop();
             }
 
@@ -2174,7 +2360,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn slash(&mut self) -> Result<bool, PugError> {
-        if self.input.starts_with('/') {
+        if self.rest().starts_with('/') {
             let tok = self.scan_exact(1, None, "slash");
             let ended = self.tok_end(tok);
             self.tokens.push(ended);
@@ -2184,7 +2370,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn colon(&mut self) -> Result<bool, PugError> {
-        if let Some(after_colon) = self.input.strip_prefix(": ") {
+        if let Some(after_colon) = self.rest().strip_prefix(": ") {
             let extra_spaces = after_colon.bytes().take_while(|&b| b == b' ').count();
             let tok = self.scan_exact(2 + extra_spaces, None, ":");
             let ended = self.tok_end(tok);
@@ -2195,7 +2381,7 @@ impl<'h> Lexer<'h> {
     }
 
     fn fail(&self) -> Result<bool, PugError> {
-        let preview = substr_u16_len(&self.input, 0, 5);
+        let preview = substr_u16_len(self.rest(), 0, 5);
         Err(self.error("UNEXPECTED_TEXT", format!("unexpected text \"{preview}\"")))
     }
 
@@ -2253,6 +2439,6 @@ impl<'h> Lexer<'h> {
                 self.advance()?;
             }
         }
-        Ok(self.tokens.clone())
+        Ok(std::mem::take(&mut self.tokens))
     }
 }

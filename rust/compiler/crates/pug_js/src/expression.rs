@@ -1,8 +1,11 @@
-use crate::scan::{NestingOptions, TokenType, default_state, parse_char_u16};
+use crate::constant::{ConstEvalOutcome, ConstVal, eval_expr};
+use crate::scan::{TokenType, default_state, parse_char_u16};
 use oxc::allocator::Allocator;
+use oxc::ast::ast::{Expression, Statement};
 use oxc::parser::Parser;
-use oxc::span::{GetSpan, SourceType};
+use oxc::span::SourceType;
 use pug_ast::SourceIndex;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExpressionOptions {
@@ -18,108 +21,86 @@ pub struct ExpressionError {
     pub column: usize,
 }
 
-fn check_disallowed_line_comment(src: &str) -> Result<(), ExpressionError> {
-    let units: Vec<u16> = src.encode_utf16().collect();
+/// Owned, allocator-independent result of validating and optionally constant-evaluating
+/// a single JavaScript expression.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpressionAnalysis {
+    pub const_outcome: ConstEvalOutcome,
+}
+
+thread_local! {
+    static EXPR_WRAP_SCRATCH: RefCell<String> = RefCell::new(String::with_capacity(256));
+}
+
+/// Performs the line-comment, unterminated string/template, and bracket-nesting prechecks
+/// in a single streaming pass without allocating a `Vec<u16>`.
+fn precheck_expression(src: &str, allow_line_comment: bool) -> Result<(), ExpressionError> {
     let mut state = default_state();
+    let mut quote_start: Option<(TokenType, usize, usize)> = None;
+    let mut first_unterm_newline: Option<ExpressionError> = None;
+    let mut first_scan_err: Option<(usize, usize)> = None;
     let mut line = 1usize;
-    let mut col = 0usize; // 0-based UTF-16 column
-    for &u in &units {
-        let _ = parse_char_u16(u, &mut state);
-        if state.current() == Some(TokenType::LineComment) {
-            // Line comment started at previous `/` (`col - 1`)
+    let mut col = 0usize;
+
+    let mut step = |u: u16| -> Result<(), ExpressionError> {
+        let prev_top = state.current();
+        let prev_is_str = state.is_string();
+
+        if first_unterm_newline.is_none()
+            && (prev_top == Some(TokenType::SingleQuote)
+                || prev_top == Some(TokenType::DoubleQuote))
+            && u == b'\n' as u16
+            && !state.escaped
+            && let Some((_, sl, sc)) = quote_start
+        {
+            first_unterm_newline = Some(ExpressionError {
+                message: String::from("Unterminated string constant"),
+                line: sl,
+                column: sc,
+            });
+        }
+
+        if let Err(_err) = parse_char_u16(u, &mut state)
+            && first_scan_err.is_none()
+        {
+            first_scan_err = Some((line, col));
+        }
+
+        if !allow_line_comment && state.current() == Some(TokenType::LineComment) {
             return Err(ExpressionError {
                 message: String::from("Line comments not allowed in an expression"),
                 line,
                 column: col.saturating_sub(1),
             });
         }
-        if u == b'\n' as u16 {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    Ok(())
-}
 
-/// Checks if `src[end_byte..]` contains only JS whitespace or block/line comments.
-fn has_trailing_tokens(src: &str, end_byte: usize, allow_line_comment: bool) -> Option<usize> {
-    let rest = &src[end_byte..];
-    let bytes = rest.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b.is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        if b == b'/' && i + 1 < bytes.len() {
-            if bytes[i + 1] == b'*' {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                if i + 1 < bytes.len() {
-                    i += 2;
-                    continue;
-                } else {
-                    return Some(end_byte + i);
-                }
-            } else if allow_line_comment && bytes[i + 1] == b'/' {
-                i += 2;
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-                continue;
-            }
-        }
-        // Check non-ASCII JS whitespace
-        if let Some(ch) = rest[i..].chars().next() {
-            if ch.is_whitespace() {
-                i += ch.len_utf8();
-                continue;
-            }
-        }
-        return Some(end_byte + i);
-    }
-    None
-}
-
-fn check_unterminated_string_or_template(src: &str) -> Option<ExpressionError> {
-    let units: Vec<u16> = src.encode_utf16().collect();
-    let mut state = default_state();
-    let mut quote_start: Option<(TokenType, usize, usize)> = None;
-    let mut line = 1usize;
-    let mut col = 0usize;
-
-    for &u in &units {
-        let prev_top = state.current();
-        let prev_is_str = state.is_string();
-        if (prev_top == Some(TokenType::SingleQuote) || prev_top == Some(TokenType::DoubleQuote))
-            && u == b'\n' as u16
-            && !state.escaped
-        {
-            if let Some((_, sl, sc)) = quote_start {
-                return Some(ExpressionError {
-                    message: String::from("Unterminated string constant"),
-                    line: sl,
-                    column: sc,
-                });
-            }
-        }
-        let _ = parse_char_u16(u, &mut state);
         if !prev_is_str && state.is_string() {
             quote_start = Some((state.current().unwrap(), line, col));
         } else if prev_is_str && !state.is_string() {
             quote_start = None;
         }
+
         if u == b'\n' as u16 {
             line += 1;
             col = 0;
         } else {
             col += 1;
         }
+        Ok(())
+    };
+
+    if src.is_ascii() {
+        for &b in src.as_bytes() {
+            step(u16::from(b))?;
+        }
+    } else {
+        for u in src.encode_utf16() {
+            step(u)?;
+        }
+    }
+
+    if let Some(err) = first_unterm_newline {
+        return Err(err);
     }
 
     if let Some((qt, sl, sc)) = quote_start {
@@ -130,83 +111,59 @@ fn check_unterminated_string_or_template(src: &str) -> Option<ExpressionError> {
             TokenType::TemplateQuote => String::from("Unterminated template"),
             _ => String::from("Unexpected token"),
         };
-        return Some(ExpressionError {
+        return Err(ExpressionError {
             message,
             line: sl,
             column: sc,
         });
     }
-    None
-}
 
-/// Validates that `src` is a single valid JavaScript expression, matching `is-expression@^4.0.0`.
-pub fn validate_expression(
-    src: &str,
-    options: ExpressionOptions,
-) -> Result<(), ExpressionError> {
-    if !options.line_comment {
-        check_disallowed_line_comment(src)?;
-    }
-
-    if let Some(unterm_err) = check_unterminated_string_or_template(src) {
-        return Err(unterm_err);
-    }
-
-    // Check balanced brackets first with character-parser
-    if let Err(scan_err) = crate::scan::parse(src, NestingOptions::default()) {
-        let idx_u16 = scan_err.index.unwrap_or(0);
-        let (line, col) = utf16_offset_to_acorn_loc(src, idx_u16);
+    if let Some((err_line, err_col)) = first_scan_err {
         return Err(ExpressionError {
             message: String::from("Unexpected token"),
-            line,
-            column: col,
+            line: err_line,
+            column: err_col,
         });
     }
 
+    Ok(())
+}
+
+/// Parses and validates `src` using a single Oxc `parse()` on a wrapped `(\n{src}\n)`
+/// (prechecked for balanced nesting/comments/quotes) and invokes `on_expr` with the parsed
+/// expression AST before the scratch allocator is reset.
+pub(crate) fn with_validated_expression<R>(
+    src: &str,
+    options: ExpressionOptions,
+    on_expr: impl FnOnce(&Expression<'_>) -> R,
+) -> Result<R, ExpressionError> {
+    precheck_expression(src, options.line_comment)?;
+
     pug_ast::profile::with_counters(|c| {
         c.oxc_parse_count += 1;
-        c.allocator_create_count += 1;
     });
     let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
-    let allocator = Allocator::default();
-    let source_type = if options.strict {
-        SourceType::mjs()
-    } else {
-        SourceType::cjs()
-    };
 
-    let parser = Parser::new(&allocator, src, source_type);
-    match parser.parse_expression() {
-        Ok(expr) => {
-            let end_byte = expr.span().end as usize;
-            if let Some(trailing_byte) = has_trailing_tokens(src, end_byte, options.line_comment) {
-                let sidx = SourceIndex::new(src);
-                let lc = sidx.line_col(src, trailing_byte);
-                return Err(ExpressionError {
-                    message: String::from("Unexpected token"),
-                    line: lc.line,
-                    column: lc.column.saturating_sub(1),
-                });
-            }
-            // Also verify via `parse()` when `strict` is false or when expression has assignment target issues
-            let full_wrap = if options.strict {
-                format!("\"use strict\";(\n{src}\n)")
-            } else {
-                format!("(\n{src}\n)")
-            };
-            pug_ast::profile::with_counters(|c| {
-                c.oxc_parse_count += 1;
-                c.allocator_create_count += 1;
-            });
-            let wrap_alloc = Allocator::default();
-            let wrap_ret = Parser::new(&wrap_alloc, &full_wrap, SourceType::cjs()).parse();
-            if let Some(first_err) = wrap_ret.diagnostics.first() {
+    crate::with_reusable_allocator(|allocator: &Allocator| {
+        let prefix = if options.strict { "\"use strict\";(\n" } else { "(\n" };
+        let prefix_len = prefix.len();
+
+        EXPR_WRAP_SCRATCH.with(|cell| {
+            let mut wrap_buf = cell.borrow_mut();
+            wrap_buf.clear();
+            wrap_buf.reserve(prefix_len + src.len() + 2);
+            wrap_buf.push_str(prefix);
+            wrap_buf.push_str(src);
+            wrap_buf.push_str("\n)");
+
+            let ret = Parser::new(allocator, &wrap_buf, SourceType::cjs()).parse();
+            if let Some(first_err) = ret.diagnostics.first() {
                 let sidx = SourceIndex::new(src);
                 let byte_off = first_err
                     .labels
                     .as_ref()
                     .first()
-                    .map(|s| (s.offset() as usize).saturating_sub(if options.strict { 15 } else { 2 }))
+                    .map(|s| (s.offset() as usize).saturating_sub(prefix_len))
                     .unwrap_or(src.len());
                 let lc = sidx.line_col(src, byte_off.min(src.len()));
                 return Err(ExpressionError {
@@ -215,22 +172,55 @@ pub fn validate_expression(
                     column: lc.column.saturating_sub(1),
                 });
             }
-            Ok(())
-        }
-        Err(errors) => {
+
+            if ret.program.body.len() == 1
+                && let Statement::ExpressionStatement(stmt) = &ret.program.body[0]
+                && let Expression::ParenthesizedExpression(paren) = &stmt.expression
+            {
+                return Ok(on_expr(&paren.expression));
+            }
+
             let sidx = SourceIndex::new(src);
-            let first = errors.first();
-            let byte_off = first
-                .and_then(|e| e.labels.as_ref().first())
-                .map(|s| s.offset() as usize)
-                .unwrap_or(src.len());
-            let lc = sidx.line_col(src, byte_off.min(src.len()));
-            let raw_msg = first.map(|e| e.message.as_ref()).unwrap_or("Unexpected token");
+            let lc = sidx.line_col(src, src.len());
             Err(ExpressionError {
-                message: normalize_oxc_error_message(raw_msg),
+                message: String::from("Unexpected token"),
                 line: lc.line,
                 column: lc.column.saturating_sub(1),
             })
+        })
+    })
+}
+
+/// Validates that `src` is a single valid JavaScript expression, matching `is-expression@^4.0.0`.
+pub fn validate_expression(
+    src: &str,
+    options: ExpressionOptions,
+) -> Result<(), ExpressionError> {
+    with_validated_expression(src, options, |_| ())
+}
+
+/// Validates `src` and computes its constant evaluation outcome in a single Oxc parse,
+/// returning an owned `ExpressionAnalysis`.
+pub fn analyze_expression(
+    src: &str,
+    options: ExpressionOptions,
+    allow_pug_constants: bool,
+) -> Result<ExpressionAnalysis, ExpressionError> {
+    let const_outcome = with_validated_expression(src, options, |expr| {
+        let _prof_const = pug_ast::profile::scope(pug_ast::profile::Stage::ConstantEvaluation);
+        pug_ast::profile::with_counters(|c| {
+            c.eval_constant_count += 1;
+        });
+        eval_expr(expr, allow_pug_constants)
+    })?;
+    Ok(ExpressionAnalysis { const_outcome })
+}
+
+impl ExpressionAnalysis {
+    pub fn constant_value(&self) -> Option<&ConstVal> {
+        match &self.const_outcome {
+            ConstEvalOutcome::Constant(v) => Some(v),
+            _ => None,
         }
     }
 }
@@ -241,25 +231,6 @@ fn normalize_oxc_error_message(msg: &str) -> String {
     } else {
         String::from("Unexpected token")
     }
-}
-
-fn utf16_offset_to_acorn_loc(src: &str, target_u16: usize) -> (usize, usize) {
-    let mut line = 1usize;
-    let mut col = 0usize;
-    let mut count = 0usize;
-    for u in src.encode_utf16() {
-        if count >= target_u16 {
-            break;
-        }
-        if u == b'\n' as u16 {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-        count += 1;
-    }
-    (line, col)
 }
 
 /// Checks whether `src` is a valid JavaScript expression (default `is-expression` options:

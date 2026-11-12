@@ -416,11 +416,30 @@ pub fn parse_char(character: char, mut state: State) -> Result<State, CharacterP
 }
 
 pub fn parse(src: &str, options: NestingOptions) -> Result<State, CharacterParserError> {
-    let units: Vec<u16> = src.encode_utf16().collect();
     let start = options.start;
-    let end = options.end.unwrap_or(units.len()).min(units.len());
     let mut state = default_state();
-    for (idx, &u) in units.iter().enumerate().take(end).skip(start) {
+    if src.is_ascii() {
+        let bytes = src.as_bytes();
+        let end = options.end.unwrap_or(bytes.len()).min(bytes.len());
+        if start < end {
+            for (idx, &b) in bytes[start..end].iter().enumerate() {
+                if let Err(mut err) = parse_char_u16(u16::from(b), &mut state) {
+                    err.index = Some(start + idx);
+                    return Err(err);
+                }
+            }
+        }
+        return Ok(state);
+    }
+
+    let end = options.end.unwrap_or(usize::MAX);
+    for (idx, u) in src.encode_utf16().enumerate() {
+        if idx >= end {
+            break;
+        }
+        if idx < start {
+            continue;
+        }
         if let Err(mut err) = parse_char_u16(u, &mut state) {
             err.index = Some(idx);
             return Err(err);
@@ -434,6 +453,34 @@ pub fn parse_until(
     delimiter: &str,
     options: NestingOptions,
 ) -> Result<ParseUntilRange, CharacterParserError> {
+    if src.is_ascii() && delimiter.is_ascii() {
+        let bytes = src.as_bytes();
+        let delim = delimiter.as_bytes();
+        let start = options.start.min(bytes.len());
+        let mut state = default_state();
+        for index in start..bytes.len() {
+            if (options.ignore_nesting || !state.is_nesting(options))
+                && index + delim.len() <= bytes.len()
+                && &bytes[index..index + delim.len()] == delim
+            {
+                return Ok(ParseUntilRange {
+                    start,
+                    end: index,
+                    src: src[start..index].to_string(),
+                });
+            }
+            if let Err(mut err) = parse_char_u16(u16::from(bytes[index]), &mut state) {
+                err.index = Some(index);
+                return Err(err);
+            }
+        }
+        return Err(CharacterParserError {
+            code: CharacterParserErrorCode::EndOfStringReached,
+            message: String::from("The end of the string was reached with no closing bracket found."),
+            index: Some(bytes.len()),
+        });
+    }
+
     let units: Vec<u16> = src.encode_utf16().collect();
     let delim_units: Vec<u16> = delimiter.encode_utf16().collect();
     let start = options.start;

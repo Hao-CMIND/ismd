@@ -1,4 +1,3 @@
-use oxc::allocator::Allocator;
 use oxc::ast::ast::{
     Argument, ArrayExpressionElement, BinaryOperator, Expression, LogicalOperator,
     ObjectPropertyKind, PropertyKey, UnaryOperator,
@@ -357,21 +356,21 @@ pub fn eval_constant(src: &str) -> Option<ConstVal> {
     pug_ast::profile::with_counters(|c| {
         c.eval_constant_count += 1;
     });
-    let allocator = Allocator::default();
-    let expr = {
-        let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
-        pug_ast::profile::with_counters(|c| {
-            c.oxc_parse_count += 1;
-            c.allocator_create_count += 1;
-        });
-        Parser::new(&allocator, src, SourceType::script())
-            .parse_expression()
-            .ok()?
-    };
-    match eval_expr(&expr, true) {
-        ConstEvalOutcome::Constant(v) => Some(v),
-        _ => None,
-    }
+    crate::with_reusable_allocator(|allocator| {
+        let expr = {
+            let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
+            pug_ast::profile::with_counters(|c| {
+                c.oxc_parse_count += 1;
+            });
+            Parser::new(allocator, src, SourceType::script())
+                .parse_expression()
+                .ok()?
+        };
+        match eval_expr(&expr, true) {
+            ConstEvalOutcome::Constant(v) => Some(v),
+            _ => None,
+        }
+    })
 }
 
 /// Evaluates a filter option expression without `{ pug, pug_interp }`, distinguishing
@@ -381,33 +380,20 @@ pub fn eval_filter_constant(src: &str) -> ConstEvalOutcome {
     pug_ast::profile::with_counters(|c| {
         c.eval_constant_count += 1;
     });
-    if crate::expression::validate_expression(
+    match crate::expression::with_validated_expression(
         src,
         crate::expression::ExpressionOptions {
             strict: false,
             line_comment: true,
         },
-    )
-    .is_err()
-    {
-        return ConstEvalOutcome::NotConstant;
+        |expr| eval_expr(expr, false),
+    ) {
+        Ok(outcome) => outcome,
+        Err(_) => ConstEvalOutcome::NotConstant,
     }
-    let allocator = Allocator::default();
-    let expr = {
-        let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
-        pug_ast::profile::with_counters(|c| {
-            c.oxc_parse_count += 1;
-            c.allocator_create_count += 1;
-        });
-        let Ok(expr) = Parser::new(&allocator, src, SourceType::cjs()).parse_expression() else {
-            return ConstEvalOutcome::NotConstant;
-        };
-        expr
-    };
-    eval_expr(&expr, false)
 }
 
-fn eval_expr(expr: &Expression<'_>, allow_pug_constants: bool) -> ConstEvalOutcome {
+pub(crate) fn eval_expr(expr: &Expression<'_>, allow_pug_constants: bool) -> ConstEvalOutcome {
     use ConstEvalOutcome::*;
     macro_rules! eval_sub {
         ($e:expr) => {

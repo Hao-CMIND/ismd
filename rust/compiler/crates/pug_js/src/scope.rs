@@ -42,62 +42,61 @@ pub fn analyze_scope(src: &str, component: &'static str) -> Result<ScopeAnalysis
     let _prof_scope = pug_ast::profile::scope(pug_ast::profile::Stage::ScopeAnalysis);
     pug_ast::profile::with_counters(|c| {
         c.scope_analysis_count += 1;
-        c.allocator_create_count += 1;
     });
-    let allocator = Allocator::default();
-    let parse_opts = ParseOptions {
-        allow_return_outside_function: true,
-        ..ParseOptions::default()
-    };
+    crate::with_reusable_allocator(|allocator: &Allocator| {
+        let parse_opts = ParseOptions {
+            allow_return_outside_function: true,
+            ..ParseOptions::default()
+        };
 
-    let ret = {
-        let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
-        pug_ast::profile::with_counters(|c| {
-            c.oxc_parse_count += 1;
-        });
-        let mut r = Parser::new(&allocator, src, SourceType::script())
-            .with_options(parse_opts)
-            .parse();
-
-        if !r.diagnostics.is_empty() {
+        let ret = {
+            let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
             pug_ast::profile::with_counters(|c| {
                 c.oxc_parse_count += 1;
             });
-            let mjs_ret = Parser::new(&allocator, src, SourceType::mjs())
+            let mut r = Parser::new(allocator, src, SourceType::script())
                 .with_options(parse_opts)
                 .parse();
-            if mjs_ret.diagnostics.is_empty() {
-                r = mjs_ret;
-            } else {
-                let err_msg = match component {
-                    "obj" => "Error parsing object part of the with expression",
-                    _ => "Error parsing body of the with expression",
-                };
-                let detail = r
-                    .diagnostics
-                    .first()
-                    .map(|d| d.message.to_string())
-                    .unwrap_or_default();
-                return Err(ScopeError {
-                    component,
-                    message: if detail.is_empty() {
-                        String::from(err_msg)
-                    } else {
-                        format!("{err_msg}: {detail}")
-                    },
-                });
-            }
-        }
-        r
-    };
 
-    let semantic_ret = {
-        let _prof_sem = pug_ast::profile::scope(pug_ast::profile::Stage::OxcSemantic);
-        pug_ast::profile::with_counters(|c| {
-            c.oxc_semantic_count += 1;
-        });
-        SemanticBuilder::new().build(&ret.program)
-    };
+            if !r.diagnostics.is_empty() {
+                pug_ast::profile::with_counters(|c| {
+                    c.oxc_parse_count += 1;
+                });
+                let mjs_ret = Parser::new(allocator, src, SourceType::mjs())
+                    .with_options(parse_opts)
+                    .parse();
+                if mjs_ret.diagnostics.is_empty() {
+                    r = mjs_ret;
+                } else {
+                    let err_msg = match component {
+                        "obj" => "Error parsing object part of the with expression",
+                        _ => "Error parsing body of the with expression",
+                    };
+                    let detail = r
+                        .diagnostics
+                        .first()
+                        .map(|d| d.message.to_string())
+                        .unwrap_or_default();
+                    return Err(ScopeError {
+                        component,
+                        message: if detail.is_empty() {
+                            String::from(err_msg)
+                        } else {
+                            format!("{err_msg}: {detail}")
+                        },
+                    });
+                }
+            }
+            r
+        };
+
+        let semantic_ret = {
+            let _prof_sem = pug_ast::profile::scope(pug_ast::profile::Stage::OxcSemantic);
+            pug_ast::profile::with_counters(|c| {
+                c.oxc_semantic_count += 1;
+            });
+            SemanticBuilder::new().build(&ret.program)
+        };
     let scoping = semantic_ret.semantic.scoping();
     let root_scope = scoping.root_scope_id();
 
@@ -167,6 +166,7 @@ pub fn analyze_scope(src: &str, component: &'static str) -> Result<ScopeAnalysis
     Ok(ScopeAnalysis {
         free_variables,
         top_level_returns,
+    })
     })
 }
 
@@ -240,13 +240,13 @@ pub fn is_valid_js_identifier(name: &str) -> bool {
     let _prof_oxc = pug_ast::profile::scope(pug_ast::profile::Stage::OxcParse);
     pug_ast::profile::with_counters(|c| {
         c.oxc_parse_count += 1;
-        c.allocator_create_count += 1;
     });
-    let allocator = Allocator::default();
-    let Ok(expr) = Parser::new(&allocator, name, SourceType::script()).parse_expression() else {
-        return false;
-    };
-    matches!(expr, Expression::Identifier(_))
+    crate::with_reusable_allocator(|allocator: &Allocator| {
+        let Ok(expr) = Parser::new(allocator, name, SourceType::script()).parse_expression() else {
+            return false;
+        };
+        matches!(expr, Expression::Identifier(_))
+    })
 }
 
 fn collect_stmt_info(

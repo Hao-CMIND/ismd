@@ -9,7 +9,7 @@ pub fn add_with_checked(
     exclude: &[String],
 ) -> Result<String, ScopeError> {
     let src_analysis = analyze_scope(src, "src")?;
-    let obj_analysis = analyze_scope(obj, "obj")?;
+    let is_default_locals_obj = obj == "locals || {}";
 
     let mut exclude_set: BTreeSet<String> = BTreeSet::new();
     exclude_set.insert(String::from("undefined"));
@@ -17,8 +17,13 @@ pub fn add_with_checked(
     for ex in exclude {
         exclude_set.insert(ex.clone());
     }
-    for g in obj_analysis.free_variables {
-        exclude_set.insert(g);
+    if is_default_locals_obj {
+        exclude_set.insert(String::from("locals"));
+    } else {
+        let obj_analysis = analyze_scope(obj, "obj")?;
+        for g in obj_analysis.free_variables {
+            exclude_set.insert(g);
+        }
     }
 
     let vars: Vec<String> = src_analysis
@@ -37,7 +42,7 @@ pub fn add_with_checked(
     let mut local = String::from("locals_for_with");
     let mut result = String::from("result_of_with");
 
-    if is_valid_js_identifier(obj) {
+    if !is_default_locals_obj && is_valid_js_identifier(obj) {
         local = obj.to_string();
     } else {
         while vars_set.contains(local.as_str()) || exclude_set.contains(&local) {

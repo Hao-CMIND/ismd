@@ -1,7 +1,7 @@
 use pug_ast::Attribute;
 use pug_js::{
-    ConstVal, eval_constant, is_constant, js_stringify_str, js_stringify_val, pug_attr,
-    pug_classes, pug_escape, pug_style,
+    ConstVal, eval_constant, js_stringify_str, js_stringify_val, pug_attr, pug_classes,
+    pug_escape, pug_style,
 };
 use serde_json::Value;
 
@@ -67,10 +67,20 @@ where
 
     let mut classes_buf: Vec<String> = Vec::new();
     if !classes.is_empty() {
-        if classes.iter().all(|(c, is_s)| *is_s && is_constant(c)) {
-            let const_vals: Vec<ConstVal> = classes
-                .iter()
-                .map(|(c, _)| eval_constant(c).unwrap_or(ConstVal::Undefined))
+        let mut evaluated_classes: Vec<Option<ConstVal>> = Vec::with_capacity(classes.len());
+        let mut all_const = true;
+        for (cls, is_s) in &classes {
+            let cv = if *is_s { eval_constant(cls) } else { None };
+            if cv.is_none() {
+                all_const = false;
+            }
+            evaluated_classes.push(cv);
+        }
+
+        if all_const {
+            let const_vals: Vec<ConstVal> = evaluated_classes
+                .into_iter()
+                .map(|c| c.unwrap_or(ConstVal::Undefined))
                 .collect();
             let class_str = pug_classes(&ConstVal::Array(const_vals), Some(&class_escaping));
             let val_str = js_stringify_str(&class_str);
@@ -86,8 +96,8 @@ where
             );
         } else {
             let mut class_exprs: Vec<String> = Vec::with_capacity(classes.len());
-            for (i, (cls, is_s)) in classes.into_iter().enumerate() {
-                if is_s && let Some(cval) = eval_constant(&cls) {
+            for (i, ((cls, _), cv)) in classes.into_iter().zip(evaluated_classes).enumerate() {
+                if let Some(cval) = cv {
                     let final_val = if class_escaping[i] {
                         let s = cval.to_js_string();
                         let escaped = pug_escape(&s);

@@ -10,7 +10,6 @@ use pug_ast::profile::{Stage, record_file, scope, with_counters};
 use pug_ast::{BlockNode, RawContent, Token};
 use pug_code_gen::{CodeGenOptions, generate_code};
 use pug_error::PugError;
-use pug_filters::{FilterInvocation, handle_filters};
 use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
 use pug_linker::link;
 pub use pug_load::LoadedFile;
@@ -134,16 +133,6 @@ pub trait CompilerHost {
 
     fn pre_filters(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
         Ok(ast)
-    }
-
-    fn run_filter(&mut self, call: &FilterInvocation<'_>) -> Result<String, PugError> {
-        Err(pug_filters::unknown_filter_error(
-            call.filter_name,
-            call.line,
-            call.column,
-            call.node_filename.map(String::from),
-            None,
-        ))
     }
 
     fn post_filters(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
@@ -759,17 +748,8 @@ pub fn compile_body_with_store<H: CompilerHost>(
     let debug_sources = std::mem::take(&mut session.debug_sources);
     let host = session.host;
 
-    // 2. preFilters -> handleFilters -> postFilters
+    // 2. preFilters -> postFilters (Filters stage is handled via NativePluginManager)
     ast = host.pre_filters(ast)?;
-    ast = {
-        let _g = scope(Stage::Filters);
-        handle_filters(
-            ast,
-            &options.filter_options,
-            &options.filter_aliases,
-            &mut |call: &FilterInvocation<'_>| host.run_filter(call),
-        )?
-    };
     ast = host.post_filters(ast)?;
 
     // 3. preLink -> Linker -> postLink
@@ -1430,25 +1410,16 @@ mod tests {
             ..Default::default()
         };
 
-        struct SpyHost {
-            filter_calls: usize,
-        }
-        impl CompilerHost for SpyHost {
-            fn run_filter(&mut self, _call: &FilterInvocation<'_>) -> Result<String, PugError> {
-                self.filter_calls += 1;
-                Ok(String::new())
-            }
-        }
+        struct SpyHost;
+        impl CompilerHost for SpyHost {}
 
-        let mut host = SpyHost { filter_calls: 0 };
+        let mut host = SpyHost;
         let store = std::sync::Arc::new(TemplateStore::new());
 
         // 1. Single compile with :uppercase
         let res = compile_body_with_store(":uppercase\n  hello world", &opts, &mut host, &store).unwrap();
         assert!(res.body.contains("HELLO WORLD"), "Expected 'HELLO WORLD', got: {}", res.body);
         assert!(!res.body.contains("hello world"));
-        // Proves legacy JS/filter host was never called!
-        assert_eq!(host.filter_calls, 0, "Legacy FilterHost should never be called");
 
         // 2. Verify plugin is cached in store and not reloaded
         let plugins_guard = store.plugins.read().unwrap();
@@ -1460,7 +1431,6 @@ mod tests {
         // Second compile with same store
         let res2 = compile_body_with_store(":uppercase\n  another native text", &opts, &mut host, &store).unwrap();
         assert!(res2.body.contains("ANOTHER NATIVE TEXT"));
-        assert_eq!(host.filter_calls, 0);
 
         // 3. Batch compile through CompilerSession with Rayon parallel mode
         let entries: Vec<BatchEntryInput> = (0..10)

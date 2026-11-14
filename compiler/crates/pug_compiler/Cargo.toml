@@ -12,7 +12,6 @@ pug_ast.workspace = true
 pug_attrs.workspace = true
 pug_code_gen.workspace = true
 pug_error.workspace = true
-pug_filters.workspace = true
 pug_js.workspace = true
 pug_lexer.workspace = true
 pug_linker.workspace = true

@@ -874,7 +874,6 @@ dependencies = [
  "pug_attrs",
  "pug_code_gen",
  "pug_error",
- "pug_filters",
  "pug_js",
  "pug_lexer",
  "pug_linker",
@@ -902,18 +901,6 @@ name = "pug_filter_uppercase"
 version = "0.1.0"
 dependencies = [
  "pug_plugin_abi",
-]
-
-[[package]]
-name = "pug_filters"
-version = "0.1.0"
-dependencies = [
- "pug_ast",
- "pug_error",
- "pug_js",
- "pug_walk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -969,7 +956,6 @@ dependencies = [
  "pug_code_gen",
  "pug_compiler",
  "pug_error",
- "pug_filters",
  "pug_js",
  "pug_lexer",
  "pug_linker",

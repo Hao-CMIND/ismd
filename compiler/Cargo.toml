@@ -9,7 +9,6 @@ members = [
   "crates/pug_parser",
   "crates/pug_walk",
   "crates/pug_load",
-  "crates/pug_filters",
   "crates/pug_linker",
   "crates/pug_attrs",
   "crates/pug_code_gen",
@@ -45,7 +44,6 @@ pug_strip_comments = { path = "crates/pug_strip_comments" }
 pug_parser = { path = "crates/pug_parser" }
 pug_walk = { path = "crates/pug_walk" }
 pug_load = { path = "crates/pug_load" }
-pug_filters = { path = "crates/pug_filters" }
 pug_linker = { path = "crates/pug_linker" }
 pug_attrs = { path = "crates/pug_attrs" }
 pug_code_gen = { path = "crates/pug_code_gen" }

@@ -10,7 +10,6 @@ use pug_compiler::{
     default_global_store, default_resolve,
 };
 use pug_error::{ErrorOptions, PugError};
-use pug_filters::{FilterCallMode, FilterInvocation, handle_filters};
 use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
 use pug_linker::link;
 use pug_load::{LoadHost, annotate_load_error, load_ast};
@@ -880,19 +879,6 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
         self.call_json_hook("preFilters", ast)
     }
 
-    fn run_filter(&mut self, call: &FilterInvocation<'_>) -> std::result::Result<String, PugError> {
-        let cb_val = self
-            .get_optional_val("filter")
-            .map_err(|e| self.record_js_err(e))?;
-        let _prof_flt = pug_ast::profile::scope(pug_ast::profile::Stage::FilterCallback);
-        if cb_val.is_some() {
-            pug_ast::profile::with_counters(|c| {
-                c.host_callback_count += 1;
-            });
-        }
-        invoke_js_filter(self.env, cb_val, call, &mut self.pending_js_error)
-    }
-
     fn post_filters(&mut self, ast: BlockNode) -> std::result::Result<BlockNode, PugError> {
         self.call_json_hook("postFilters", ast)
     }
@@ -979,125 +965,6 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
             && !self.custom_read
             && !self.lex_parse_hooks
             && !self.ast_or_codegen_hooks
-    }
-}
-
-fn invoke_js_filter<'env>(
-    env: Env,
-    cb_val: Option<Unknown<'env>>,
-    call: &FilterInvocation<'_>,
-    pending_js_error: &mut Option<napi::Error>,
-) -> std::result::Result<String, PugError> {
-    let record_err = |e: napi::Error, slot: &mut Option<napi::Error>| -> PugError {
-        let msg = e.to_string();
-        *slot = Some(e);
-        PugError::host_exception(msg)
-    };
-
-    let Some(val) = cb_val else {
-        return Err(pug_filters::unknown_filter_error(
-            call.filter_name,
-            call.line,
-            call.column,
-            call.node_filename.map(String::from),
-            None,
-        ));
-    };
-
-    let cb: Function<
-        'env,
-        FnArgs<(
-            String,
-            String,
-            String,
-            Option<String>,
-            Unknown<'env>,
-            Object<'env>,
-            Option<String>,
-        )>,
-        Unknown<'env>,
-    > = Function::from_unknown(val).map_err(|e| record_err(e, pending_js_error))?;
-
-    let mut attrs_obj = Object::new(&env).map_err(|e| record_err(e, pending_js_error))?;
-    for entry in call.attrs {
-        match &entry.value {
-            Some(v) => {
-                let js_v = env
-                    .to_js_value(v)
-                    .map_err(|e| record_err(e, pending_js_error))?;
-                attrs_obj
-                    .set_named_property(&entry.name, js_v)
-                    .map_err(|e| record_err(e, pending_js_error))?;
-            }
-            None => {
-                attrs_obj
-                    .set_named_property(&entry.name, ())
-                    .map_err(|e| record_err(e, pending_js_error))?;
-            }
-        }
-    }
-    match call.attrs_filename {
-        Some(f) => attrs_obj
-            .set_named_property("filename", f.to_string())
-            .map_err(|e| record_err(e, pending_js_error))?,
-        None => attrs_obj
-            .set_named_property("filename", ())
-            .map_err(|e| record_err(e, pending_js_error))?,
-    }
-
-    let raw_js = match call.raw {
-        Some(RawContent::Bytes(bytes)) => BufferSlice::from_data(&env, bytes.to_vec())
-            .map_err(|e| record_err(e, pending_js_error))?
-            .into_unknown(&env)
-            .map_err(|e| record_err(e, pending_js_error))?,
-        Some(RawContent::Text(s)) => env
-            .create_string(s)
-            .map_err(|e| record_err(e, pending_js_error))?
-            .into_unknown(&env)
-            .map_err(|e| record_err(e, pending_js_error))?,
-        None => ().into_unknown(&env).map_err(|e| record_err(e, pending_js_error))?,
-    };
-
-    let mode_str = match call.mode {
-        FilterCallMode::Text => String::from("text"),
-        FilterCallMode::RawFile => String::from("rawFile"),
-    };
-
-    let ret = cb
-        .call(FnArgs::from((
-            call.filter_name.to_string(),
-            mode_str,
-            call.text.to_string(),
-            call.full_path.map(String::from),
-            raw_js,
-            attrs_obj,
-            call.dir.map(String::from),
-        )))
-        .map_err(|e| record_err(e, pending_js_error))?;
-
-    let ret_obj = Object::from_unknown(ret).map_err(|e| record_err(e, pending_js_error))?;
-    let ok: bool = ret_obj
-        .get_named_property("ok")
-        .map_err(|e| record_err(e, pending_js_error))?;
-    if ok {
-        let value: String = ret_obj
-            .get_named_property("value")
-            .map_err(|e| record_err(e, pending_js_error))?;
-        Ok(value)
-    } else {
-        let msg: String = ret_obj
-            .get_named_property("unknownFilter")
-            .map_err(|e| record_err(e, pending_js_error))?;
-        Err(PugError::new(
-            "UNKNOWN_FILTER",
-            msg,
-            ErrorOptions {
-                line: call.line as i64,
-                column: call.column.map(|c| c as i64),
-                filename: call.node_filename.map(String::from),
-                src: None,
-            },
-        ))
     }
 }
 
@@ -1278,80 +1145,19 @@ pub fn load_sync(
 
 #[napi]
 pub fn handle_filters_sync(
-    env: Env,
+    _env: Env,
     ast: Value,
-    filter_options: Option<Value>,
-    filter_aliases: Option<HashMap<String, String>>,
-    callbacks: Option<Object>,
+    _filter_options: Option<Value>,
+    _filter_aliases: Option<HashMap<String, String>>,
+    _callbacks: Option<Object>,
 ) -> Result<NapiJsonOutcome> {
-    let block: BlockNode = match serde_json::from_value(ast) {
-        Ok(b) => b,
-        Err(e) => {
-            return Ok(NapiJsonOutcome {
-                ok: false,
-                data: None,
-                error: None,
-                plain_error: Some(format!("Invalid AST passed to handle_filters_sync: {e}")),
-            });
-        }
-    };
-    let opts_val = filter_options.unwrap_or(Value::Null);
-    let aliases = filter_aliases.unwrap_or_default();
-    let mut pending_js_error: Option<napi::Error> = None;
-
-    let cb_val = match callbacks {
-        Some(ref obj) if obj.has_named_property("filter")? => {
-            let v: Unknown = obj.get_named_property("filter")?;
-            if v.get_type()? == ValueType::Function {
-                Some(v)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        handle_filters(block, &opts_val, &aliases, &mut |call: &FilterInvocation<'_>| {
-            invoke_js_filter(env, cb_val, call, &mut pending_js_error)
-        })
-    }));
-
-    match outcome {
-        Ok(Ok(processed)) => {
-            let data = serde_json::to_value(processed).map_err(|e| {
-                napi::Error::from_reason(format!("Failed to serialize filtered AST: {e}"))
-            })?;
-            Ok(NapiJsonOutcome {
-                ok: true,
-                data: Some(data),
-                error: None,
-                plain_error: None,
-            })
-        }
-        Ok(Err(pug_err)) => {
-            if let Some(js_err) = pending_js_error {
-                return Err(js_err);
-            }
-            if pug_err.is_js_host_exception {
-                return Ok(NapiJsonOutcome {
-                    ok: false,
-                    data: None,
-                    error: None,
-                    plain_error: Some(pug_err.message),
-                });
-            }
-            Ok(NapiJsonOutcome {
-                ok: false,
-                data: None,
-                error: Some(NapiPugErrorDto::from(pug_err)),
-                plain_error: None,
-            })
-        }
-        Err(_panic) => Err(napi::Error::from_reason(
-            "Internal Rust panic caught at FFI boundary in handle_filters_sync",
-        )),
-    }
+    // Phase 3: Legacy Filters removed from core. handle_filters_sync is a no-op passthrough returning input AST.
+    Ok(NapiJsonOutcome {
+        ok: true,
+        data: Some(ast),
+        error: None,
+        plain_error: None,
+    })
 }
 
 #[napi]

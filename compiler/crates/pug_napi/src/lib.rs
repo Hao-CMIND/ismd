@@ -1151,7 +1151,19 @@ pub fn handle_filters_sync(
     _filter_aliases: Option<HashMap<String, String>>,
     _callbacks: Option<Object>,
 ) -> Result<NapiJsonOutcome> {
-    // Phase 3: Legacy Filters removed from core. handle_filters_sync is a no-op passthrough returning input AST.
+    // Phase 3: Legacy Filters removed from core.
+    // If input AST contains any Filter node, return an explicit error instead of silent no-op.
+    let ast_str = serde_json::to_string(&ast).unwrap_or_default();
+    if ast_str.contains("\"type\":\"Filter\"") || ast_str.contains("\"type\":\"IncludeFilter\"") {
+        return Ok(NapiJsonOutcome {
+            ok: false,
+            data: None,
+            error: None,
+            plain_error: Some(String::from(
+                "PUG:LEGACY_FILTER_UNSUPPORTED: handleFiltersSync no longer executes filters in Rust core. Use Rust Native Dynamic Plugins instead.",
+            )),
+        });
+    }
     Ok(NapiJsonOutcome {
         ok: true,
         data: Some(ast),

@@ -11,6 +11,15 @@ function stripQuery(id) {
   return idx === -1 ? id : id.slice(0, idx);
 }
 
+export function normalizePath(id) {
+  if (typeof id !== 'string') return id;
+  let normalized = path.resolve(id).replace(/\\/g, '/');
+  if (/^[a-zA-Z]:\//.test(normalized)) {
+    normalized = normalized[0].toUpperCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
 function defaultIsEntry(filePath, rootDir) {
   const rel = path.relative(rootDir, filePath).replace(/\\/g, '/');
   return !/(^|\/)(includes?|layouts?|partials?|components?|mixins?)\//i.test(rel);
@@ -20,10 +29,26 @@ function defaultIsEntry(filePath, rootDir) {
  * Create a Vite plugin backed by a persistent pug-rust CompilerSession.
  */
 export function pugRustPlugin(options = {}) {
+  // P0: Disallow legacy filter options with a clear, descriptive error
+  const legacyOptions = ['filters', 'filterExecutor', 'filterOptions', 'filterAliases'].filter(
+    (key) => options[key] !== undefined
+  );
+  if (legacyOptions.length > 0) {
+    throw new Error(
+      `[pug-rust/vite] The following filter options have been removed in Phase 3 and are no longer supported: ${legacyOptions.join(
+        ', '
+      )}. Use native Rust plugins via options.plugins instead.`
+    );
+  }
+
   let root = options.basedir ? path.resolve(options.basedir) : process.cwd();
   let command = 'build';
   let session = null;
   let serverRef = null;
+  let watcherRef = null;
+  let addWatcherHandler = null;
+  let unlinkWatcherHandler = null;
+
   const registeredEntries = new Set();
   const metrics = {
     sessionCreates: 0,
@@ -46,11 +71,7 @@ export function pugRustPlugin(options = {}) {
       self: options.self,
       compileDebug: options.compileDebug !== undefined ? options.compileDebug : false,
       inlineRuntimeFunctions: options.inlineRuntimeFunctions,
-      filters: options.filters,
-      filterExecutor: options.filterExecutor,
       plugins: options.plugins,
-      filterOptions: options.filterOptions,
-      filterAliases: options.filterAliases,
     };
   }
 
@@ -60,6 +81,19 @@ export function pugRustPlugin(options = {}) {
       metrics.sessionCreates += 1;
     }
     return session;
+  }
+
+  function cleanupWatcher() {
+    if (watcherRef) {
+      const remove = typeof watcherRef.off === 'function' ? watcherRef.off : watcherRef.removeListener;
+      if (typeof remove === 'function') {
+        if (addWatcherHandler) remove.call(watcherRef, 'add', addWatcherHandler);
+        if (unlinkWatcherHandler) remove.call(watcherRef, 'unlink', unlinkWatcherHandler);
+      }
+      addWatcherHandler = null;
+      unlinkWatcherHandler = null;
+      watcherRef = null;
+    }
   }
 
   function disposeSession() {
@@ -81,7 +115,7 @@ export function pugRustPlugin(options = {}) {
     if (!Array.isArray(entries)) return;
     for (const entry of entries) {
       const p = typeof entry === 'string' ? entry : entry.filename || entry.id;
-      if (p) registeredEntries.add(path.resolve(p));
+      if (p) registeredEntries.add(normalizePath(path.resolve(root, p)));
     }
   }
 
@@ -95,14 +129,29 @@ export function pugRustPlugin(options = {}) {
     let source;
     try {
       source = readFn ? await readFn() : fs.readFileSync(cleanPath, 'utf8');
-    } catch {
-      // File may have vanished mid-atomic-save; treat as removal if missing on disk
-      if (!fs.existsSync(cleanPath)) {
-        const rep = active.removeFiles([cleanPath]);
-        registeredEntries.delete(path.resolve(cleanPath));
-        return { changed: rep.changed, affected: [] };
+    } catch (err) {
+      // Windows Atomic Save may briefly lock the file with EBUSY/EPERM/ENOENT.
+      // Small backoff retry for atomic save stability.
+      if (err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'ENOENT')) {
+        await new Promise((r) => setTimeout(r, 20));
+        try {
+          source = readFn ? await readFn() : fs.readFileSync(cleanPath, 'utf8');
+        } catch {
+          if (!fs.existsSync(cleanPath)) {
+            const rep = active.removeFiles([cleanPath]);
+            registeredEntries.delete(normalizePath(path.resolve(root, cleanPath)));
+            return { changed: rep.changed, affected: [] };
+          }
+          return { changed: false, affected: [] };
+        }
+      } else {
+        if (!fs.existsSync(cleanPath)) {
+          const rep = active.removeFiles([cleanPath]);
+          registeredEntries.delete(normalizePath(path.resolve(root, cleanPath)));
+          return { changed: rep.changed, affected: [] };
+        }
+        return { changed: false, affected: [] };
       }
-      return { changed: false, affected: [] };
     }
 
     const report = active.updateFiles([{ path: cleanPath, source }]);
@@ -118,36 +167,65 @@ export function pugRustPlugin(options = {}) {
     return { changed: true, report, affected: compiled };
   }
 
-  function handleFileAdd(filePath) {
+  async function handleFileAdd(filePath) {
     const cleanPath = stripQuery(filePath);
     if (!isPugFile(cleanPath)) return { changed: false, affected: [] };
     const active = ensureSession();
     metrics.addEvents += 1;
+
     let source;
     try {
       source = fs.readFileSync(cleanPath, 'utf8');
     } catch {
       return { changed: false, affected: [] };
     }
+
     const report = active.updateFiles([{ path: cleanPath, source }]);
     const entryCheck = options.isEntry || ((p) => defaultIsEntry(p, root));
-    const abs = path.resolve(cleanPath);
+    const abs = normalizePath(path.resolve(root, cleanPath));
+    let compiled = [];
+
     if (entryCheck(abs)) {
       registeredEntries.add(abs);
-      const compiled = active.compileEntries([{ id: abs, filename: abs, source }]);
-      return { changed: true, report, affected: compiled };
+      compiled = active.compileEntries([{ id: abs, filename: abs, source }]);
+    } else if (report.changed) {
+      compiled = active.compileAffected();
     }
-    const compiled = report.changed ? active.compileAffected() : [];
+
+    if (report.changed && options.hmr !== false && serverRef && serverRef.ws && typeof serverRef.ws.send === 'function') {
+      serverRef.ws.send({
+        type: 'full-reload',
+        path: '*',
+      });
+    }
+
     return { changed: report.changed, report, affected: compiled };
   }
 
   function handleFileUnlink(filePath) {
     const cleanPath = stripQuery(filePath);
-    if (!isPugFile(cleanPath)) return { changed: false };
-    if (!session || session.isDisposed) return { changed: false };
+    if (!isPugFile(cleanPath)) return { changed: false, affected: [] };
+    if (!session || session.isDisposed) return { changed: false, affected: [] };
     metrics.unlinkEvents += 1;
-    registeredEntries.delete(path.resolve(cleanPath));
-    return session.removeFiles([cleanPath]);
+    const abs = normalizePath(path.resolve(root, cleanPath));
+    registeredEntries.delete(abs);
+    const report = session.removeFiles([cleanPath]);
+
+    // Invalidate in Vite ModuleGraph if available
+    if (serverRef && serverRef.moduleGraph) {
+      if (typeof serverRef.moduleGraph.onFileDelete === 'function') {
+        serverRef.moduleGraph.onFileDelete(cleanPath);
+      }
+    }
+
+    if (report.changed && options.hmr !== false && serverRef && serverRef.ws && typeof serverRef.ws.send === 'function') {
+      serverRef.ws.send({
+        type: 'full-reload',
+        path: '*',
+      });
+    }
+
+    return { changed: report.changed, report, affected: [] };
   }
 
   return {
@@ -166,11 +244,13 @@ export function pugRustPlugin(options = {}) {
       const active = ensureSession();
       if (Array.isArray(options.entries) && options.entries.length > 0) {
         registerEntries(options.entries);
-        const batch = options.entries.map((entry) =>
-          typeof entry === 'string'
-            ? { id: path.resolve(entry), filename: path.resolve(entry) }
-            : { ...entry, id: entry.id || path.resolve(entry.filename), filename: path.resolve(entry.filename || entry.id) }
-        );
+        const batch = options.entries.map((entry) => {
+          const entryPath = typeof entry === 'string' ? entry : entry.filename || entry.id;
+          const abs = normalizePath(path.resolve(root, entryPath));
+          return typeof entry === 'string'
+            ? { id: abs, filename: abs }
+            : { ...entry, id: entry.id ? normalizePath(path.resolve(root, entry.id)) : abs, filename: abs };
+        });
         active.compileBatch(batch);
         metrics.initialBatchCompiles += 1;
       }
@@ -180,27 +260,33 @@ export function pugRustPlugin(options = {}) {
       serverRef = server;
       ensureSession();
 
+      cleanupWatcher();
+
       if (server && server.watcher && typeof server.watcher.on === 'function') {
-        server.watcher.on('add', (file) => {
-          handleFileAdd(file);
-        });
-        server.watcher.on('unlink', (file) => {
+        watcherRef = server.watcher;
+        addWatcherHandler = (file) => {
+          handleFileAdd(file).catch(() => {});
+        };
+        unlinkWatcherHandler = (file) => {
           handleFileUnlink(file);
-        });
+        };
+        server.watcher.on('add', addWatcherHandler);
+        server.watcher.on('unlink', unlinkWatcherHandler);
       }
 
       if (server && server.httpServer && typeof server.httpServer.once === 'function') {
         server.httpServer.once('close', () => {
+          cleanupWatcher();
           disposeSession();
         });
       }
     },
 
     closeServer() {
+      cleanupWatcher();
       disposeSession();
     },
 
-    // Future: Vite Environment API / hotUpdate migration
     async handleHotUpdate(ctx) {
       if (!ctx || !isPugFile(ctx.file)) return undefined;
       const result = await handleFileChange(ctx.file, ctx.read ? () => ctx.read() : undefined);
@@ -213,15 +299,38 @@ export function pugRustPlugin(options = {}) {
       if (modGraph && typeof modGraph.getModulesByFile === 'function') {
         const seen = new Set();
         for (const item of result.affected) {
-          const posixId = String(item.id).replace(/\\/g, '/');
-          const mods =
-            modGraph.getModulesByFile(posixId) ||
-            (posixId !== item.id ? modGraph.getModulesByFile(item.id) : undefined);
-          if (mods) {
-            for (const m of mods) {
-              if (!seen.has(m)) {
-                seen.add(m);
-                modGraph.invalidateModule(m);
+          const normFile = normalizePath(item.id || item.filename);
+          const candidates = [
+            normFile,
+            String(item.id).replace(/\\/g, '/'),
+            String(item.id),
+            normFile.toLowerCase(),
+            normFile.replace(/\//g, '\\'),
+          ];
+          let foundMods = null;
+          for (const cand of candidates) {
+            const mods = modGraph.getModulesByFile(cand);
+            if (mods && (mods.size > 0 || (Array.isArray(mods) && mods.length > 0))) {
+              foundMods = mods;
+              break;
+            }
+            if (typeof modGraph.getModuleById === 'function') {
+              const single = modGraph.getModuleById(cand);
+              if (single) {
+                foundMods = [single];
+                break;
+              }
+            }
+          }
+
+          if (foundMods) {
+            for (const m of foundMods) {
+              const key = m.id || m.url || m.file || m;
+              if (!seen.has(key)) {
+                seen.add(key);
+                if (typeof modGraph.invalidateModule === 'function') {
+                  modGraph.invalidateModule(m, undefined, undefined, true);
+                }
                 affectedModules.push(m);
               }
             }
@@ -229,11 +338,14 @@ export function pugRustPlugin(options = {}) {
         }
       }
 
-      if (options.hmr !== false && ctx.server && ctx.server.ws && typeof ctx.server.ws.send === 'function') {
-        ctx.server.ws.send({
-          type: 'full-reload',
-          path: '*',
-        });
+      // P1.5: Only trigger full-reload if there are affected modules or affected entries
+      if (options.hmr !== false && (affectedModules.length > 0 || (result.affected && result.affected.length > 0))) {
+        if (ctx.server && ctx.server.ws && typeof ctx.server.ws.send === 'function') {
+          ctx.server.ws.send({
+            type: 'full-reload',
+            path: '*',
+          });
+        }
       }
 
       return affectedModules.length > 0 ? affectedModules : ctx.modules || [];
@@ -249,7 +361,7 @@ export function pugRustPlugin(options = {}) {
         if (!isPugFile(cleanId)) return null;
 
         const active = ensureSession();
-        const abs = path.resolve(cleanId);
+        const abs = normalizePath(path.resolve(root, cleanId));
         registeredEntries.add(abs);
 
         const results = active.compileEntries([
@@ -268,6 +380,7 @@ export function pugRustPlugin(options = {}) {
 
     closeBundle() {
       if (command === 'build') {
+        cleanupWatcher();
         disposeSession();
       }
     },
@@ -285,7 +398,10 @@ export function pugRustPlugin(options = {}) {
     },
     handleFileAdd,
     handleFileUnlink,
-    dispose: disposeSession,
+    dispose: () => {
+      cleanupWatcher();
+      disposeSession();
+    },
   };
 }
 

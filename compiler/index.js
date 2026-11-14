@@ -54,7 +54,6 @@ const native = loadNativeAddon();
 export const name = 'Pug';
 export { runtime };
 export const cache = {};
-export const filters = {};
 
 function makeError(code, message, options) {
   options = options || {};
@@ -561,103 +560,6 @@ export function _addWith(obj, src, exclude) {
   );
 }
 
-let cachedFilterAdapter = null;
-function loadFilterAdapter() {
-  if (!cachedFilterAdapter) {
-    const localFilters = path.join(__dirname, '../filters/index.js');
-    if (fs.existsSync(localFilters)) {
-      try {
-        cachedFilterAdapter = require(localFilters);
-      } catch (_) {}
-    }
-    if (!cachedFilterAdapter) {
-      try {
-        cachedFilterAdapter = require('@pug-rust/filters');
-      } catch (_) {
-        return null;
-      }
-    }
-  }
-  return cachedFilterAdapter;
-}
-
-function makeFilterHostCallback(filtersSet, filterExecutor) {
-  if (filterExecutor === false) {
-    return function disabledFilterHostCallback(filterName) {
-      return {
-        ok: false,
-        unknownFilter: 'unknown filter ":' + filterName + '"',
-      };
-    };
-  }
-  if (typeof filterExecutor === 'function') {
-    return filterExecutor;
-  }
-  if (filterExecutor && typeof filterExecutor.execute === 'function') {
-    return function customFilterExecutorCallback(
-      filterName,
-      mode,
-      text,
-      fullPath,
-      rawVal,
-      attrsObj,
-      dir
-    ) {
-      return filterExecutor.execute(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
-    };
-  }
-  let resolved = null;
-  return function lazyFilterHostCallback(
-    filterName,
-    mode,
-    text,
-    fullPath,
-    rawVal,
-    attrsObj,
-    dir
-  ) {
-    if (filtersSet && filtersSet[filterName]) {
-      const custom = filtersSet[filterName];
-      const out =
-        mode === 'rawFile' && custom.renderBuffer
-          ? custom.renderBuffer(rawVal, attrsObj)
-          : custom(text, attrsObj);
-      if (typeof out !== 'string') {
-        throw new TypeError(
-          'Expected filter ":' + filterName + '" to return a string, got ' + typeof out
-        );
-      }
-      return { ok: true, value: out };
-    }
-    if (!resolved) {
-      const adapter = loadFilterAdapter();
-      if (!adapter) {
-        return {
-          ok: false,
-          unknownFilter: 'unknown filter ":' + filterName + '"',
-        };
-      }
-      resolved = adapter.createFilterCallback(filtersSet || {});
-    }
-    return resolved(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
-  };
-}
-
-export function _handleFilters(ast, customFilters, filterOptions, filterAliases) {
-  const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
-  const outcome = native.handleFiltersSync(
-    inputAst,
-    filterOptions || null,
-    filterAliases || undefined,
-    { filter: makeFilterHostCallback(customFilters || {}) }
-  );
-  if (!outcome.ok) {
-    if (outcome.plainError) throw new Error(outcome.plainError);
-    if (outcome.error) throw dtoToJsError(outcome.error);
-  }
-  return reviveAstBuffers(outcome.data);
-}
-
 export function _link(ast) {
   const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
   const outcome = native.linkSync(inputAst);
@@ -742,8 +644,6 @@ function defaultWarn(msg) {
   console.warn(msg);
 }
 
-const defaultFilterCallback = makeFilterHostCallback(null);
-
 function hasPluginHook(plugins, name) {
   for (let i = 0; i < plugins.length; i++) {
     const plugin = plugins[i];
@@ -756,28 +656,6 @@ function hasPluginHook(plugins, name) {
 
 function compileBody(str, options) {
   const plugins = options.plugins || [];
-  const hasModuleFilters = Object.keys(filters).length > 0;
-  const hasOptionFilters =
-    Boolean(options.filters) && Object.keys(options.filters).length > 0;
-  let filterCallback =
-    options.filterExecutor !== undefined
-      ? makeFilterHostCallback(null, options.filterExecutor)
-      : defaultFilterCallback;
-  if (hasModuleFilters || hasOptionFilters) {
-    const filtersSet = {};
-    if (hasModuleFilters) {
-      Object.keys(filters).forEach(function(key) {
-        filtersSet[key] = filters[key];
-      });
-    }
-    if (hasOptionFilters) {
-      Object.keys(options.filters).forEach(function(key) {
-        filtersSet[key] = options.filters[key];
-      });
-    }
-    filterCallback = makeFilterHostCallback(filtersSet, options.filterExecutor);
-  }
-
   const customResolve = plugins.length ? findReplacementFunc(plugins, 'resolve') : null;
   const customRead = plugins.length ? findReplacementFunc(plugins, 'read') : null;
   const customGenerateCode = plugins.length
@@ -793,8 +671,8 @@ function compileBody(str, options) {
   const hasPostParse = plugins.length > 0 && hasPluginHook(plugins, 'postParse');
   const hasPreLoad = plugins.length > 0 && hasPluginHook(plugins, 'preLoad');
   const hasPostLoad = plugins.length > 0 && hasPluginHook(plugins, 'postLoad');
-  const hasPreFilters = plugins.length > 0 && hasPluginHook(plugins, 'preFilters');
-  const hasPostFilters = plugins.length > 0 && hasPluginHook(plugins, 'postFilters');
+  const hasPreTransform = plugins.length > 0 && hasPluginHook(plugins, 'preTransform');
+  const hasPostTransform = plugins.length > 0 && hasPluginHook(plugins, 'postTransform');
   const hasPreLink = plugins.length > 0 && hasPluginHook(plugins, 'preLink');
   const hasPostLink = plugins.length > 0 && hasPluginHook(plugins, 'postLink');
   const hasPreCodeGen = plugins.length > 0 && hasPluginHook(plugins, 'preCodeGen');
@@ -809,7 +687,6 @@ function compileBody(str, options) {
 
   const hostCallbacks = {
     warn: defaultWarn,
-    filter: filterCallback,
   };
 
   if (lexBridge.step) {
@@ -899,17 +776,17 @@ function compileBody(str, options) {
       );
     };
   }
-  if (hasPreFilters) {
-    hostCallbacks.preFilters = function(ast) {
+  if (hasPreTransform) {
+    hostCallbacks.preTransform = function(ast) {
       return dehydrateAstBuffers(
-        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preFilters')
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preTransform')
       );
     };
   }
-  if (hasPostFilters) {
-    hostCallbacks.postFilters = function(ast) {
+  if (hasPostTransform) {
+    hostCallbacks.postTransform = function(ast) {
       return dehydrateAstBuffers(
-        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postFilters')
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postTransform')
       );
     };
   }
@@ -967,8 +844,6 @@ function compileBody(str, options) {
       useSelf: Boolean(options.self),
       includeSources: Boolean(options.includeSources),
       templateName: options.templateName || 'template',
-      filterOptions: options.filterOptions || null,
-      filterAliases: options.filterAliases || undefined,
       lexPluginMethods: lexBridge.methods,
       nativePlugins: resolveNativePlugins(options.plugins || options.nativePlugins),
     },
@@ -1046,10 +921,6 @@ export function compile(str, options) {
     includeSources: options.compileDebug === true,
     debug: options.debug,
     templateName: 'template',
-    filters: options.filters,
-    filterOptions: options.filterOptions,
-    filterAliases: options.filterAliases,
-    filterExecutor: options.filterExecutor,
     plugins: options.plugins,
     templateStore: options.templateStore,
   });
@@ -1078,10 +949,6 @@ export function compileClientWithDependenciesTracked(str, options) {
     includeSources: options.compileDebug,
     debug: options.debug,
     templateName: options.name || 'template',
-    filters: options.filters,
-    filterOptions: options.filterOptions,
-    filterAliases: options.filterAliases,
-    filterExecutor: options.filterExecutor,
     plugins: options.plugins,
     templateStore: options.templateStore,
   });
@@ -1207,16 +1074,6 @@ export function resolveNativePluginPath(plugin) {
     if (fs.existsSync(plugin)) {
       return path.resolve(plugin);
     }
-    const candidates = [
-      plugin,
-      path.join(plugin, 'pug_filter_uppercase.dll'),
-      path.join(plugin, 'native/win32-x64/pug_filter_uppercase.dll'),
-      path.join(plugin, 'target/debug/pug_filter_uppercase.dll'),
-      path.join(plugin, 'target/release/pug_filter_uppercase.dll'),
-    ];
-    for (const cand of candidates) {
-      if (fs.existsSync(cand)) return path.resolve(cand);
-    }
     try {
       const resolved = require.resolve(plugin);
       if (fs.existsSync(resolved)) return path.resolve(resolved);
@@ -1258,9 +1115,6 @@ function toNapiCompileOptions(options = {}) {
     useSelf: Boolean(options.self),
     includeSources: options.compileDebug === true,
     templateName: options.templateName || 'template',
-    filterOptions:
-      options.filterOptions !== undefined ? options.filterOptions : null,
-    filterAliases: options.filterAliases || {},
     nativePlugins: resolveNativePlugins(options.plugins || options.nativePlugins),
   };
 }
@@ -1275,8 +1129,8 @@ function hasHostCustomizations(options) {
       return (
         typeof p === 'object' &&
         (p.postLoad ||
-          p.preFilters ||
-          p.postFilters ||
+          p.preTransform ||
+          p.postTransform ||
           p.preLink ||
           p.postLink ||
           p.preCodeGen ||
@@ -1287,7 +1141,6 @@ function hasHostCustomizations(options) {
   ) {
     return true;
   }
-  if (options.filters && Object.keys(options.filters).length > 0) return true;
   return false;
 }
 
@@ -1559,7 +1412,6 @@ export default {
   name,
   runtime,
   cache,
-  filters,
   _error: makeError,
   _runtimeBuild,
   _runtimeBuildJs: runtimeBuild,
@@ -1573,7 +1425,6 @@ export default {
   _walk: walkAST,
   walk: walkAST,
   _addWith,
-  _handleFilters,
   _link,
   _compileAttrs,
   _getLastProfileJson: getLastProfileJson,

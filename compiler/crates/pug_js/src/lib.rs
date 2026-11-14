@@ -8,7 +8,7 @@ pub mod scan;
 pub mod scope;
 
 pub use constant::{
-    ConstEvalOutcome, ConstVal, escape_js_stringify_chars, eval_constant, eval_filter_constant,
+    ConstEvalOutcome, ConstVal, escape_js_stringify_chars, eval_constant, eval_static_expression,
     is_constant, js_stringify_str, js_stringify_val, pug_attr, pug_classes, pug_escape, pug_style,
     push_js_string_inner,
 };

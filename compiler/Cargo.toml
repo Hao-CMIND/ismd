@@ -15,7 +15,6 @@ members = [
   "crates/pug_runtime",
   "crates/pug_compiler",
   "crates/pug_plugin_abi",
-  "crates/pug_filter_uppercase",
   "crates/pug_napi",
 ]
 

@@ -168,6 +168,27 @@ impl NativePluginManager {
         Ok(loaded)
     }
 
+    /// Select only this compilation's registrations; cached libraries stay alive in the store.
+    pub fn select_plugins(&self, paths: &[String]) -> Self {
+        let mut selected = Self::new();
+        for path in paths {
+            let path = Path::new(path);
+            let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if selected.loaded_paths.contains_key(&key) { continue; }
+            if let Some(plugin) = self.loaded_paths.get(&key) {
+                selected.loaded_paths.insert(key, plugin.clone());
+                selected.plugins.push(plugin.clone());
+                for rule in &self.syntax_rules {
+                    if self.rule_to_plugin.get(&rule.rule_id).is_some_and(|owner| Arc::ptr_eq(owner, plugin)) {
+                        selected.syntax_rules.push(rule.clone());
+                        selected.rule_to_plugin.insert(rule.rule_id.clone(), plugin.clone());
+                    }
+                }
+            }
+        }
+        selected
+    }
+
     pub fn transform_ast(&self, ast: &mut BlockNode) -> Result<(), PugError> {
         if self.plugins.is_empty() {
             return Ok(());

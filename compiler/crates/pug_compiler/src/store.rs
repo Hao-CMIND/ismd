@@ -23,7 +23,6 @@ pub struct DependencyRef {
     pub line: usize,
     pub column: Option<usize>,
     pub from_filename: Option<String>,
-    pub is_filtered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +72,7 @@ pub struct ParseKey {
     pub byte_len: u64,
     pub source_version: u64,
     pub lex_plugin_methods: Vec<String>,
+    pub generic_syntax: Vec<pug_lexer::GenericSyntaxRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -91,7 +91,7 @@ pub struct ParsedTemplate {
     pub ast: Arc<BlockNode>,
     pub direct_dependencies: Vec<DependencyRef>,
     pub declared_blocks: Vec<DeclaredBlockMeta>,
-    pub has_filters: bool,
+    pub has_extensions: bool,
     pub has_yield: bool,
     pub warnings: Vec<String>,
 }
@@ -615,7 +615,7 @@ pub fn normalize_cache_path(path: &str) -> String {
 pub struct AstMetadata {
     pub dependencies: Vec<DependencyRef>,
     pub declared_blocks: Vec<DeclaredBlockMeta>,
-    pub has_filters: bool,
+    pub has_extensions: bool,
     pub has_yield: bool,
 }
 
@@ -623,7 +623,7 @@ pub fn collect_ast_metadata(block: &BlockNode) -> AstMetadata {
     let mut meta = AstMetadata {
         dependencies: Vec::new(),
         declared_blocks: Vec::new(),
-        has_filters: false,
+        has_extensions: false,
         has_yield: false,
     };
     collect_from_nodes(&block.nodes, &mut meta);
@@ -650,7 +650,6 @@ fn collect_from_nodes(nodes: &[Node], meta: &mut AstMetadata) {
                 line: n.line,
                 column: n.column,
                 from_filename: n.filename.clone(),
-                is_filtered: false,
             }),
             Node::Include(n) => {
                 meta.dependencies.push(DependencyRef {
@@ -659,29 +658,21 @@ fn collect_from_nodes(nodes: &[Node], meta: &mut AstMetadata) {
                     line: n.line,
                     column: n.column,
                     from_filename: n.filename.clone(),
-                    is_filtered: false,
                 });
                 collect_from_nodes(&n.block.nodes, meta);
             }
             Node::RawInclude(n) => {
-                if !n.filters.is_empty() {
-                    meta.has_filters = true;
-                }
                 meta.dependencies.push(DependencyRef {
                     kind: DependencyKind::RawInclude,
                     raw_path: n.file.path.clone(),
                     line: n.line,
                     column: n.column,
                     from_filename: n.filename.clone(),
-                    is_filtered: !n.filters.is_empty(),
                 });
             }
             Node::Tag(t) => collect_from_nodes(&t.block.nodes, meta),
             Node::InterpolatedTag(t) => collect_from_nodes(&t.block.nodes, meta),
-            Node::Filter(f) => {
-                meta.has_filters = true;
-                collect_from_nodes(&f.block.nodes, meta);
-            }
+            Node::Extension(_) => meta.has_extensions = true,
             Node::Case(c) => collect_from_nodes(&c.block.nodes, meta),
             Node::When(w) => {
                 if let Some(ref b) = w.block {

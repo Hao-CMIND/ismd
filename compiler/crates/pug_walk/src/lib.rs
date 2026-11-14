@@ -1,4 +1,4 @@
-use pug_ast::{BlockNode, FileReferenceNode, IncludeFilterNode, Node};
+use pug_ast::{BlockNode, FileReferenceNode, Node};
 use pug_error::PugError;
 use serde_json::Value;
 
@@ -70,12 +70,11 @@ impl WalkOutcome {
     }
 }
 
-fn is_array_allowed_for(parents: &[Node], current: &Node) -> bool {
+fn is_array_allowed_for(parents: &[Node], _current: &Node) -> bool {
     let Some(parent) = parents.first() else {
         return false;
     };
     matches!(parent, Node::Block(_) | Node::NamedBlock(_))
-        || (matches!(parent, Node::RawInclude(_)) && matches!(current, Node::IncludeFilter(_)))
 }
 
 /// Walks a typed `Node` AST matching `pug-walk@1.1.8` semantics:
@@ -129,10 +128,6 @@ where
         Node::Case(c) => {
             let blk = std::mem::replace(&mut c.block, BlockNode::empty(0, None));
             c.block = walk_ast(Node::Block(blk), before, after, options, parents)?.into_block()?;
-        }
-        Node::Filter(f) => {
-            let blk = std::mem::replace(&mut f.block, BlockNode::empty(0, None));
-            f.block = walk_ast(Node::Block(blk), before, after, options, parents)?.into_block()?;
         }
         Node::Mixin(m) => {
             if let Some(blk) = m.block.take() {
@@ -217,20 +212,6 @@ where
             }
         }
         Node::RawInclude(raw_inc) => {
-            let filter_nodes: Vec<Node> = std::mem::take(&mut raw_inc.filters)
-                .into_iter()
-                .map(Node::IncludeFilter)
-                .collect();
-            let walked_filters =
-                walk_and_merge_nodes(filter_nodes, before, after, options, parents)?;
-            raw_inc.filters = walked_filters
-                .into_iter()
-                .filter_map(|n| match n {
-                    Node::IncludeFilter(inf) => Some(inf),
-                    _ => None,
-                })
-                .collect::<Vec<IncludeFilterNode>>();
-
             let fref = std::mem::replace(
                 &mut raw_inc.file,
                 FileReferenceNode::new(String::new(), 0, None, None),
@@ -256,7 +237,6 @@ where
         | Node::BlockComment(_)
         | Node::Comment(_)
         | Node::Doctype(_)
-        | Node::IncludeFilter(_)
         | Node::MixinBlock(_)
         | Node::YieldBlock(_)
         | Node::Extension(_)
@@ -337,7 +317,6 @@ where
             }
         }
         Node::Case(c) => walk_mut(&mut c.block, include_dependencies, visitor)?,
-        Node::Filter(f) => walk_mut(&mut f.block, include_dependencies, visitor)?,
         Node::Mixin(m) => {
             if let Some(ref mut blk) = m.block {
                 walk_mut(blk, include_dependencies, visitor)?;
@@ -394,7 +373,6 @@ where
         | Node::BlockComment(_)
         | Node::Comment(_)
         | Node::Doctype(_)
-        | Node::IncludeFilter(_)
         | Node::MixinBlock(_)
         | Node::YieldBlock(_)
         | Node::Extension(_)
@@ -418,18 +396,12 @@ where
     B: FnMut(&Value, bool, &[Value]) -> Result<(bool, Option<Value>), String>,
     A: FnMut(&Value, bool, &[Value]) -> Result<Option<Value>, String>,
 {
-    let node_type = ast
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
     let parent_type = parents
         .first()
         .and_then(|p| p.get("type"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let array_allowed = matches!(parent_type, "Block" | "NamedBlock")
-        || (parent_type == "RawInclude" && node_type == "IncludeFilter");
+    let array_allowed = matches!(parent_type, "Block" | "NamedBlock");
 
     let (cont, before_rep) = before(&ast, array_allowed, parents)?;
     if let Some(rep) = before_rep {
@@ -466,7 +438,7 @@ where
             }
             parents[0] = ast.clone();
         }
-        "Case" | "Filter" | "Mixin" | "Tag" | "InterpolatedTag" | "When" | "Code" | "While" => {
+        "Case" | "Mixin" | "Tag" | "InterpolatedTag" | "When" | "Code" | "While" => {
             if let Some(blk) = ast.get("block").cloned()
                 && !blk.is_null()
             {
@@ -569,17 +541,6 @@ where
             }
         }
         "RawInclude" => {
-            let filters = ast
-                .get("filters")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let walked_filters =
-                walk_and_merge_json_nodes(filters, before, after, include_dependencies, parents)?;
-            if let Some(obj) = ast.as_object_mut() {
-                obj.insert(String::from("filters"), Value::Array(walked_filters));
-            }
-            parents[0] = ast.clone();
             if let Some(file) = ast.get("file").cloned()
                 && !file.is_null()
             {
@@ -591,7 +552,7 @@ where
                 parents[0] = ast.clone();
             }
         }
-        "Attrs" | "BlockComment" | "Comment" | "Doctype" | "IncludeFilter" | "MixinBlock"
+        "Attrs" | "BlockComment" | "Comment" | "Doctype" | "Extension" | "MixinBlock"
         | "YieldBlock" | "Text" => {}
         "FileReference" => {
             if include_dependencies
@@ -619,8 +580,7 @@ where
         .and_then(|p| p.get("type"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let after_array_allowed = matches!(after_parent_type, "Block" | "NamedBlock")
-        || (after_parent_type == "RawInclude" && current_type == "IncludeFilter");
+    let after_array_allowed = matches!(after_parent_type, "Block" | "NamedBlock");
 
     if let Some(after_rep) = after(&ast, after_array_allowed, parents)? {
         ast = after_rep;
@@ -668,7 +628,6 @@ where
             }
             Node::Tag(tag) => walk_block(&mut tag.block, visit)?,
             Node::InterpolatedTag(tag) => walk_block(&mut tag.block, visit)?,
-            Node::Filter(filter) => walk_block(&mut filter.block, visit)?,
             Node::Case(c) => walk_block(&mut c.block, visit)?,
             Node::When(w) => {
                 if let Some(ref mut b) = w.block {

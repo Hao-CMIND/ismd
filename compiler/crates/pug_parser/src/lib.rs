@@ -1,7 +1,7 @@
 use pug_ast::{
     Attribute, AttributeBlock, BlockCommentNode, BlockNode, CaseNode, CodeNode, CommentNode,
-    ConditionalNode, DoctypeNode, EachNode, EachOfNode, ExtensionNode, ExtendsNode, FileReferenceNode, FilterNode,
-    IncludeFilterNode, IncludeNode, InterpolatedTagNode, LineCol, MixinBlockNode, MixinNode,
+    ConditionalNode, DoctypeNode, EachNode, EachOfNode, ExtensionNode, ExtendsNode, FileReferenceNode,
+    IncludeNode, InterpolatedTagNode, LineCol, MixinBlockNode, MixinNode,
     NamedBlockNode, Node, RawIncludeNode, TagNode, TextNode, Token, TokenLoc, WhenNode, WhileNode,
     YieldBlockNode,
 };
@@ -59,7 +59,6 @@ enum ExprKind {
     Include,
     Doctype,
     Extension,
-    Filter,
     Comment,
     TextOrInterp,
     TextHtml,
@@ -410,7 +409,6 @@ impl Parser {
             "include" => ExprKind::Include,
             "doctype" => ExprKind::Doctype,
             "extension_start" => ExprKind::Extension,
-            "filter" => ExprKind::Filter,
             "comment" => ExprKind::Comment,
             "text" | "interpolated-code" | "start-pug-interpolation" => ExprKind::TextOrInterp,
             "text-html" => ExprKind::TextHtml,
@@ -437,7 +435,6 @@ impl Parser {
             ExprKind::Include => self.parse_include(),
             ExprKind::Doctype => self.parse_doctype(),
             ExprKind::Extension => self.parse_extension(),
-            ExprKind::Filter => self.parse_filter(),
             ExprKind::Comment => self.parse_comment(),
             ExprKind::TextOrInterp => self.parse_text(true),
             ExprKind::TextHtml => {
@@ -863,22 +860,6 @@ impl Parser {
         }))
     }
 
-    fn parse_include_filter(&mut self) -> Result<IncludeFilterNode, PugError> {
-        let tok = self.expect("filter")?;
-        let mut attrs = Vec::new();
-        if self.peek()?.token_type == "start-attributes" {
-            attrs = self.attrs(None)?;
-        }
-        Ok(IncludeFilterNode {
-            node_type: String::from("IncludeFilter"),
-            name: token_str_val(&tok),
-            attrs,
-            line: tok.loc.start.line,
-            column: Some(tok.loc.start.column),
-            filename: self.filename.clone(),
-        })
-    }
-
     fn parse_extension(&mut self) -> Result<Node, PugError> {
         let tok = self.expect("extension_start")?;
         let payload = token_str_val(&tok);
@@ -918,43 +899,6 @@ impl Parser {
             line,
             column,
             filename,
-        }))
-    }
-
-    fn parse_filter(&mut self) -> Result<Node, PugError> {
-        let tok = self.expect("filter")?;
-        let mut attrs = Vec::new();
-        if self.peek()?.token_type == "start-attributes" {
-            attrs = self.attrs(None)?;
-        }
-
-        let block = if self.peek()?.token_type == "text" {
-            let text_token = self.advance()?;
-            self.init_block(
-                text_token.loc.start.line,
-                vec![Node::Text(TextNode {
-                    val: token_str_val(&text_token),
-                    line: Some(text_token.loc.start.line),
-                    column: Some(text_token.loc.start.column),
-                    filename: self.filename.clone(),
-                    is_html: None,
-                })],
-            )
-        } else if self.peek()?.token_type == "filter" {
-            let nested = self.parse_filter()?;
-            self.init_block(tok.loc.start.line, vec![nested])
-        } else {
-            self.parse_text_block()?
-                .unwrap_or_else(|| self.empty_block(tok.loc.start.line))
-        };
-
-        Ok(Node::Filter(FilterNode {
-            name: token_str_val(&tok),
-            block,
-            attrs,
-            line: tok.loc.start.line,
-            column: Some(tok.loc.start.column),
-            filename: self.filename.clone(),
         }))
     }
 
@@ -1059,10 +1003,6 @@ impl Parser {
 
     fn parse_include(&mut self) -> Result<Node, PugError> {
         let tok = self.expect("include")?;
-        let mut filters = Vec::new();
-        while self.peek()?.token_type == "filter" {
-            filters.push(self.parse_include_filter()?);
-        }
         let path_tok = self.expect("path")?;
         let path_str = token_str_val(&path_tok).trim().to_string();
         let file_ref = FileReferenceNode::new(
@@ -1073,7 +1013,7 @@ impl Parser {
         );
 
         let is_pug_or_jade = path_str.ends_with(".jade") || path_str.ends_with(".pug");
-        if is_pug_or_jade && filters.is_empty() {
+        if is_pug_or_jade {
             let block = if self.peek()?.token_type == "indent" {
                 self.block()?
             } else {
@@ -1104,7 +1044,6 @@ impl Parser {
             }
             Ok(Node::RawInclude(RawIncludeNode {
                 file: file_ref,
-                filters,
                 line: tok.loc.start.line,
                 column: Some(tok.loc.start.column),
                 filename: self.filename.clone(),

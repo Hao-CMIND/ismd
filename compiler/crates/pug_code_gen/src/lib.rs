@@ -1351,8 +1351,6 @@ fn node_line_and_filename(node: &Node) -> (usize, Option<&str>) {
         Node::Comment(n) => (n.line, n.filename.as_deref()),
         Node::BlockComment(n) => (n.line, n.filename.as_deref()),
         Node::Doctype(n) => (n.line, n.filename.as_deref()),
-        Node::Filter(n) => (n.line, n.filename.as_deref()),
-        Node::IncludeFilter(n) => (n.line, n.filename.as_deref()),
         Node::FileReference(n) => (n.line, n.filename.as_deref()),
         Node::Extends(n) => (n.line, n.filename.as_deref()),
         Node::Include(n) => (n.line, n.filename.as_deref()),

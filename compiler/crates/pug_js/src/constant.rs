@@ -20,7 +20,7 @@ pub enum ConstVal {
     PugMethod(&'static str),
 }
 
-/// Outcome of evaluating a filter option expression against `constantinople@4.0.1`.
+/// Outcome of evaluating a static expression against `constantinople@4.0.1`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstEvalOutcome {
     Constant(ConstVal),
@@ -476,9 +476,9 @@ pub fn eval_constant(src: &str) -> Option<ConstVal> {
     })
 }
 
-/// Evaluates a filter option expression without `{ pug, pug_interp }`, distinguishing
+/// Evaluates a static expression without `{ pug, pug_interp }`, distinguishing
 /// `NotConstant` from `Unsupported` constant constructs.
-pub fn eval_filter_constant(src: &str) -> ConstEvalOutcome {
+pub fn eval_static_expression(src: &str) -> ConstEvalOutcome {
     let _prof_const = pug_ast::profile::scope(pug_ast::profile::Stage::ConstantEvaluation);
     pug_ast::profile::with_counters(|c| {
         c.eval_constant_count += 1;
@@ -1272,8 +1272,8 @@ mod tests {
         assert_eq!(eval_constant("'a'.padStart(3, '0')"), Some(ConstVal::String("00a".into())));
         assert_eq!(eval_constant("'a'.padEnd(3, '0')"), Some(ConstVal::String("a00".into())));
         assert_eq!(eval_constant("'abcb'.lastIndexOf('b')"), Some(ConstVal::Number(3.0)));
-        assert_eq!(eval_filter_constant("null ?? 1"), ConstEvalOutcome::Unsupported("Nullish coalescing constant evaluation is not supported".into()));
-        assert_eq!(eval_filter_constant("dynamicIdent"), ConstEvalOutcome::NotConstant);
-        assert_eq!(eval_filter_constant("(1 +"), ConstEvalOutcome::NotConstant);
+        assert_eq!(eval_static_expression("null ?? 1"), ConstEvalOutcome::Unsupported("Nullish coalescing constant evaluation is not supported".into()));
+        assert_eq!(eval_static_expression("dynamicIdent"), ConstEvalOutcome::NotConstant);
+        assert_eq!(eval_static_expression("(1 +"), ConstEvalOutcome::NotConstant);
     }
 }

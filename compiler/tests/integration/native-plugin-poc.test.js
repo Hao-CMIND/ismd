@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { nativePluginPath } from '../../../filters/index.js';
 import pug, { createCompiler, resolveNativePluginPath } from '../../index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const pluginPath = path.resolve(__dirname, '../../target/debug/pug_filter_uppercase.dll');
+const pluginPath = nativePluginPath();
 
 test('Step 2.5: Plugin path resolution and existence verification', () => {
   assert(fs.existsSync(pluginPath), `Plugin dll must exist at: ${pluginPath}`);

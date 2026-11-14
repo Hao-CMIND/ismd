@@ -9,7 +9,9 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const RUST_COMPILER_ROOT = path.resolve(__dirname, '../..');
-const RAW_COMPILER_ROOT = path.resolve(RUST_COMPILER_ROOT, '../raw/compiler');
+const RAW_COMPILER_ROOT = process.env.PUG_REFERENCE_ROOT
+  ? path.resolve(process.env.PUG_REFERENCE_ROOT)
+  : path.resolve(RUST_COMPILER_ROOT, '../raw/compiler');
 
 function requireFromRaw(modName) {
   try {

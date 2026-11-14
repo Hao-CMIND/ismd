@@ -44,8 +44,6 @@ pub struct CompileOptions {
     pub use_self: bool,
     pub include_sources: bool,
     pub template_name: String,
-    pub filter_options: Value,
-    pub filter_aliases: HashMap<String, String>,
     pub lex_plugin_methods: Vec<String>,
     pub native_plugins: Vec<String>,
     pub generic_syntax: Vec<pug_lexer::GenericSyntaxRule>,
@@ -64,7 +62,7 @@ pub struct FileCtx<'a> {
     pub src: &'a str,
 }
 
-/// Host abstraction for synchronous same-thread callbacks (`plugins`, `filters`, `resolve`, `read`).
+/// Host abstraction for synchronous same-thread callbacks (`plugins`, `resolve`, `read`).
 pub trait CompilerHost {
     fn pre_lex(&mut self, source: String, filename: Option<&str>) -> Result<String, PugError> {
         let _ = filename;
@@ -131,11 +129,11 @@ pub trait CompilerHost {
         Ok(ast)
     }
 
-    fn pre_filters(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
+    fn pre_transform(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
         Ok(ast)
     }
 
-    fn post_filters(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
+    fn post_transform(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
         Ok(ast)
     }
 
@@ -428,6 +426,7 @@ impl<H: CompilerHost> Session<'_, H> {
                 byte_len,
                 source_version,
                 lex_plugin_methods: Vec::new(),
+                generic_syntax: self.options.generic_syntax.clone(),
             };
 
             if let Some(cached) = self.store.get_parsed(&key) {
@@ -458,7 +457,7 @@ impl<H: CompilerHost> Session<'_, H> {
                     ast: ast_arc,
                     direct_dependencies: meta.dependencies,
                     declared_blocks: meta.declared_blocks,
-                    has_filters: meta.has_filters,
+                    has_extensions: meta.has_extensions,
                     has_yield: meta.has_yield,
                     warnings,
                 },
@@ -686,20 +685,23 @@ pub fn compile_body_with_store<H: CompilerHost>(
     let _other = scope(Stage::Other);
 
     let has_native_plugins = !options.native_plugins.is_empty();
+    let active_plugins;
     let mut opts_buf;
     let effective_options = if has_native_plugins {
         let mut mgr = store.plugins.write().unwrap();
         for p in &options.native_plugins {
             mgr.load_plugin(std::path::Path::new(p))?;
         }
+        active_plugins = mgr.select_plugins(&options.native_plugins);
         if options.generic_syntax.is_empty() {
             opts_buf = options.clone();
-            opts_buf.generic_syntax = mgr.syntax_rules().to_vec();
+            opts_buf.generic_syntax = active_plugins.syntax_rules().to_vec();
             &opts_buf
         } else {
             options
         }
     } else {
+        active_plugins = plugin::NativePluginManager::new();
         options
     };
 
@@ -748,9 +750,13 @@ pub fn compile_body_with_store<H: CompilerHost>(
     let debug_sources = std::mem::take(&mut session.debug_sources);
     let host = session.host;
 
-    // 2. preFilters -> postFilters (Filters stage is handled via NativePluginManager)
-    ast = host.pre_filters(ast)?;
-    ast = host.post_filters(ast)?;
+    // 2. Generic AST transforms include loaded dependencies and precede linking.
+    ast = host.pre_transform(ast)?;
+    if has_native_plugins {
+        let _g = scope(Stage::Transform);
+        active_plugins.transform_ast(&mut ast)?;
+    }
+    ast = host.post_transform(ast)?;
 
     // 3. preLink -> Linker -> postLink
     ast = host.pre_link(ast)?;
@@ -759,11 +765,6 @@ pub fn compile_body_with_store<H: CompilerHost>(
         link(ast)?
     };
     ast = host.post_link(ast)?;
-
-    if has_native_plugins {
-        let mgr = store.plugins.read().unwrap();
-        mgr.transform_ast(&mut ast)?;
-    }
 
     // 4. preCodeGen -> generateCode -> postCodeGen
     ast = host.pre_code_gen(ast)?;
@@ -1395,15 +1396,14 @@ mod tests {
     fn test_native_dynamic_plugin_uppercase_poc() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let candidates = [
-            manifest_dir.join("../../target/debug/pug_filter_uppercase.dll"),
-            manifest_dir.join("../../target/debug/libpug_filter_uppercase.so"),
-            manifest_dir.join("../../target/debug/libpug_filter_uppercase.dylib"),
-            manifest_dir.join("../../../target/debug/pug_filter_uppercase.dll"),
+            manifest_dir.join("../../../filters/native/target/debug/pug_filter_uppercase.dll"),
+            manifest_dir.join("../../../filters/native/target/debug/libpug_filter_uppercase.so"),
+            manifest_dir.join("../../../filters/native/target/debug/libpug_filter_uppercase.dylib"),
         ];
         let plugin_path = candidates
             .into_iter()
             .find(|p| p.exists())
-            .expect("pug_filter_uppercase dynamic library must exist in target/debug");
+            .expect("Build the native test plugin with npm run build --workspace=@pug-rust/filters");
 
         let opts = CompileOptions {
             native_plugins: vec![plugin_path.to_string_lossy().into_owned()],

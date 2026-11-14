@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use pug_ast::{
     BlockCommentNode, BlockNode, CaseNode, CodeNode, ConditionalNode, EachNode, EachOfNode,
-    FilterNode, IncludeNode, InterpolatedTagNode, MixinNode, NamedBlockNode, Node, TagNode,
+    IncludeNode, InterpolatedTagNode, MixinNode, NamedBlockNode, Node, TagNode,
     TextNode, WhenNode, WhileNode,
 };
 use pug_error::{ErrorOptions, PugError};
@@ -47,7 +47,6 @@ fn node_needs_link(node: &Node) -> bool {
         Node::Tag(t) => ast_needs_link(&t.block),
         Node::InterpolatedTag(t) => ast_needs_link(&t.block),
         Node::BlockComment(bc) => ast_needs_link(&bc.block),
-        Node::Filter(f) => ast_needs_link(&f.block),
         Node::Case(c) => ast_needs_link(&c.block),
         Node::When(w) => w.block.as_ref().is_some_and(ast_needs_link),
         Node::Conditional(c) => {
@@ -66,7 +65,6 @@ fn node_needs_link(node: &Node) -> bool {
         | Node::Doctype(_)
         | Node::Extension(_)
         | Node::FileReference(_)
-        | Node::IncludeFilter(_)
         | Node::MixinBlock(_)
         | Node::YieldBlock(_)
         | Node::Text(_) => false,
@@ -103,7 +101,6 @@ enum LNode {
     Tag(Box<TagNode>, LBlock),
     InterpolatedTag(Box<InterpolatedTagNode>, LBlock),
     BlockComment(Box<BlockCommentNode>, LBlock),
-    Filter(Box<FilterNode>, LBlock),
     Case(Box<CaseNode>, LBlock),
     When(Box<WhenNode>, Option<LBlock>),
     Conditional {
@@ -227,10 +224,6 @@ impl LNode {
                 let blk = std::mem::replace(&mut c.block, BlockNode::empty(0, None));
                 LNode::BlockComment(Box::new(c), LBlock::from_ast(blk))
             }
-            Node::Filter(mut f) => {
-                let blk = std::mem::replace(&mut f.block, BlockNode::empty(0, None));
-                LNode::Filter(Box::new(f), LBlock::from_ast(blk))
-            }
             Node::Case(mut c) => {
                 let blk = std::mem::replace(&mut c.block, BlockNode::empty(0, None));
                 LNode::Case(Box::new(c), LBlock::from_ast(blk))
@@ -297,10 +290,6 @@ impl LNode {
                 meta.block = blk.into_ast();
                 Node::BlockComment(*meta)
             }
-            LNode::Filter(mut meta, blk) => {
-                meta.block = blk.into_ast();
-                Node::Filter(*meta)
-            }
             LNode::Case(mut meta, blk) => {
                 meta.block = blk.into_ast();
                 Node::Case(*meta)
@@ -363,7 +352,6 @@ impl LNode {
                 (m.line, m.column, m.filename.clone(), "InterpolatedTag")
             }
             LNode::BlockComment(m, _) => (m.line, m.column, m.filename.clone(), "BlockComment"),
-            LNode::Filter(m, _) => (m.line, m.column, m.filename.clone(), "Filter"),
             LNode::Case(m, _) => (m.line, m.column, m.filename.clone(), "Case"),
             LNode::When(m, _) => (m.line, m.column, m.filename.clone(), "When"),
             LNode::Conditional { meta, .. } => {
@@ -381,13 +369,13 @@ impl LNode {
                     Node::Text(t) => (t.line.unwrap_or(0), t.column, t.filename.clone(), ty),
                     Node::Comment(c) => (c.line, c.column, c.filename.clone(), ty),
                     Node::Doctype(d) => (d.line, d.column, d.filename.clone(), ty),
-                    Node::IncludeFilter(f) => (f.line, f.column, f.filename.clone(), ty),
                     Node::FileReference(f) => (f.line, f.column, f.filename.clone(), ty),
                     Node::Extends(e) => (e.line, e.column, e.filename.clone(), ty),
                     Node::RawInclude(r) => (r.line, r.column, r.filename.clone(), ty),
                     Node::MixinBlock(m) => (m.line, m.column, m.filename.clone(), ty),
                     Node::YieldBlock(y) => (y.line, y.column, y.filename.clone(), ty),
                     Node::Attrs(a) => (a.line, a.column, a.filename.clone(), ty),
+                    Node::Extension(e) => (e.line, e.column, e.filename.clone(), ty),
                     _ => (0, None, None, ty),
                 }
             }
@@ -408,7 +396,6 @@ impl LNode {
             LNode::Tag(_, b)
             | LNode::InterpolatedTag(_, b)
             | LNode::BlockComment(_, b)
-            | LNode::Filter(_, b)
             | LNode::Case(_, b)
             | LNode::While(_, b)
             | LNode::EachOf(_, b)
@@ -431,7 +418,6 @@ impl LNode {
             LNode::Tag(_, b)
             | LNode::InterpolatedTag(_, b)
             | LNode::BlockComment(_, b)
-            | LNode::Filter(_, b)
             | LNode::Case(_, b)
             | LNode::While(_, b)
             | LNode::EachOf(_, b)
@@ -642,7 +628,6 @@ fn extend_in_node(
         LNode::Tag(_, b)
         | LNode::InterpolatedTag(_, b)
         | LNode::BlockComment(_, b)
-        | LNode::Filter(_, b)
         | LNode::Case(_, b)
         | LNode::While(_, b)
         | LNode::EachOf(_, b)
@@ -873,7 +858,6 @@ where
         | LNode::Tag(_, b)
         | LNode::InterpolatedTag(_, b)
         | LNode::BlockComment(_, b)
-        | LNode::Filter(_, b)
         | LNode::Case(_, b)
         | LNode::While(_, b)
         | LNode::EachOf(_, b)
@@ -936,7 +920,6 @@ where
         LNode::Tag(m, b) => LNode::Tag(m, map_block(b, f)?),
         LNode::InterpolatedTag(m, b) => LNode::InterpolatedTag(m, map_block(b, f)?),
         LNode::BlockComment(m, b) => LNode::BlockComment(m, map_block(b, f)?),
-        LNode::Filter(m, b) => LNode::Filter(m, map_block(b, f)?),
         LNode::Case(m, b) => LNode::Case(m, map_block(b, f)?),
         LNode::When(m, b) => LNode::When(m, b.map(|blk| map_block(blk, f)).transpose()?),
         LNode::Conditional {

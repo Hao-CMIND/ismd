@@ -101,7 +101,7 @@ pub(crate) fn try_compile_linked_view<H: CompilerHost>(
     // 1. Parse/fetch entry template into Arc<ParsedTemplate> without cloning AST.
     let entry_parsed =
         get_or_parse_entry_arc(source, options.filename.as_deref(), options, host, store)?;
-    if entry_parsed.has_filters {
+    if entry_parsed.has_extensions {
         return Ok(None);
     }
 
@@ -160,8 +160,8 @@ pub(crate) fn try_compile_linked_view<H: CompilerHost>(
         store.dag().set_dependencies(tpl.parsed.id, edges);
     }
 
-    // Check if any loaded template has filters; if so, fall back to mutable pipeline.
-    if arena.templates.iter().any(|t| t.parsed.has_filters) {
+    // Check if any loaded template has extensions; if so, fall back to mutable pipeline.
+    if arena.templates.iter().any(|t| t.parsed.has_extensions) {
         return Ok(None);
     }
 
@@ -259,6 +259,7 @@ fn get_or_parse_entry_arc<H: CompilerHost>(
             byte_len,
             source_version: 0,
             lex_plugin_methods: Vec::new(),
+            generic_syntax: options.generic_syntax.clone(),
         };
         if let Some(cached) = store.get_parsed(&key) {
             with_counters(|c| c.parse_cache_hit_count += 1);
@@ -283,7 +284,7 @@ fn get_or_parse_entry_arc<H: CompilerHost>(
                 ast: Arc::new(ast),
                 direct_dependencies: meta.dependencies,
                 declared_blocks: meta.declared_blocks,
-                has_filters: meta.has_filters,
+                has_extensions: meta.has_extensions,
                 has_yield: meta.has_yield,
                 warnings,
             },
@@ -306,7 +307,7 @@ fn get_or_parse_entry_arc<H: CompilerHost>(
         ast: Arc::new(ast),
         direct_dependencies: meta.dependencies,
         declared_blocks: meta.declared_blocks,
-        has_filters: meta.has_filters,
+        has_extensions: meta.has_extensions,
         has_yield: meta.has_yield,
         warnings,
     }))
@@ -326,6 +327,7 @@ fn load_and_parse_disk_arc<H: CompilerHost>(
         byte_len: entry.byte_len,
         source_version: entry.version,
         lex_plugin_methods: Vec::new(),
+            generic_syntax: options.generic_syntax.clone(),
     };
     if let Some(cached) = store.get_parsed(&key) {
         with_counters(|c| c.parse_cache_hit_count += 1);
@@ -351,7 +353,7 @@ fn load_and_parse_disk_arc<H: CompilerHost>(
             ast: Arc::new(ast),
             direct_dependencies: meta.dependencies,
             declared_blocks: meta.declared_blocks,
-            has_filters: meta.has_filters,
+            has_extensions: meta.has_extensions,
             has_yield: meta.has_yield,
             warnings,
         },
@@ -450,7 +452,7 @@ fn load_node_deps<H: CompilerHost>(
             )?;
             with_counters(|c| c.layout_parse_count += 1);
             let parsed = load_and_parse_disk_arc(&full_path, &entry, options, host, store)?;
-            if parsed.has_filters {
+            if parsed.has_extensions {
                 return Ok(false);
             }
             let target_idx = arena.templates.len();
@@ -492,7 +494,7 @@ fn load_node_deps<H: CompilerHost>(
             )?;
             with_counters(|c| c.include_parse_count += 1);
             let parsed = load_and_parse_disk_arc(&full_path, &entry, options, host, store)?;
-            if parsed.has_filters {
+            if parsed.has_extensions {
                 return Ok(false);
             }
             let target_idx = arena.templates.len();
@@ -531,9 +533,6 @@ fn load_node_deps<H: CompilerHost>(
             }
         }
         Node::RawInclude(raw) => {
-            if !raw.filters.is_empty() {
-                return Ok(false);
-            }
             if raw.file.node_type != "FileReference" {
                 return Err(PugError::host_exception(
                     "Expected file.type to be \"FileReference\"",
@@ -638,8 +637,7 @@ fn load_node_deps<H: CompilerHost>(
                 raw_include_targets,
             );
         }
-        Node::Filter(f) => {
-            let _ = f;
+        Node::Extension(_) => {
             return Ok(false);
         }
         Node::Case(c) => {
@@ -1118,7 +1116,6 @@ fn find_default_yield_target_ptr(block: &BlockNode) -> usize {
             Node::Tag(t) if !t.block.nodes.is_empty() => target = Some(&t.block),
             Node::InterpolatedTag(t) if !t.block.nodes.is_empty() => target = Some(&t.block),
             Node::BlockComment(bc) if !bc.block.nodes.is_empty() => target = Some(&bc.block),
-            Node::Filter(f) if !f.block.nodes.is_empty() => target = Some(&f.block),
             Node::Case(c) if !c.block.nodes.is_empty() => target = Some(&c.block),
             Node::While(w) if !w.block.nodes.is_empty() => target = Some(&w.block),
             Node::EachOf(e) if !e.block.nodes.is_empty() => target = Some(&e.block),
@@ -1201,7 +1198,6 @@ fn check_extend_in_node(
         Node::BlockComment(bc) => {
             check_extend_in_block(&bc.block, has_extends, legit_extends_reached)?
         }
-        Node::Filter(f) => check_extend_in_block(&f.block, has_extends, legit_extends_reached)?,
         Node::Case(c) => check_extend_in_block(&c.block, has_extends, legit_extends_reached)?,
         Node::When(w) => {
             if let Some(ref b) = w.block {
@@ -1303,7 +1299,6 @@ fn node_loc(node: &Node) -> (usize, Option<usize>, Option<String>) {
         Node::Tag(t) => (t.line, t.column, t.filename.clone()),
         Node::InterpolatedTag(t) => (t.line, t.column, t.filename.clone()),
         Node::BlockComment(bc) => (bc.line, bc.column, bc.filename.clone()),
-        Node::Filter(f) => (f.line, f.column, f.filename.clone()),
         Node::Case(c) => (c.line, c.column, c.filename.clone()),
         Node::When(w) => (w.line, w.column, w.filename.clone()),
         Node::Conditional(c) => (c.line, c.column, c.filename.clone()),
@@ -1316,7 +1311,6 @@ fn node_loc(node: &Node) -> (usize, Option<usize>, Option<String>) {
         Node::Text(t) => (t.line.unwrap_or(0), t.column, t.filename.clone()),
         Node::Comment(c) => (c.line, c.column, c.filename.clone()),
         Node::Doctype(d) => (d.line, d.column, d.filename.clone()),
-        Node::IncludeFilter(f) => (f.line, f.column, f.filename.clone()),
         Node::FileReference(f) => (f.line, f.column, f.filename.clone()),
         Node::Extends(e) => (e.line, e.column, e.filename.clone()),
         Node::RawInclude(r) => (r.line, r.column, r.filename.clone()),

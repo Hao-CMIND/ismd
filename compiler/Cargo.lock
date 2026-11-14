@@ -897,13 +897,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pug_filter_uppercase"
-version = "0.1.0"
-dependencies = [
- "pug_plugin_abi",
-]
-
-[[package]]
 name = "pug_js"
 version = "0.1.0"
 dependencies = [

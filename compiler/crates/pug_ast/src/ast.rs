@@ -324,22 +324,6 @@ pub struct DoctypeNode {
     pub filename: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FilterNode {
-    pub name: String,
-    pub block: BlockNode,
-    pub attrs: Vec<Attribute>,
-    pub line: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub column: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filename: Option<String>,
-}
-
-fn default_include_filter_type() -> String {
-    String::from("IncludeFilter")
-}
-
 fn default_extension_type() -> String {
     String::from("Extension")
 }
@@ -354,19 +338,6 @@ pub struct ExtensionNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options_json: Option<String>,
     pub is_block: bool,
-    pub line: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub column: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filename: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IncludeFilterNode {
-    #[serde(rename = "type", default = "default_include_filter_type")]
-    pub node_type: String,
-    pub name: String,
-    pub attrs: Vec<Attribute>,
     pub line: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
@@ -506,7 +477,6 @@ pub struct IncludeNode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawIncludeNode {
     pub file: FileReferenceNode,
-    pub filters: Vec<IncludeFilterNode>,
     pub line: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
@@ -656,8 +626,6 @@ pub enum Node {
     Comment(CommentNode),
     BlockComment(BlockCommentNode),
     Doctype(DoctypeNode),
-    Filter(FilterNode),
-    IncludeFilter(IncludeFilterNode),
     FileReference(FileReferenceNode),
     Extends(ExtendsNode),
     Include(IncludeNode),
@@ -691,8 +659,6 @@ impl Node {
             Node::Comment(_) => "Comment",
             Node::BlockComment(_) => "BlockComment",
             Node::Doctype(_) => "Doctype",
-            Node::Filter(_) => "Filter",
-            Node::IncludeFilter(_) => "IncludeFilter",
             Node::FileReference(_) => "FileReference",
             Node::Extends(_) => "Extends",
             Node::Include(_) => "Include",

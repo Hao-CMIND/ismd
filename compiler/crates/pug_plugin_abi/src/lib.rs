@@ -138,7 +138,7 @@ pub enum PugSyntaxKind {
     BlockPrefix = 0,
     /// Inline prefix, e.g. `#[name ...]`
     InlinePrefix = 1,
-    /// Include filter prefix, e.g. `include:name`
+    /// Resource prefix (reserved for a future generic resource hook)
     IncludePrefix = 2,
 }
 

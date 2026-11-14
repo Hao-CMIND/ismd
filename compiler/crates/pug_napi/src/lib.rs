@@ -17,7 +17,6 @@ use pug_parser::{ParserOptions, parse_json_tokens_with_warnings};
 use pug_strip_comments::{StripCommentsOptions, strip_comments_json};
 use pug_walk::walk_json_ast;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[napi(object)]
@@ -68,8 +67,6 @@ pub struct NapiCompileOptions {
     pub use_self: Option<bool>,
     pub include_sources: Option<bool>,
     pub template_name: Option<String>,
-    pub filter_options: Option<Value>,
-    pub filter_aliases: Option<HashMap<String, String>>,
     pub lex_plugin_methods: Option<Vec<String>>,
     pub native_plugins: Option<Vec<String>>,
 }
@@ -515,8 +512,8 @@ impl<'env> NodeHostAdapter<'env> {
             || has_callback_prop(&callbacks, "preLoad")?
             || has_callback_prop(&callbacks, "lexPluginStep")?;
         let ast_or_codegen_hooks = has_callback_prop(&callbacks, "postLoad")?
-            || has_callback_prop(&callbacks, "preFilters")?
-            || has_callback_prop(&callbacks, "postFilters")?
+            || has_callback_prop(&callbacks, "preTransform")?
+            || has_callback_prop(&callbacks, "postTransform")?
             || has_callback_prop(&callbacks, "preLink")?
             || has_callback_prop(&callbacks, "postLink")?
             || has_callback_prop(&callbacks, "preCodeGen")?
@@ -605,8 +602,8 @@ impl<'env> NodeHostAdapter<'env> {
             "postParse" => (Stage::PostParseCallback, true, false),
             "preLoad" => (Stage::PreLoadCallback, true, false),
             "postLoad" => (Stage::PostLoadCallback, true, false),
-            "preFilters" => (Stage::PreFiltersCallback, true, false),
-            "postFilters" => (Stage::PostFiltersCallback, true, false),
+            "preTransform" => (Stage::PreTransformCallback, true, false),
+            "postTransform" => (Stage::PostTransformCallback, true, false),
             "preLink" => (Stage::PreLinkCallback, true, false),
             "postLink" => (Stage::PostLinkCallback, true, false),
             "preCodeGen" => (Stage::PreCodegenCallback, true, false),
@@ -875,12 +872,12 @@ impl<'env> CompilerHost for NodeHostAdapter<'env> {
         self.call_json_hook("postLoad", ast)
     }
 
-    fn pre_filters(&mut self, ast: BlockNode) -> std::result::Result<BlockNode, PugError> {
-        self.call_json_hook("preFilters", ast)
+    fn pre_transform(&mut self, ast: BlockNode) -> std::result::Result<BlockNode, PugError> {
+        self.call_json_hook("preTransform", ast)
     }
 
-    fn post_filters(&mut self, ast: BlockNode) -> std::result::Result<BlockNode, PugError> {
-        self.call_json_hook("postFilters", ast)
+    fn post_transform(&mut self, ast: BlockNode) -> std::result::Result<BlockNode, PugError> {
+        self.call_json_hook("postTransform", ast)
     }
 
     fn pre_link(&mut self, ast: BlockNode) -> std::result::Result<BlockNode, PugError> {
@@ -1144,35 +1141,6 @@ pub fn load_sync(
 }
 
 #[napi]
-pub fn handle_filters_sync(
-    _env: Env,
-    ast: Value,
-    _filter_options: Option<Value>,
-    _filter_aliases: Option<HashMap<String, String>>,
-    _callbacks: Option<Object>,
-) -> Result<NapiJsonOutcome> {
-    // Phase 3: Legacy Filters removed from core.
-    // If input AST contains any Filter node, return an explicit error instead of silent no-op.
-    let ast_str = serde_json::to_string(&ast).unwrap_or_default();
-    if ast_str.contains("\"type\":\"Filter\"") || ast_str.contains("\"type\":\"IncludeFilter\"") {
-        return Ok(NapiJsonOutcome {
-            ok: false,
-            data: None,
-            error: None,
-            plain_error: Some(String::from(
-                "PUG:LEGACY_FILTER_UNSUPPORTED: handleFiltersSync no longer executes filters in Rust core. Use Rust Native Dynamic Plugins instead.",
-            )),
-        });
-    }
-    Ok(NapiJsonOutcome {
-        ok: true,
-        data: Some(ast),
-        error: None,
-        plain_error: None,
-    })
-}
-
-#[napi]
 pub fn link_sync(ast: Value) -> Result<NapiJsonOutcome> {
     let block: BlockNode = match serde_json::from_value(ast) {
         Ok(b) => b,
@@ -1316,8 +1284,6 @@ pub fn compile_body_sync(
         template_name: options
             .template_name
             .unwrap_or_else(|| String::from("template")),
-        filter_options: options.filter_options.unwrap_or(Value::Null),
-        filter_aliases: options.filter_aliases.unwrap_or_default(),
         lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
         native_plugins: options.native_plugins.unwrap_or_default(),
         generic_syntax: Vec::new(),
@@ -1452,8 +1418,6 @@ fn napi_opts_to_compile_options(options: NapiCompileOptions) -> CompileOptions {
         template_name: options
             .template_name
             .unwrap_or_else(|| String::from("template")),
-        filter_options: options.filter_options.unwrap_or(Value::Null),
-        filter_aliases: options.filter_aliases.unwrap_or_default(),
         lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
         native_plugins: options.native_plugins.unwrap_or_default(),
         generic_syntax: Vec::new(),

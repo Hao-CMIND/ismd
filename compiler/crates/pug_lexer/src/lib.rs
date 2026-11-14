@@ -7,7 +7,7 @@ use pug_js::scan::{
 use pug_js::{ExpressionOptions, validate_expression};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericSyntaxRule {
     pub rule_id: String,
     pub prefix: String,
@@ -651,31 +651,6 @@ impl<'h> Lexer<'h> {
         Ok(false)
     }
 
-    fn filter(&mut self, in_include: bool) -> Result<bool, PugError> {
-        if let Some(after_colon) = self.rest().strip_prefix(':') {
-            let name_bytes: usize = after_colon
-                .chars()
-                .take_while(|&c| is_word_char(c) || c == '-')
-                .map(char::len_utf8)
-                .sum();
-            if name_bytes > 0 {
-                let name = after_colon[..name_bytes].to_string();
-                let name_u16 = utf16_len(&name);
-                let mut tok = self.scan_exact(1 + name_u16, Some(name), "filter");
-                self.increment_column(name_u16 as isize);
-                tok = self.tok_end(tok);
-                self.tokens.push(tok);
-                self.attrs()?;
-                if !in_include {
-                    self.interpolation_allowed = false;
-                    self.pipeless_text(None)?;
-                }
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     fn doctype(&mut self) -> Result<bool, PugError> {
         if let Some(after_kw) = self.rest().strip_prefix("doctype") {
             let line_rest = first_line(after_kw);
@@ -1216,14 +1191,12 @@ impl<'h> Lexer<'h> {
     fn include(&mut self) -> Result<bool, PugError> {
         if let Some(rest) = self.rest().strip_prefix("include") {
             if rest.is_empty()
-                || rest.starts_with(':')
                 || rest.starts_with(' ')
                 || rest.starts_with('\n')
             {
                 let tok = self.scan_exact(7, None, "include");
                 let ended = self.tok_end(tok);
                 self.tokens.push(ended);
-                while self.filter(true)? {}
                 if !self.path()? {
                     if self
                         .rest()
@@ -2463,7 +2436,6 @@ impl<'h> Lexer<'h> {
             || step!("while", self.while_tok())
             || step!("tag", self.tag())
             || step!("generic_extension", self.generic_extension())
-            || step!("filter", self.filter(false))
             || step!("blockCode", self.block_code())
             || step!("code", self.code())
             || step!("id", self.id())

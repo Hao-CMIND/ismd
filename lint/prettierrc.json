@@ -1,0 +1,62 @@
+{
+  "plugins": [
+    "@prettier/plugin-pug"
+  ],
+  "printWidth": 100,
+  "tabWidth": 2,
+  "singleQuote": true,
+  "semi": false,
+  "pugPrintWidth": 100,
+  "pugTabWidth": 2,
+  "pugUseTabs": false,
+  "pugSingleQuote": false,
+  "pugAttributeSeparator": [
+    "always",
+    "as-needed",
+    "none"
+  ],
+  "pugWrapAttributesThreshold": 3,
+  "pugBracketSameLine": false,
+  "pugClosingBracketIndentDepth": 0,
+  "pugClassNotation": [
+    "literal",
+    "attribute",
+    "as-is"
+  ],
+  "pugIdNotation": [
+    "literal",
+    "as-is"
+  ],
+  "pugClassLocation": [
+    "before-attributes",
+    "after-attributes"
+  ],
+  "pugExplicitDiv": false,
+  "pugSortAttributes": [
+    "as-is",
+    "asc",
+    "desc"
+  ],
+  "pugEmptyAttributes": [
+    "as-is",
+    "none",
+    "all"
+  ],
+  "pugPreserveWhitespace": true,
+  "pugArrowParens": [
+    null,
+    "always",
+    "avoid"
+  ],
+  "pugCommentPreserveSpaces": [
+    "keep-all",
+    "keep-leading",
+    "trim-all"
+  ],
+  "pugFramework": [
+    "auto",
+    "vue",
+    "svelte",
+    "angular"
+  ]
+}

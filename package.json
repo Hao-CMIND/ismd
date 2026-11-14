@@ -1,0 +1,25 @@
+{
+  "name": "pug-rust",
+  "version": "0.1.0",
+  "description": "High-performance Pug template compiler in Rust with Vite and Webpack adapters",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "compiler",
+    "cli",
+    "vite",
+    "webpack",
+    "filters",
+    "lint",
+    "benchmarks"
+  ],
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "test:compiler": "npm test --workspace=pug-rust-compiler",
+    "test:cli": "npm test --workspace=@pug-rust/cli",
+    "test:vite": "npm test --workspace=@pug-rust/vite",
+    "test:webpack": "npm test --workspace=@pug-rust/webpack",
+    "test:filters": "npm test --workspace=@pug-rust/filters",
+    "test:benchmarks": "node benchmarks/diagnostics/run-bundler-benchmark.js"
+  }
+}

@@ -1,0 +1,12 @@
+/target/
+/target-profile/
+/node_modules/
+*.node
+*.dll
+*.pdb
+*.exp
+*.lib
+
+/benchmarks/results/
+/benchmarks/dist/
+

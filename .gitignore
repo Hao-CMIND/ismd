@@ -134,4 +134,43 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# referrence souce code
 raw
+
+# ==============================================================================
+# Rust & Cargo
+# ==============================================================================
+# Cargo build outputs
+**/target/
+**/target-*/
+
+# Rustfmt backup files
+**/*.rs.bk
+
+# Cargo temporary config / credentials (if any)
+.cargo/config.local.toml
+.cargo/credentials.toml
+
+# ==============================================================================
+# Native Binaries & N-API (Node.js C++ / Rust Addons)
+# ==============================================================================
+*.node
+*.dll
+*.dylib
+*.so
+*.lib
+*.exp
+*.def
+*.a
+*.o
+*.obj
+
+# Debug symbols
+*.pdb
+*.dSYM/
+
+# Profiling & Coverage
+*.profraw
+*.profdata
+perf.data*

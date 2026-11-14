@@ -38,7 +38,7 @@
     "build": "cargo build -p pug_napi",
     "test": "npm run test:integration",
     "test:rust": "cargo test --workspace",
-    "test:integration": "node --test tests/integration/skeleton.test.js tests/integration/template-store.test.js tests/integration/compiler-session.test.js tests/integration/js-api.test.js tests/integration/core-decoupling.test.js",
+    "test:integration": "node --test tests/integration/skeleton.test.js tests/integration/template-store.test.js tests/integration/compiler-session.test.js tests/integration/js-api.test.js tests/integration/core-decoupling.test.js tests/integration/phase6-no-plugin-syntax.test.js",
     "test:skeleton": "node tests/integration/skeleton.test.js",
     "test:lexer": "node tests/integration/lexer.test.js",
     "test:step1": "node tests/integration/skeleton.test.js",

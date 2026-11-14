@@ -1,0 +1,57 @@
+{
+  "env": {
+    "node": "v22.23.3",
+    "platform": "win32",
+    "arch": "x64"
+  },
+  "coldStart": {
+    "createCompilerTimeMs": 0.3587
+  },
+  "noPlugin": {
+    "render": {
+      "avg": 0.04299775000000003,
+      "min": 0.0361,
+      "max": 0.9328,
+      "median": 0.0385,
+      "p95": 0.0513,
+      "p99": 0.1437
+    },
+    "renderTightLoopAvgMs": 0.04034711,
+    "compile": {
+      "avg": 0.039612500000000044,
+      "min": 0.0346,
+      "max": 0.6452,
+      "median": 0.0368,
+      "p95": 0.0453,
+      "p99": 0.0897
+    },
+    "compileClient": {
+      "avg": 0.04192320000000005,
+      "min": 0.0336,
+      "max": 0.852,
+      "median": 0.0358,
+      "p95": 0.0706,
+      "p99": 0.1629
+    }
+  },
+  "batch": {
+    "coldBatch50Ms": 5.3493,
+    "warmBatch50Ms": 0.4414,
+    "incrementalAffectedMs": 0.2336
+  },
+  "nativePoC": {
+    "firstPluginMs": 1.6848,
+    "reusedRender": {
+      "avg": 0.18829640000000003,
+      "min": 0.1273,
+      "max": 1.2731,
+      "median": 0.1461,
+      "p95": 0.4024,
+      "p99": 0.687
+    }
+  },
+  "memory": {
+    "initialRssMB": 46.70703125,
+    "finalRssMB": 48.515625
+  }
+}

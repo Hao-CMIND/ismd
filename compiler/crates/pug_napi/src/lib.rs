@@ -72,6 +72,7 @@ pub struct NapiCompileOptions {
     pub filter_options: Option<Value>,
     pub filter_aliases: Option<HashMap<String, String>>,
     pub lex_plugin_methods: Option<Vec<String>>,
+    pub native_plugins: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -213,6 +214,7 @@ pub fn lex_sync(
         starting_line: opts.starting_line.map(|n| n as usize),
         starting_column: opts.starting_column.map(|n| n as usize),
         plugin_methods: opts.plugin_methods.unwrap_or_default(),
+        generic_syntax: Vec::new(),
     };
     let lex_cb: Option<Function<FnArgs<(String, Unknown)>, Unknown>> = match callbacks {
         Some(ref obj) if obj.has_named_property("lexPluginStep")? => {
@@ -1499,6 +1501,8 @@ pub fn compile_body_sync(
         filter_options: options.filter_options.unwrap_or(Value::Null),
         filter_aliases: options.filter_aliases.unwrap_or_default(),
         lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
+        native_plugins: options.native_plugins.unwrap_or_default(),
+        generic_syntax: Vec::new(),
     };
 
     let mut host = NodeHostAdapter::new(env, callbacks)?;
@@ -1633,6 +1637,8 @@ fn napi_opts_to_compile_options(options: NapiCompileOptions) -> CompileOptions {
         filter_options: options.filter_options.unwrap_or(Value::Null),
         filter_aliases: options.filter_aliases.unwrap_or_default(),
         lex_plugin_methods: options.lex_plugin_methods.unwrap_or_default(),
+        native_plugins: options.native_plugins.unwrap_or_default(),
+        generic_syntax: Vec::new(),
     }
 }
 

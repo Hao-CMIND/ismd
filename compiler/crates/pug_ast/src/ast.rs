@@ -340,6 +340,27 @@ fn default_include_filter_type() -> String {
     String::from("IncludeFilter")
 }
 
+fn default_extension_type() -> String {
+    String::from("Extension")
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExtensionNode {
+    #[serde(rename = "type", default = "default_extension_type")]
+    pub node_type: String,
+    pub rule_id: String,
+    pub target_name: String,
+    pub raw_content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options_json: Option<String>,
+    pub is_block: bool,
+    pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncludeFilterNode {
     #[serde(rename = "type", default = "default_include_filter_type")]
@@ -651,6 +672,7 @@ pub enum Node {
     MixinBlock(MixinBlockNode),
     YieldBlock(YieldBlockNode),
     Attrs(AttrsNode),
+    Extension(ExtensionNode),
 }
 
 impl Node {
@@ -685,6 +707,7 @@ impl Node {
             Node::MixinBlock(_) => "MixinBlock",
             Node::YieldBlock(_) => "YieldBlock",
             Node::Attrs(_) => "Attrs",
+            Node::Extension(_) => "Extension",
         }
     }
 }

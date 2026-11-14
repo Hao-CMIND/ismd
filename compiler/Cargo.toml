@@ -15,6 +15,8 @@ members = [
   "crates/pug_code_gen",
   "crates/pug_runtime",
   "crates/pug_compiler",
+  "crates/pug_plugin_abi",
+  "crates/pug_filter_uppercase",
   "crates/pug_napi",
 ]
 
@@ -28,11 +30,13 @@ license = "MIT"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rayon = "1.10"
+libloading = "0.9.0"
 oxc = { version = "=0.157.0", features = ["semantic", "ast_visit", "codegen", "regular_expression"] }
 napi = { version = "=3.16.1", features = ["napi8", "serde-json", "compat-mode"] }
 napi-derive = { version = "=3.7.0", features = ["compat-mode"] }
 napi-build = "=2.6.0"
 
+pug_plugin_abi = { path = "crates/pug_plugin_abi" }
 pug_ast = { path = "crates/pug_ast" }
 pug_error = { path = "crates/pug_error" }
 pug_js = { path = "crates/pug_js" }

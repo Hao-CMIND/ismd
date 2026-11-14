@@ -7,6 +7,13 @@ use pug_js::scan::{
 use pug_js::{ExpressionOptions, validate_expression};
 use serde_json::Value;
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct GenericSyntaxRule {
+    pub rule_id: String,
+    pub prefix: String,
+    pub is_block: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LexerOptions {
     pub filename: Option<String>,
@@ -14,6 +21,7 @@ pub struct LexerOptions {
     pub starting_line: Option<usize>,
     pub starting_column: Option<usize>,
     pub plugin_methods: Vec<String>,
+    pub generic_syntax: Vec<GenericSyntaxRule>,
 }
 
 /// Mutable state passed to JS `plugin.lex.<method>(lexer)` hooks.
@@ -59,6 +67,7 @@ pub struct Lexer<'h> {
     pub tokens: Vec<Token>,
     pub ended: bool,
     plugin_methods: Vec<String>,
+    pub generic_syntax: Vec<GenericSyntaxRule>,
     hook: Option<&'h mut dyn LexerPluginHook>,
 }
 
@@ -217,6 +226,7 @@ impl<'h> Lexer<'h> {
             tokens: Vec::with_capacity(token_cap),
             ended: false,
             plugin_methods: options.plugin_methods.clone(),
+            generic_syntax: options.generic_syntax.clone(),
             hook,
         }
     }
@@ -603,6 +613,44 @@ impl<'h> Lexer<'h> {
         Ok(true)
     }
 
+    fn generic_extension(&mut self) -> Result<bool, PugError> {
+        if self.generic_syntax.is_empty() {
+            return Ok(false);
+        }
+        let mut matched = None;
+        for rule in &self.generic_syntax {
+            if let Some(after_prefix) = self.rest().strip_prefix(&rule.prefix) {
+                let name_bytes: usize = after_prefix
+                    .chars()
+                    .take_while(|&c| is_word_char(c) || c == '-')
+                    .map(char::len_utf8)
+                    .sum();
+                if name_bytes > 0 {
+                    let name = after_prefix[..name_bytes].to_string();
+                    let prefix_u16 = utf16_len(&rule.prefix);
+                    let name_u16 = utf16_len(&name);
+                    let total_len = prefix_u16 + name_u16;
+                    matched = Some((rule.rule_id.clone(), name, rule.is_block, total_len, name_u16));
+                    break;
+                }
+            }
+        }
+        if let Some((rule_id, name, is_block, total_len, name_u16)) = matched {
+            let payload = format!("{}|{}", rule_id, name);
+            let mut tok = self.scan_exact(total_len, Some(payload), "extension_start");
+            self.increment_column(name_u16 as isize);
+            tok = self.tok_end(tok);
+            self.tokens.push(tok);
+            self.attrs()?;
+            if is_block {
+                self.interpolation_allowed = false;
+                self.pipeless_text(None)?;
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn filter(&mut self, in_include: bool) -> Result<bool, PugError> {
         if let Some(after_colon) = self.rest().strip_prefix(':') {
             let name_bytes: usize = after_colon
@@ -838,6 +886,7 @@ impl<'h> Lexer<'h> {
                 starting_line: Some(self.lineno),
                 starting_column: Some(self.colno),
                 plugin_methods: self.plugin_methods.clone(),
+                generic_syntax: self.generic_syntax.clone(),
             };
             let (interpolated_res, remaining_child_input, child_colno) =
                 if let Some(hook) = self.hook.take() {
@@ -2413,6 +2462,7 @@ impl<'h> Lexer<'h> {
             || step!("each", self.each())
             || step!("while", self.while_tok())
             || step!("tag", self.tag())
+            || step!("generic_extension", self.generic_extension())
             || step!("filter", self.filter(false))
             || step!("blockCode", self.block_code())
             || step!("code", self.code())

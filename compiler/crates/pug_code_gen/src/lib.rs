@@ -1367,6 +1367,7 @@ fn node_line_and_filename(node: &Node) -> (usize, Option<&str>) {
         Node::MixinBlock(n) => (n.line, n.filename.as_deref()),
         Node::YieldBlock(n) => (n.line, n.filename.as_deref()),
         Node::Attrs(n) => (n.line, n.filename.as_deref()),
+        Node::Extension(n) => (n.line, n.filename.as_deref()),
     }
 }
 

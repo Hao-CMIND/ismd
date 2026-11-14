@@ -1323,6 +1323,7 @@ fn node_loc(node: &Node) -> (usize, Option<usize>, Option<String>) {
         Node::MixinBlock(m) => (m.line, m.column, m.filename.clone()),
         Node::YieldBlock(y) => (y.line, y.column, y.filename.clone()),
         Node::Attrs(a) => (a.line, a.column, a.filename.clone()),
+        Node::Extension(e) => (e.line, e.column, e.filename.clone()),
     }
 }
 

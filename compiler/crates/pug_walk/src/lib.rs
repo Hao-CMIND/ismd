@@ -259,6 +259,7 @@ where
         | Node::IncludeFilter(_)
         | Node::MixinBlock(_)
         | Node::YieldBlock(_)
+        | Node::Extension(_)
         | Node::Text(_) => {}
     }
 
@@ -396,6 +397,7 @@ where
         | Node::IncludeFilter(_)
         | Node::MixinBlock(_)
         | Node::YieldBlock(_)
+        | Node::Extension(_)
         | Node::Text(_) => {}
     }
 

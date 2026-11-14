@@ -64,6 +64,7 @@ fn node_needs_link(node: &Node) -> bool {
         Node::Attrs(_)
         | Node::Comment(_)
         | Node::Doctype(_)
+        | Node::Extension(_)
         | Node::FileReference(_)
         | Node::IncludeFilter(_)
         | Node::MixinBlock(_)

@@ -564,12 +564,16 @@ export function _addWith(obj, src, exclude) {
 let cachedFilterAdapter = null;
 function loadFilterAdapter() {
   if (!cachedFilterAdapter) {
-    try {
-      cachedFilterAdapter = require('@pug-rust/filters');
-    } catch (_) {
+    const localFilters = path.join(__dirname, '../filters/index.js');
+    if (fs.existsSync(localFilters)) {
       try {
-        cachedFilterAdapter = require(path.join(__dirname, '../filters/index.js'));
-      } catch (_2) {
+        cachedFilterAdapter = require(localFilters);
+      } catch (_) {}
+    }
+    if (!cachedFilterAdapter) {
+      try {
+        cachedFilterAdapter = require('@pug-rust/filters');
+      } catch (_) {
         return null;
       }
     }
@@ -966,6 +970,7 @@ function compileBody(str, options) {
       filterOptions: options.filterOptions || null,
       filterAliases: options.filterAliases || undefined,
       lexPluginMethods: lexBridge.methods,
+      nativePlugins: resolveNativePlugins(options.plugins || options.nativePlugins),
     },
     hostCallbacks,
     options.templateStore || undefined
@@ -1197,6 +1202,50 @@ export function defaultTemplateStoreStats() {
     : null;
 }
 
+export function resolveNativePluginPath(plugin) {
+  if (typeof plugin === 'string') {
+    if (fs.existsSync(plugin)) {
+      return path.resolve(plugin);
+    }
+    const candidates = [
+      plugin,
+      path.join(plugin, 'pug_filter_uppercase.dll'),
+      path.join(plugin, 'native/win32-x64/pug_filter_uppercase.dll'),
+      path.join(plugin, 'target/debug/pug_filter_uppercase.dll'),
+      path.join(plugin, 'target/release/pug_filter_uppercase.dll'),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) return path.resolve(cand);
+    }
+    try {
+      const resolved = require.resolve(plugin);
+      if (fs.existsSync(resolved)) return path.resolve(resolved);
+    } catch (_) {}
+    return path.resolve(plugin);
+  }
+  if (plugin && typeof plugin === 'object') {
+    if (plugin.nativePath && fs.existsSync(plugin.nativePath)) {
+      return path.resolve(plugin.nativePath);
+    }
+    if (typeof plugin.path === 'string' && fs.existsSync(plugin.path)) {
+      return path.resolve(plugin.path);
+    }
+  }
+  return null;
+}
+
+export function resolveNativePlugins(plugins) {
+  if (!Array.isArray(plugins)) return [];
+  const out = [];
+  for (const p of plugins) {
+    const resolved = resolveNativePluginPath(p);
+    if (resolved) {
+      out.push(resolved);
+    }
+  }
+  return out;
+}
+
 function toNapiCompileOptions(options = {}) {
   return {
     compileDebug: options.compileDebug !== false,
@@ -1212,12 +1261,32 @@ function toNapiCompileOptions(options = {}) {
     filterOptions:
       options.filterOptions !== undefined ? options.filterOptions : null,
     filterAliases: options.filterAliases || {},
+    nativePlugins: resolveNativePlugins(options.plugins || options.nativePlugins),
   };
 }
 
 function hasHostCustomizations(options) {
   if (!options) return false;
-  if (Array.isArray(options.plugins) && options.plugins.length > 0) return true;
+  if (
+    Array.isArray(options.plugins) &&
+    options.plugins.some((p) => {
+      if (typeof p === 'string') return false;
+      if (p && typeof p === 'object' && p.nativePath) return false;
+      return (
+        typeof p === 'object' &&
+        (p.postLoad ||
+          p.preFilters ||
+          p.postFilters ||
+          p.preLink ||
+          p.postLink ||
+          p.preCodeGen ||
+          p.postCodeGen ||
+          p.lex)
+      );
+    })
+  ) {
+    return true;
+  }
   if (options.filters && Object.keys(options.filters).length > 0) return true;
   return false;
 }

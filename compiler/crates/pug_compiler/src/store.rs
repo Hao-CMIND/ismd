@@ -129,6 +129,7 @@ pub struct TemplateStoreStats {
 }
 
 use crate::dag::DependencyGraph;
+use crate::plugin::NativePluginManager;
 
 /// Thread-safe layered template store holding immutable sources and parsed ASTs.
 pub struct TemplateStore {
@@ -148,6 +149,7 @@ pub struct TemplateStore {
     resolved: RwLock<HashMap<ResolutionKey, String>>,
     outputs: RwLock<HashMap<CompiledOutputKey, Arc<CompiledOutputEntry>>>,
     dag: DependencyGraph,
+    pub plugins: RwLock<NativePluginManager>,
 }
 
 impl Default for TemplateStore {
@@ -187,6 +189,7 @@ impl TemplateStore {
             resolved: RwLock::new(HashMap::new()),
             outputs: RwLock::new(HashMap::new()),
             dag: DependencyGraph::new(),
+            plugins: RwLock::new(NativePluginManager::new()),
         }
     }
 

@@ -1,6 +1,6 @@
 use pug_ast::{
     Attribute, AttributeBlock, BlockCommentNode, BlockNode, CaseNode, CodeNode, CommentNode,
-    ConditionalNode, DoctypeNode, EachNode, EachOfNode, ExtendsNode, FileReferenceNode, FilterNode,
+    ConditionalNode, DoctypeNode, EachNode, EachOfNode, ExtensionNode, ExtendsNode, FileReferenceNode, FilterNode,
     IncludeFilterNode, IncludeNode, InterpolatedTagNode, LineCol, MixinBlockNode, MixinNode,
     NamedBlockNode, Node, RawIncludeNode, TagNode, TextNode, Token, TokenLoc, WhenNode, WhileNode,
     YieldBlockNode,
@@ -58,6 +58,7 @@ enum ExprKind {
     Extends,
     Include,
     Doctype,
+    Extension,
     Filter,
     Comment,
     TextOrInterp,
@@ -408,6 +409,7 @@ impl Parser {
             "extends" => ExprKind::Extends,
             "include" => ExprKind::Include,
             "doctype" => ExprKind::Doctype,
+            "extension_start" => ExprKind::Extension,
             "filter" => ExprKind::Filter,
             "comment" => ExprKind::Comment,
             "text" | "interpolated-code" | "start-pug-interpolation" => ExprKind::TextOrInterp,
@@ -434,6 +436,7 @@ impl Parser {
             ExprKind::Extends => self.parse_extends(),
             ExprKind::Include => self.parse_include(),
             ExprKind::Doctype => self.parse_doctype(),
+            ExprKind::Extension => self.parse_extension(),
             ExprKind::Filter => self.parse_filter(),
             ExprKind::Comment => self.parse_comment(),
             ExprKind::TextOrInterp => self.parse_text(true),
@@ -874,6 +877,48 @@ impl Parser {
             column: Some(tok.loc.start.column),
             filename: self.filename.clone(),
         })
+    }
+
+    fn parse_extension(&mut self) -> Result<Node, PugError> {
+        let tok = self.expect("extension_start")?;
+        let payload = token_str_val(&tok);
+        let (rule_id, target_name) = match payload.split_once('|') {
+            Some((r, t)) => (r.to_string(), t.to_string()),
+            None => (String::new(), payload),
+        };
+        let line = tok.loc.start.line;
+        let column = Some(tok.loc.start.column);
+        let filename = self.filename.clone();
+
+        let mut raw_content = String::new();
+        if self.peek()?.token_type == "start-pipeless-text" {
+            self.advance()?;
+            while self.peek()?.token_type != "end-pipeless-text" {
+                let token = self.advance()?;
+                match token.token_type.as_str() {
+                    "text" => {
+                        raw_content.push_str(&token_str_val(&token));
+                    }
+                    "newline" => {
+                        raw_content.push('\n');
+                    }
+                    _ => {}
+                }
+            }
+            self.advance()?;
+        }
+
+        Ok(Node::Extension(ExtensionNode {
+            node_type: String::from("Extension"),
+            rule_id,
+            target_name,
+            raw_content,
+            options_json: None,
+            is_block: true,
+            line,
+            column,
+            filename,
+        }))
     }
 
     fn parse_filter(&mut self) -> Result<Node, PugError> {

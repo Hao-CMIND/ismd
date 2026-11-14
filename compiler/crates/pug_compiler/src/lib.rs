@@ -1,7 +1,10 @@
 pub mod dag;
 mod linked_view;
+pub mod plugin;
 pub mod session;
 pub mod store;
+
+pub use plugin::{LoadedNativePlugin, NativePluginManager};
 
 use pug_ast::profile::{Stage, record_file, scope, with_counters};
 use pug_ast::{BlockNode, RawContent, Token};
@@ -45,6 +48,8 @@ pub struct CompileOptions {
     pub filter_options: Value,
     pub filter_aliases: HashMap<String, String>,
     pub lex_plugin_methods: Vec<String>,
+    pub native_plugins: Vec<String>,
+    pub generic_syntax: Vec<pug_lexer::GenericSyntaxRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -516,6 +521,7 @@ pub(crate) fn lex_strip_and_parse_with_store<H: CompilerHost>(
     let lex_opts = LexerOptions {
         filename: filename.map(String::from),
         plugin_methods: options.lex_plugin_methods.clone(),
+        generic_syntax: options.generic_syntax.clone(),
         ..LexerOptions::default()
     };
     let mut tokens = {
@@ -689,13 +695,34 @@ pub fn compile_body_with_store<H: CompilerHost>(
     store: &TemplateStore,
 ) -> Result<CompileResult, PugError> {
     let _other = scope(Stage::Other);
-    if let Some(result) = linked_view::try_compile_linked_view(source, options, host, store)? {
-        return Ok(result);
+
+    let has_native_plugins = !options.native_plugins.is_empty();
+    let mut opts_buf;
+    let effective_options = if has_native_plugins {
+        let mut mgr = store.plugins.write().unwrap();
+        for p in &options.native_plugins {
+            mgr.load_plugin(std::path::Path::new(p))?;
+        }
+        if options.generic_syntax.is_empty() {
+            opts_buf = options.clone();
+            opts_buf.generic_syntax = mgr.syntax_rules().to_vec();
+            &opts_buf
+        } else {
+            options
+        }
+    } else {
+        options
+    };
+
+    if !has_native_plugins {
+        if let Some(result) = linked_view::try_compile_linked_view(source, effective_options, host, store)? {
+            return Ok(result);
+        }
     }
 
     let mut session = Session {
         host,
-        options,
+        options: effective_options,
         store,
         dependencies: Vec::new(),
         dag_edges: HashMap::new(),
@@ -752,6 +779,11 @@ pub fn compile_body_with_store<H: CompilerHost>(
         link(ast)?
     };
     ast = host.post_link(ast)?;
+
+    if has_native_plugins {
+        let mgr = store.plugins.read().unwrap();
+        mgr.transform_ast(&mut ast)?;
+    }
 
     // 4. preCodeGen -> generateCode -> postCodeGen
     ast = host.pre_code_gen(ast)?;
@@ -1377,5 +1409,77 @@ mod tests {
         assert!(footer_out[0].body.as_deref().unwrap().contains("SeqFooter"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_native_dynamic_plugin_uppercase_poc() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidates = [
+            manifest_dir.join("../../target/debug/pug_filter_uppercase.dll"),
+            manifest_dir.join("../../target/debug/libpug_filter_uppercase.so"),
+            manifest_dir.join("../../target/debug/libpug_filter_uppercase.dylib"),
+            manifest_dir.join("../../../target/debug/pug_filter_uppercase.dll"),
+        ];
+        let plugin_path = candidates
+            .into_iter()
+            .find(|p| p.exists())
+            .expect("pug_filter_uppercase dynamic library must exist in target/debug");
+
+        let opts = CompileOptions {
+            native_plugins: vec![plugin_path.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+
+        struct SpyHost {
+            filter_calls: usize,
+        }
+        impl CompilerHost for SpyHost {
+            fn run_filter(&mut self, _call: &FilterInvocation<'_>) -> Result<String, PugError> {
+                self.filter_calls += 1;
+                Ok(String::new())
+            }
+        }
+
+        let mut host = SpyHost { filter_calls: 0 };
+        let store = std::sync::Arc::new(TemplateStore::new());
+
+        // 1. Single compile with :uppercase
+        let res = compile_body_with_store(":uppercase\n  hello world", &opts, &mut host, &store).unwrap();
+        assert!(res.body.contains("HELLO WORLD"), "Expected 'HELLO WORLD', got: {}", res.body);
+        assert!(!res.body.contains("hello world"));
+        // Proves legacy JS/filter host was never called!
+        assert_eq!(host.filter_calls, 0, "Legacy FilterHost should never be called");
+
+        // 2. Verify plugin is cached in store and not reloaded
+        let plugins_guard = store.plugins.read().unwrap();
+        assert_eq!(plugins_guard.plugins().len(), 1);
+        assert_eq!(plugins_guard.plugins()[0].plugin_id, "pug_filter_uppercase");
+        assert!(plugins_guard.plugins()[0].is_thread_safe);
+        drop(plugins_guard);
+
+        // Second compile with same store
+        let res2 = compile_body_with_store(":uppercase\n  another native text", &opts, &mut host, &store).unwrap();
+        assert!(res2.body.contains("ANOTHER NATIVE TEXT"));
+        assert_eq!(host.filter_calls, 0);
+
+        // 3. Batch compile through CompilerSession with Rayon parallel mode
+        let entries: Vec<BatchEntryInput> = (0..10)
+            .map(|i| BatchEntryInput {
+                id: format!("page{i}.pug"),
+                filename: Some(format!("page{i}.pug")),
+                source: Some(format!("div\n  :uppercase\n    page content {i}")),
+                options: Some(opts.clone()),
+            })
+            .collect();
+
+        let opts_clone = opts.clone();
+        let batch_out = compile_batch_with_mode(&entries, &opts_clone, &store, ParallelMode::ForceParallel);
+        assert_eq!(batch_out.len(), 10);
+        for (i, out) in batch_out.iter().enumerate() {
+            assert!(out.ok);
+            let body = out.body.as_deref().unwrap();
+            let expected = format!("PAGE CONTENT {i}");
+            assert!(body.contains(&expected), "Expected '{expected}' in output: {body}");
+        }
     }
 }

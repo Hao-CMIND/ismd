@@ -38,7 +38,7 @@
     "build": "cargo build -p pug_napi",
     "test": "npm run test:integration",
     "test:rust": "cargo test --workspace",
-    "test:integration": "node --test tests/integration/skeleton.test.js tests/integration/template-store.test.js tests/integration/compiler-session.test.js tests/integration/js-api.test.js",
+    "test:integration": "node --test tests/integration/skeleton.test.js tests/integration/template-store.test.js tests/integration/compiler-session.test.js tests/integration/js-api.test.js tests/integration/core-decoupling.test.js tests/integration/phase6-no-plugin-syntax.test.js",
     "test:skeleton": "node tests/integration/skeleton.test.js",
     "test:lexer": "node tests/integration/lexer.test.js",
     "test:step1": "node tests/integration/skeleton.test.js",
@@ -46,6 +46,9 @@
     "test:diff": "node tests/differential/runner.js",
     "test:diff:baseline": "node tests/differential/runner.js --verify-baseline",
     "test:serializers": "node tests/differential/serializers.test.js",
-    "compat:baseline": "node tests/differential/generate-baseline.js"
+    "compat:baseline": "node tests/differential/generate-baseline.js",
+    "test:native": "node --test tests/integration/native-plugin-poc.test.js tests/integration/core-decoupling.test.js",
+    "test:diff:core": "node --test tests/differential/core-decoupling.test.js",
+    "test:audit": "node scripts/audit-core-decoupling.mjs"
   }
 }

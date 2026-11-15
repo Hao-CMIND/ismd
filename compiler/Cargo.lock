@@ -869,16 +869,17 @@ dependencies = [
 name = "pug_compiler"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "pug_ast",
  "pug_attrs",
  "pug_code_gen",
  "pug_error",
- "pug_filters",
  "pug_js",
  "pug_lexer",
  "pug_linker",
  "pug_load",
  "pug_parser",
+ "pug_plugin_abi",
  "pug_runtime",
  "pug_strip_comments",
  "pug_walk",
@@ -891,18 +892,6 @@ dependencies = [
 name = "pug_error"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pug_filters"
-version = "0.1.0"
-dependencies = [
- "pug_ast",
- "pug_error",
- "pug_js",
- "pug_walk",
  "serde",
  "serde_json",
 ]
@@ -960,7 +949,6 @@ dependencies = [
  "pug_code_gen",
  "pug_compiler",
  "pug_error",
- "pug_filters",
  "pug_js",
  "pug_lexer",
  "pug_linker",
@@ -982,6 +970,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "pug_plugin_abi"
+version = "0.1.0"
 
 [[package]]
 name = "pug_runtime"

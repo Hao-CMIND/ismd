@@ -213,39 +213,8 @@ test('Step 5.4: constantinople compatibility (known constants, non-constants, in
     assert.ok(rustOut.includes('pug.attr("data-x"'), `expected runtime pug.attr for ${expr}`);
   }
 
-  // Distinction between NonConstant/Invalid vs Unsupported in filter options
-  for (const expr of ['undefined', '({ _a: 1 })']) {
-    assert.throws(
-      () => rustPug.compile(`:cdata(opt=${expr})\n  hi`, { filename: 'c.pug' }),
-      (err) => err.code === 'PUG:FILTER_OPTION_NOT_CONSTANT'
-    );
-  }
-  assert.throws(
-    () =>
-      rustPug._handleFilters(
-        {
-          type: 'Block',
-          line: 0,
-          nodes: [
-            {
-              type: 'Filter',
-              name: 'cdata',
-              block: { type: 'Block', line: 1, nodes: [] },
-              attrs: [{ name: 'opt', val: '(1 +', mustEscape: true }],
-              line: 1,
-            },
-          ],
-        },
-        {}
-      ),
-    (err) => err.code === 'PUG:FILTER_OPTION_NOT_CONSTANT'
-  );
-  for (const expr of ['1n', 'tag`hi`', 'null ?? 1', '/a/.test("a")', '"a".match("a")', '(1).toExponential()']) {
-    assert.throws(
-      () => rustPug.compile(`:cdata(opt=${expr})\n  hi`, { filename: 'c.pug' }),
-      (err) => err.code === 'PUG:UNSUPPORTED_CONSTANT'
-    );
-  }
+  // Legacy provider-option cases are retained in filters/test/legacy.
+
 });
 
 test('Step 5.5: Scope/locals regression across Step 4-5 constructs (mixins, attrs, each-of destructuring, globals, self)', () => {

@@ -434,14 +434,8 @@ fn hash_compile_options(opts: &CompileOptions) -> u64 {
     opts.include_sources.hash(&mut hasher);
     opts.template_name.hash(&mut hasher);
     opts.lex_plugin_methods.hash(&mut hasher);
-    if !opts.filter_options.is_null() {
-        opts.filter_options.to_string().hash(&mut hasher);
-    }
-    if !opts.filter_aliases.is_empty() {
-        let mut pairs: Vec<(&String, &String)> = opts.filter_aliases.iter().collect();
-        pairs.sort();
-        pairs.hash(&mut hasher);
-    }
+    opts.native_plugins.hash(&mut hasher);
+    opts.generic_syntax.hash(&mut hasher);
     hasher.finish()
 }
 

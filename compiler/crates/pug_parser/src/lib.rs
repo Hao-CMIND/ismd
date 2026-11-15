@@ -1,7 +1,7 @@
 use pug_ast::{
     Attribute, AttributeBlock, BlockCommentNode, BlockNode, CaseNode, CodeNode, CommentNode,
-    ConditionalNode, DoctypeNode, EachNode, EachOfNode, ExtendsNode, FileReferenceNode, FilterNode,
-    IncludeFilterNode, IncludeNode, InterpolatedTagNode, LineCol, MixinBlockNode, MixinNode,
+    ConditionalNode, DoctypeNode, EachNode, EachOfNode, ExtensionNode, ExtendsNode, FileReferenceNode,
+    IncludeNode, InterpolatedTagNode, LineCol, MixinBlockNode, MixinNode,
     NamedBlockNode, Node, RawIncludeNode, TagNode, TextNode, Token, TokenLoc, WhenNode, WhileNode,
     YieldBlockNode,
 };
@@ -58,7 +58,7 @@ enum ExprKind {
     Extends,
     Include,
     Doctype,
-    Filter,
+    Extension,
     Comment,
     TextOrInterp,
     TextHtml,
@@ -408,7 +408,7 @@ impl Parser {
             "extends" => ExprKind::Extends,
             "include" => ExprKind::Include,
             "doctype" => ExprKind::Doctype,
-            "filter" => ExprKind::Filter,
+            "extension_start" => ExprKind::Extension,
             "comment" => ExprKind::Comment,
             "text" | "interpolated-code" | "start-pug-interpolation" => ExprKind::TextOrInterp,
             "text-html" => ExprKind::TextHtml,
@@ -434,7 +434,7 @@ impl Parser {
             ExprKind::Extends => self.parse_extends(),
             ExprKind::Include => self.parse_include(),
             ExprKind::Doctype => self.parse_doctype(),
-            ExprKind::Filter => self.parse_filter(),
+            ExprKind::Extension => self.parse_extension(),
             ExprKind::Comment => self.parse_comment(),
             ExprKind::TextOrInterp => self.parse_text(true),
             ExprKind::TextHtml => {
@@ -860,56 +860,45 @@ impl Parser {
         }))
     }
 
-    fn parse_include_filter(&mut self) -> Result<IncludeFilterNode, PugError> {
-        let tok = self.expect("filter")?;
-        let mut attrs = Vec::new();
-        if self.peek()?.token_type == "start-attributes" {
-            attrs = self.attrs(None)?;
-        }
-        Ok(IncludeFilterNode {
-            node_type: String::from("IncludeFilter"),
-            name: token_str_val(&tok),
-            attrs,
-            line: tok.loc.start.line,
-            column: Some(tok.loc.start.column),
-            filename: self.filename.clone(),
-        })
-    }
-
-    fn parse_filter(&mut self) -> Result<Node, PugError> {
-        let tok = self.expect("filter")?;
-        let mut attrs = Vec::new();
-        if self.peek()?.token_type == "start-attributes" {
-            attrs = self.attrs(None)?;
-        }
-
-        let block = if self.peek()?.token_type == "text" {
-            let text_token = self.advance()?;
-            self.init_block(
-                text_token.loc.start.line,
-                vec![Node::Text(TextNode {
-                    val: token_str_val(&text_token),
-                    line: Some(text_token.loc.start.line),
-                    column: Some(text_token.loc.start.column),
-                    filename: self.filename.clone(),
-                    is_html: None,
-                })],
-            )
-        } else if self.peek()?.token_type == "filter" {
-            let nested = self.parse_filter()?;
-            self.init_block(tok.loc.start.line, vec![nested])
-        } else {
-            self.parse_text_block()?
-                .unwrap_or_else(|| self.empty_block(tok.loc.start.line))
+    fn parse_extension(&mut self) -> Result<Node, PugError> {
+        let tok = self.expect("extension_start")?;
+        let payload = token_str_val(&tok);
+        let (rule_id, target_name) = match payload.split_once('|') {
+            Some((r, t)) => (r.to_string(), t.to_string()),
+            None => (String::new(), payload),
         };
+        let line = tok.loc.start.line;
+        let column = Some(tok.loc.start.column);
+        let filename = self.filename.clone();
 
-        Ok(Node::Filter(FilterNode {
-            name: token_str_val(&tok),
-            block,
-            attrs,
-            line: tok.loc.start.line,
-            column: Some(tok.loc.start.column),
-            filename: self.filename.clone(),
+        let mut raw_content = String::new();
+        if self.peek()?.token_type == "start-pipeless-text" {
+            self.advance()?;
+            while self.peek()?.token_type != "end-pipeless-text" {
+                let token = self.advance()?;
+                match token.token_type.as_str() {
+                    "text" => {
+                        raw_content.push_str(&token_str_val(&token));
+                    }
+                    "newline" => {
+                        raw_content.push('\n');
+                    }
+                    _ => {}
+                }
+            }
+            self.advance()?;
+        }
+
+        Ok(Node::Extension(ExtensionNode {
+            node_type: String::from("Extension"),
+            rule_id,
+            target_name,
+            raw_content,
+            options_json: None,
+            is_block: true,
+            line,
+            column,
+            filename,
         }))
     }
 
@@ -1014,10 +1003,6 @@ impl Parser {
 
     fn parse_include(&mut self) -> Result<Node, PugError> {
         let tok = self.expect("include")?;
-        let mut filters = Vec::new();
-        while self.peek()?.token_type == "filter" {
-            filters.push(self.parse_include_filter()?);
-        }
         let path_tok = self.expect("path")?;
         let path_str = token_str_val(&path_tok).trim().to_string();
         let file_ref = FileReferenceNode::new(
@@ -1028,7 +1013,7 @@ impl Parser {
         );
 
         let is_pug_or_jade = path_str.ends_with(".jade") || path_str.ends_with(".pug");
-        if is_pug_or_jade && filters.is_empty() {
+        if is_pug_or_jade {
             let block = if self.peek()?.token_type == "indent" {
                 self.block()?
             } else {
@@ -1059,7 +1044,6 @@ impl Parser {
             }
             Ok(Node::RawInclude(RawIncludeNode {
                 file: file_ref,
-                filters,
                 line: tok.loc.start.line,
                 column: Some(tok.loc.start.column),
                 filename: self.filename.clone(),

@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["uppercase"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+
+[workspace.dependencies]
+pug_plugin_abi = { path = "../../compiler/crates/pug_plugin_abi" }

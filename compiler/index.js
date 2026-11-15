@@ -54,7 +54,6 @@ const native = loadNativeAddon();
 export const name = 'Pug';
 export { runtime };
 export const cache = {};
-export const filters = {};
 
 function makeError(code, message, options) {
   options = options || {};
@@ -561,99 +560,6 @@ export function _addWith(obj, src, exclude) {
   );
 }
 
-let cachedFilterAdapter = null;
-function loadFilterAdapter() {
-  if (!cachedFilterAdapter) {
-    try {
-      cachedFilterAdapter = require('@pug-rust/filters');
-    } catch (_) {
-      try {
-        cachedFilterAdapter = require(path.join(__dirname, '../filters/index.js'));
-      } catch (_2) {
-        return null;
-      }
-    }
-  }
-  return cachedFilterAdapter;
-}
-
-function makeFilterHostCallback(filtersSet, filterExecutor) {
-  if (filterExecutor === false) {
-    return function disabledFilterHostCallback(filterName) {
-      return {
-        ok: false,
-        unknownFilter: 'unknown filter ":' + filterName + '"',
-      };
-    };
-  }
-  if (typeof filterExecutor === 'function') {
-    return filterExecutor;
-  }
-  if (filterExecutor && typeof filterExecutor.execute === 'function') {
-    return function customFilterExecutorCallback(
-      filterName,
-      mode,
-      text,
-      fullPath,
-      rawVal,
-      attrsObj,
-      dir
-    ) {
-      return filterExecutor.execute(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
-    };
-  }
-  let resolved = null;
-  return function lazyFilterHostCallback(
-    filterName,
-    mode,
-    text,
-    fullPath,
-    rawVal,
-    attrsObj,
-    dir
-  ) {
-    if (filtersSet && filtersSet[filterName]) {
-      const custom = filtersSet[filterName];
-      const out =
-        mode === 'rawFile' && custom.renderBuffer
-          ? custom.renderBuffer(rawVal, attrsObj)
-          : custom(text, attrsObj);
-      if (typeof out !== 'string') {
-        throw new TypeError(
-          'Expected filter ":' + filterName + '" to return a string, got ' + typeof out
-        );
-      }
-      return { ok: true, value: out };
-    }
-    if (!resolved) {
-      const adapter = loadFilterAdapter();
-      if (!adapter) {
-        return {
-          ok: false,
-          unknownFilter: 'unknown filter ":' + filterName + '"',
-        };
-      }
-      resolved = adapter.createFilterCallback(filtersSet || {});
-    }
-    return resolved(filterName, mode, text, fullPath, rawVal, attrsObj, dir);
-  };
-}
-
-export function _handleFilters(ast, customFilters, filterOptions, filterAliases) {
-  const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
-  const outcome = native.handleFiltersSync(
-    inputAst,
-    filterOptions || null,
-    filterAliases || undefined,
-    { filter: makeFilterHostCallback(customFilters || {}) }
-  );
-  if (!outcome.ok) {
-    if (outcome.plainError) throw new Error(outcome.plainError);
-    if (outcome.error) throw dtoToJsError(outcome.error);
-  }
-  return reviveAstBuffers(outcome.data);
-}
-
 export function _link(ast) {
   const inputAst = dehydrateAstBuffers(JSON.parse(JSON.stringify(ast)));
   const outcome = native.linkSync(inputAst);
@@ -738,8 +644,6 @@ function defaultWarn(msg) {
   console.warn(msg);
 }
 
-const defaultFilterCallback = makeFilterHostCallback(null);
-
 function hasPluginHook(plugins, name) {
   for (let i = 0; i < plugins.length; i++) {
     const plugin = plugins[i];
@@ -752,28 +656,6 @@ function hasPluginHook(plugins, name) {
 
 function compileBody(str, options) {
   const plugins = options.plugins || [];
-  const hasModuleFilters = Object.keys(filters).length > 0;
-  const hasOptionFilters =
-    Boolean(options.filters) && Object.keys(options.filters).length > 0;
-  let filterCallback =
-    options.filterExecutor !== undefined
-      ? makeFilterHostCallback(null, options.filterExecutor)
-      : defaultFilterCallback;
-  if (hasModuleFilters || hasOptionFilters) {
-    const filtersSet = {};
-    if (hasModuleFilters) {
-      Object.keys(filters).forEach(function(key) {
-        filtersSet[key] = filters[key];
-      });
-    }
-    if (hasOptionFilters) {
-      Object.keys(options.filters).forEach(function(key) {
-        filtersSet[key] = options.filters[key];
-      });
-    }
-    filterCallback = makeFilterHostCallback(filtersSet, options.filterExecutor);
-  }
-
   const customResolve = plugins.length ? findReplacementFunc(plugins, 'resolve') : null;
   const customRead = plugins.length ? findReplacementFunc(plugins, 'read') : null;
   const customGenerateCode = plugins.length
@@ -789,8 +671,8 @@ function compileBody(str, options) {
   const hasPostParse = plugins.length > 0 && hasPluginHook(plugins, 'postParse');
   const hasPreLoad = plugins.length > 0 && hasPluginHook(plugins, 'preLoad');
   const hasPostLoad = plugins.length > 0 && hasPluginHook(plugins, 'postLoad');
-  const hasPreFilters = plugins.length > 0 && hasPluginHook(plugins, 'preFilters');
-  const hasPostFilters = plugins.length > 0 && hasPluginHook(plugins, 'postFilters');
+  const hasPreTransform = plugins.length > 0 && hasPluginHook(plugins, 'preTransform');
+  const hasPostTransform = plugins.length > 0 && hasPluginHook(plugins, 'postTransform');
   const hasPreLink = plugins.length > 0 && hasPluginHook(plugins, 'preLink');
   const hasPostLink = plugins.length > 0 && hasPluginHook(plugins, 'postLink');
   const hasPreCodeGen = plugins.length > 0 && hasPluginHook(plugins, 'preCodeGen');
@@ -805,7 +687,6 @@ function compileBody(str, options) {
 
   const hostCallbacks = {
     warn: defaultWarn,
-    filter: filterCallback,
   };
 
   if (lexBridge.step) {
@@ -895,17 +776,17 @@ function compileBody(str, options) {
       );
     };
   }
-  if (hasPreFilters) {
-    hostCallbacks.preFilters = function(ast) {
+  if (hasPreTransform) {
+    hostCallbacks.preTransform = function(ast) {
       return dehydrateAstBuffers(
-        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preFilters')
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'preTransform')
       );
     };
   }
-  if (hasPostFilters) {
-    hostCallbacks.postFilters = function(ast) {
+  if (hasPostTransform) {
+    hostCallbacks.postTransform = function(ast) {
       return dehydrateAstBuffers(
-        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postFilters')
+        applyPlugins(reviveAstBuffers(ast), options, plugins, 'postTransform')
       );
     };
   }
@@ -963,9 +844,8 @@ function compileBody(str, options) {
       useSelf: Boolean(options.self),
       includeSources: Boolean(options.includeSources),
       templateName: options.templateName || 'template',
-      filterOptions: options.filterOptions || null,
-      filterAliases: options.filterAliases || undefined,
       lexPluginMethods: lexBridge.methods,
+      nativePlugins: resolveNativePlugins(options.plugins || options.nativePlugins),
     },
     hostCallbacks,
     options.templateStore || undefined
@@ -1041,10 +921,6 @@ export function compile(str, options) {
     includeSources: options.compileDebug === true,
     debug: options.debug,
     templateName: 'template',
-    filters: options.filters,
-    filterOptions: options.filterOptions,
-    filterAliases: options.filterAliases,
-    filterExecutor: options.filterExecutor,
     plugins: options.plugins,
     templateStore: options.templateStore,
   });
@@ -1073,10 +949,6 @@ export function compileClientWithDependenciesTracked(str, options) {
     includeSources: options.compileDebug,
     debug: options.debug,
     templateName: options.name || 'template',
-    filters: options.filters,
-    filterOptions: options.filterOptions,
-    filterAliases: options.filterAliases,
-    filterExecutor: options.filterExecutor,
     plugins: options.plugins,
     templateStore: options.templateStore,
   });
@@ -1197,6 +1069,40 @@ export function defaultTemplateStoreStats() {
     : null;
 }
 
+export function resolveNativePluginPath(plugin) {
+  if (typeof plugin === 'string') {
+    if (fs.existsSync(plugin)) {
+      return path.resolve(plugin);
+    }
+    try {
+      const resolved = require.resolve(plugin);
+      if (fs.existsSync(resolved)) return path.resolve(resolved);
+    } catch (_) {}
+    return path.resolve(plugin);
+  }
+  if (plugin && typeof plugin === 'object') {
+    if (plugin.nativePath && fs.existsSync(plugin.nativePath)) {
+      return path.resolve(plugin.nativePath);
+    }
+    if (typeof plugin.path === 'string' && fs.existsSync(plugin.path)) {
+      return path.resolve(plugin.path);
+    }
+  }
+  return null;
+}
+
+export function resolveNativePlugins(plugins) {
+  if (!Array.isArray(plugins)) return [];
+  const out = [];
+  for (const p of plugins) {
+    const resolved = resolveNativePluginPath(p);
+    if (resolved) {
+      out.push(resolved);
+    }
+  }
+  return out;
+}
+
 function toNapiCompileOptions(options = {}) {
   return {
     compileDebug: options.compileDebug !== false,
@@ -1209,16 +1115,32 @@ function toNapiCompileOptions(options = {}) {
     useSelf: Boolean(options.self),
     includeSources: options.compileDebug === true,
     templateName: options.templateName || 'template',
-    filterOptions:
-      options.filterOptions !== undefined ? options.filterOptions : null,
-    filterAliases: options.filterAliases || {},
+    nativePlugins: resolveNativePlugins(options.plugins || options.nativePlugins),
   };
 }
 
 function hasHostCustomizations(options) {
   if (!options) return false;
-  if (Array.isArray(options.plugins) && options.plugins.length > 0) return true;
-  if (options.filters && Object.keys(options.filters).length > 0) return true;
+  if (
+    Array.isArray(options.plugins) &&
+    options.plugins.some((p) => {
+      if (typeof p === 'string') return false;
+      if (p && typeof p === 'object' && p.nativePath) return false;
+      return (
+        typeof p === 'object' &&
+        (p.postLoad ||
+          p.preTransform ||
+          p.postTransform ||
+          p.preLink ||
+          p.postLink ||
+          p.preCodeGen ||
+          p.postCodeGen ||
+          p.lex)
+      );
+    })
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -1490,7 +1412,6 @@ export default {
   name,
   runtime,
   cache,
-  filters,
   _error: makeError,
   _runtimeBuild,
   _runtimeBuildJs: runtimeBuild,
@@ -1504,7 +1425,6 @@ export default {
   _walk: walkAST,
   walk: walkAST,
   _addWith,
-  _handleFilters,
   _link,
   _compileAttrs,
   _getLastProfileJson: getLastProfileJson,

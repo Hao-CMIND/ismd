@@ -3,9 +3,6 @@ export interface Options {
   basedir?: string;
   doctype?: string;
   pretty?: boolean | string;
-  filters?: Record<string, (text: string, options: Record<string, any>) => string>;
-  filterOptions?: Record<string, Record<string, any>>;
-  filterAliases?: Record<string, string>;
   self?: boolean;
   debug?: boolean;
   compileDebug?: boolean;
@@ -23,7 +20,6 @@ export type compileTemplate = (locals?: LocalsObject) => string;
 
 export declare const name: 'Pug';
 export declare const cache: Record<string, compileTemplate | string>;
-export declare const filters: Record<string, (text: string, options: Record<string, any>) => string>;
 export declare const runtime: Record<string, (...args: any[]) => any>;
 
 export declare function compile(template: string, options?: Options): compileTemplate & { dependencies: string[] };
@@ -42,7 +38,6 @@ export declare function __express(path: string, options: Options & LocalsObject,
 declare const pug: {
   name: typeof name;
   cache: typeof cache;
-  filters: typeof filters;
   runtime: typeof runtime;
   compile: typeof compile;
   compileFile: typeof compileFile;

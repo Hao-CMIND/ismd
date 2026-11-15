@@ -15,7 +15,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node --test tests/vite-plugin.test.js",
+    "test": "node --test tests/vite-plugin.test.js tests/vite-windows-stability.test.js",
     "test:all": "node --test tests/*.test.js"
   },
   "devDependencies": {

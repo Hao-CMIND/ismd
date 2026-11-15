@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { createRequire } from 'node:module';
 import pug from '../../index.js';
+import { nativePluginPath } from '../../../filters/index.js';
 
 const require = createRequire(import.meta.url);
 
@@ -171,12 +172,12 @@ async function testSynchronousHostCallbacksAndReentrancy() {
       order.push('postLoad');
       return ast;
     },
-    preFilters(ast) {
-      order.push('preFilters');
+    preTransform(ast) {
+      order.push('preTransform');
       return ast;
     },
-    postFilters(ast) {
-      order.push('postFilters');
+    postTransform(ast) {
+      order.push('postTransform');
       return ast;
     },
     preLink(ast) {
@@ -197,20 +198,10 @@ async function testSynchronousHostCallbacksAndReentrancy() {
     },
   };
 
-  const filters = {
-    shout(text) {
-      order.push('filter:shout');
-      // Re-entrant call inside custom filter!
-      const tag = pug.render('i= label()', { label: () => text.toUpperCase() });
-      return tag;
-    },
-  };
-
-  const html = pug.render('p ORIGINAL\n:shout\n  hello', {
-    plugins: [plugin],
-    filters,
+  const html = pug.render('p ORIGINAL\n:uppercase\n  hello', {
+    plugins: [plugin, nativePluginPath()],
   });
-  assert.strictEqual(html, '<p>REPLACED</p><i>HELLO</i>');
+  assert.strictEqual(html, '<p>REPLACED</p>HELLO');
   assert.deepStrictEqual(order, [
     'preLex',
     'postLex',
@@ -218,16 +209,15 @@ async function testSynchronousHostCallbacksAndReentrancy() {
     'postParse',
     'preLoad',
     'postLoad',
-    'preFilters',
-    'filter:shout',
-    'postFilters',
+    'preTransform',
+    'postTransform',
     'preLink',
     'postLink',
     'preCodeGen',
     'postCodeGen',
   ]);
 
-  // Verify JS Error thrown in plugin/filter propagates with identity preserved
+  // Verify JS Error thrown in plugin propagates with identity preserved
   const sentinelError = new TypeError('Custom plugin failure');
   sentinelError.customCode = 'ERR_CUSTOM_PLUGIN';
   let caught = null;

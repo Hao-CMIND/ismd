@@ -1,13 +1,15 @@
 pub mod dag;
 mod linked_view;
+pub mod plugin;
 pub mod session;
 pub mod store;
+
+pub use plugin::{LoadedNativePlugin, NativePluginManager};
 
 use pug_ast::profile::{Stage, record_file, scope, with_counters};
 use pug_ast::{BlockNode, RawContent, Token};
 use pug_code_gen::{CodeGenOptions, generate_code};
 use pug_error::PugError;
-use pug_filters::{FilterInvocation, handle_filters};
 use pug_lexer::{LexerOptions, LexerPluginHook, LexerState, lex, lex_with_hook};
 use pug_linker::link;
 pub use pug_load::LoadedFile;
@@ -42,9 +44,9 @@ pub struct CompileOptions {
     pub use_self: bool,
     pub include_sources: bool,
     pub template_name: String,
-    pub filter_options: Value,
-    pub filter_aliases: HashMap<String, String>,
     pub lex_plugin_methods: Vec<String>,
+    pub native_plugins: Vec<String>,
+    pub generic_syntax: Vec<pug_lexer::GenericSyntaxRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +62,7 @@ pub struct FileCtx<'a> {
     pub src: &'a str,
 }
 
-/// Host abstraction for synchronous same-thread callbacks (`plugins`, `filters`, `resolve`, `read`).
+/// Host abstraction for synchronous same-thread callbacks (`plugins`, `resolve`, `read`).
 pub trait CompilerHost {
     fn pre_lex(&mut self, source: String, filename: Option<&str>) -> Result<String, PugError> {
         let _ = filename;
@@ -127,21 +129,11 @@ pub trait CompilerHost {
         Ok(ast)
     }
 
-    fn pre_filters(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
+    fn pre_transform(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
         Ok(ast)
     }
 
-    fn run_filter(&mut self, call: &FilterInvocation<'_>) -> Result<String, PugError> {
-        Err(pug_filters::unknown_filter_error(
-            call.filter_name,
-            call.line,
-            call.column,
-            call.node_filename.map(String::from),
-            None,
-        ))
-    }
-
-    fn post_filters(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
+    fn post_transform(&mut self, ast: BlockNode) -> Result<BlockNode, PugError> {
         Ok(ast)
     }
 
@@ -434,6 +426,7 @@ impl<H: CompilerHost> Session<'_, H> {
                 byte_len,
                 source_version,
                 lex_plugin_methods: Vec::new(),
+                generic_syntax: self.options.generic_syntax.clone(),
             };
 
             if let Some(cached) = self.store.get_parsed(&key) {
@@ -464,7 +457,7 @@ impl<H: CompilerHost> Session<'_, H> {
                     ast: ast_arc,
                     direct_dependencies: meta.dependencies,
                     declared_blocks: meta.declared_blocks,
-                    has_filters: meta.has_filters,
+                    has_extensions: meta.has_extensions,
                     has_yield: meta.has_yield,
                     warnings,
                 },
@@ -516,6 +509,7 @@ pub(crate) fn lex_strip_and_parse_with_store<H: CompilerHost>(
     let lex_opts = LexerOptions {
         filename: filename.map(String::from),
         plugin_methods: options.lex_plugin_methods.clone(),
+        generic_syntax: options.generic_syntax.clone(),
         ..LexerOptions::default()
     };
     let mut tokens = {
@@ -689,13 +683,37 @@ pub fn compile_body_with_store<H: CompilerHost>(
     store: &TemplateStore,
 ) -> Result<CompileResult, PugError> {
     let _other = scope(Stage::Other);
-    if let Some(result) = linked_view::try_compile_linked_view(source, options, host, store)? {
-        return Ok(result);
+
+    let has_native_plugins = !options.native_plugins.is_empty();
+    let active_plugins;
+    let mut opts_buf;
+    let effective_options = if has_native_plugins {
+        let mut mgr = store.plugins.write().unwrap();
+        for p in &options.native_plugins {
+            mgr.load_plugin(std::path::Path::new(p))?;
+        }
+        active_plugins = mgr.select_plugins(&options.native_plugins);
+        if options.generic_syntax.is_empty() {
+            opts_buf = options.clone();
+            opts_buf.generic_syntax = active_plugins.syntax_rules().to_vec();
+            &opts_buf
+        } else {
+            options
+        }
+    } else {
+        active_plugins = plugin::NativePluginManager::new();
+        options
+    };
+
+    if !has_native_plugins {
+        if let Some(result) = linked_view::try_compile_linked_view(source, effective_options, host, store)? {
+            return Ok(result);
+        }
     }
 
     let mut session = Session {
         host,
-        options,
+        options: effective_options,
         store,
         dependencies: Vec::new(),
         dag_edges: HashMap::new(),
@@ -732,18 +750,13 @@ pub fn compile_body_with_store<H: CompilerHost>(
     let debug_sources = std::mem::take(&mut session.debug_sources);
     let host = session.host;
 
-    // 2. preFilters -> handleFilters -> postFilters
-    ast = host.pre_filters(ast)?;
-    ast = {
-        let _g = scope(Stage::Filters);
-        handle_filters(
-            ast,
-            &options.filter_options,
-            &options.filter_aliases,
-            &mut |call: &FilterInvocation<'_>| host.run_filter(call),
-        )?
-    };
-    ast = host.post_filters(ast)?;
+    // 2. Generic AST transforms include loaded dependencies and precede linking.
+    ast = host.pre_transform(ast)?;
+    if has_native_plugins {
+        let _g = scope(Stage::Transform);
+        active_plugins.transform_ast(&mut ast)?;
+    }
+    ast = host.post_transform(ast)?;
 
     // 3. preLink -> Linker -> postLink
     ast = host.pre_link(ast)?;
@@ -1377,5 +1390,66 @@ mod tests {
         assert!(footer_out[0].body.as_deref().unwrap().contains("SeqFooter"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_native_dynamic_plugin_uppercase_poc() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidates = [
+            manifest_dir.join("../../../filters/native/target/debug/pug_filter_uppercase.dll"),
+            manifest_dir.join("../../../filters/native/target/debug/libpug_filter_uppercase.so"),
+            manifest_dir.join("../../../filters/native/target/debug/libpug_filter_uppercase.dylib"),
+        ];
+        let plugin_path = candidates
+            .into_iter()
+            .find(|p| p.exists())
+            .expect("Build the native test plugin with npm run build --workspace=@pug-rust/filters");
+
+        let opts = CompileOptions {
+            native_plugins: vec![plugin_path.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+
+        struct SpyHost;
+        impl CompilerHost for SpyHost {}
+
+        let mut host = SpyHost;
+        let store = std::sync::Arc::new(TemplateStore::new());
+
+        // 1. Single compile with :uppercase
+        let res = compile_body_with_store(":uppercase\n  hello world", &opts, &mut host, &store).unwrap();
+        assert!(res.body.contains("HELLO WORLD"), "Expected 'HELLO WORLD', got: {}", res.body);
+        assert!(!res.body.contains("hello world"));
+
+        // 2. Verify plugin is cached in store and not reloaded
+        let plugins_guard = store.plugins.read().unwrap();
+        assert_eq!(plugins_guard.plugins().len(), 1);
+        assert_eq!(plugins_guard.plugins()[0].plugin_id, "pug_filter_uppercase");
+        assert!(plugins_guard.plugins()[0].is_thread_safe);
+        drop(plugins_guard);
+
+        // Second compile with same store
+        let res2 = compile_body_with_store(":uppercase\n  another native text", &opts, &mut host, &store).unwrap();
+        assert!(res2.body.contains("ANOTHER NATIVE TEXT"));
+
+        // 3. Batch compile through CompilerSession with Rayon parallel mode
+        let entries: Vec<BatchEntryInput> = (0..10)
+            .map(|i| BatchEntryInput {
+                id: format!("page{i}.pug"),
+                filename: Some(format!("page{i}.pug")),
+                source: Some(format!("div\n  :uppercase\n    page content {i}")),
+                options: Some(opts.clone()),
+            })
+            .collect();
+
+        let opts_clone = opts.clone();
+        let batch_out = compile_batch_with_mode(&entries, &opts_clone, &store, ParallelMode::ForceParallel);
+        assert_eq!(batch_out.len(), 10);
+        for (i, out) in batch_out.iter().enumerate() {
+            assert!(out.ok);
+            let body = out.body.as_deref().unwrap();
+            let expected = format!("PAGE CONTENT {i}");
+            assert!(body.contains(&expected), "Expected '{expected}' in output: {body}");
+        }
     }
 }

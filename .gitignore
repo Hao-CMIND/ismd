@@ -174,3 +174,5 @@ raw
 *.profraw
 *.profdata
 perf.data*
+testProject
+.agent

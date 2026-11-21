@@ -1,0 +1,17 @@
+{
+  "name": "ismd-filters",
+  "version": "0.1.0",
+  "description": "Optional native syntax and AST transform plugin for ismd template compiler",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "cargo build --manifest-path native/Cargo.toml",
+    "build:release": "cargo build --release --manifest-path native/Cargo.toml",
+    "test": "node --test test/*.test.mjs"
+  }
+}

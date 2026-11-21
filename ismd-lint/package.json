@@ -1,0 +1,8 @@
+{
+  "name": "ismd-lint",
+  "version": "0.1.0",
+  "description": "Linter and style guide configurations for ismd templates",
+  "type": "module",
+  "license": "MIT",
+  "private": true
+}

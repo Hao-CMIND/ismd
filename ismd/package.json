@@ -1,0 +1,68 @@
+{
+  "name": "ismd",
+  "version": "0.1.0",
+  "description": "Rust + Oxc implementation of the ISMD template compiler",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    },
+    "./register": "./register.mjs",
+    "./runtime": "./runtime/index.mjs"
+  },
+  "types": "index.d.ts",
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "index.d.mts",
+    "register.mjs",
+    "runtime/",
+    "ismd-napi.win32-x64-msvc.node",
+    "README.md",
+    "compat/matrix.md",
+    "compat/expected-differences.json"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "napi": {
+    "name": "ismd-napi",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-pc-windows-msvc"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "cargo build -p ismd_napi && node -e \"const fs=require('fs');try{fs.copyFileSync('target/debug/ismd_napi.dll','ismd-napi.win32-x64-msvc.node')}catch{fs.copyFileSync('target/debug/ismd_napi.dll','target/debug/ismd_napi.node')}\"",
+    "build:release": "cargo build --release -p ismd_napi && node -e \"const fs=require('fs');try{fs.copyFileSync('target/release/ismd_napi.dll','ismd-napi.win32-x64-msvc.node')}catch{fs.copyFileSync('target/release/ismd_napi.dll','target/release/ismd_napi.node')}\"",
+    "test": "npm run test:integration && npm run test:serializers && npm run test:diff:core",
+    "test:rust": "cargo test --workspace",
+    "test:cases": "node --test tests/integration/cases.test.mjs",
+    "test:integration": "node --test tests/integration/skeleton.test.mjs tests/integration/template-store.test.mjs tests/integration/compiler-session.test.mjs tests/integration/js-api.test.mjs tests/integration/core-decoupling.test.mjs tests/integration/phase6-no-plugin-syntax.test.mjs tests/integration/cases.test.mjs tests/integration/lexer.test.mjs tests/integration/parser-scope.test.mjs tests/integration/load.test.mjs tests/integration/linker.test.mjs tests/integration/mixin.test.mjs tests/integration/attrs-codegen.test.mjs tests/integration/release-api.test.mjs tests/integration/lifecycle-stability.test.mjs tests/integration/native-plugin-poc.test.mjs",
+    "test:skeleton": "node tests/integration/skeleton.test.mjs",
+    "test:lexer": "node tests/integration/lexer.test.mjs",
+    "test:step1": "node tests/integration/skeleton.test.mjs",
+    "test:step2": "node tests/integration/lexer.test.mjs",
+    "test:diff": "node tests/differential/runner.mjs",
+    "test:diff:baseline": "node tests/differential/runner.mjs --verify-baseline",
+    "test:serializers": "node tests/differential/serializers.test.mjs",
+    "compat:baseline": "node tests/differential/generate-baseline.mjs",
+    "test:native": "node --test tests/integration/native-plugin-poc.test.mjs tests/integration/core-decoupling.test.mjs",
+    "test:diff:core": "node --test tests/differential/core-decoupling.test.mjs",
+    "test:audit": "node scripts/audit-core-decoupling.mjs",
+    "reference:build": "node scripts/build-reference.mjs --force",
+    "reference:verify": "node scripts/verify-reference.mjs"
+  }
+}

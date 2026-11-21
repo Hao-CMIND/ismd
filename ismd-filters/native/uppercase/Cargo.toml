@@ -1,0 +1,12 @@
+[package]
+name = "ismd_filter_uppercase"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ismd_plugin_abi.workspace = true

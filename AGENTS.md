@@ -205,7 +205,7 @@ Agent 應優先根據：
 若本次工作主要修改：
 
 ```text
-rust/compiler/
+ismd/
 ```
 
 例如：
@@ -261,7 +261,7 @@ dev
 feat/vite-plugin
 
 使用者要求：
-修改 rust/compiler/src/compiler.rs
+修改 ismd/crates/ismd_compiler/src/lib.rs
 ```
 
 Agent 應先檢查 working tree。
@@ -289,14 +289,14 @@ feat/filter-separation
 允許同時修改：
 
 ```text
-rust/compiler/
+ismd/
 packages/filters/
 ```
 
 例如 Filter API boundary：
 
 ```text
-rust/compiler/
+ismd/
 +
 packages/filters/
 ```
@@ -383,7 +383,7 @@ feat/js-cli-api
 主要允許範圍：
 
 ```text
-rust/compiler/
+ismd/
 
 packages/cli/
 
@@ -491,7 +491,7 @@ docs 中與 Vite 直接相關內容
 不得因方便直接修改：
 
 ```text
-rust/compiler/
+ismd/
 
 packages/webpack/
 ```
@@ -594,7 +594,7 @@ Webpack 相關 docs/
 不得順便修改：
 
 ```text
-rust/compiler/
+ismd/
 
 packages/vite/
 ```
@@ -1043,7 +1043,7 @@ Adapter 修改
 例如：
 
 ```text
-rust/compiler/
+ismd/
 +
 packages/vite/
 ```
@@ -1071,7 +1071,7 @@ feat/filter-separation
 可以同時處理：
 
 ```text
-rust/compiler/
+ismd/
 +
 packages/filters/
 ```
@@ -1084,7 +1084,7 @@ packages/filters/
 
 | 修改內容 | Branch |
 |---|---|
-| `rust/compiler/` | `dev` |
+| `ismd/` | `dev` |
 | Compiler Core | `dev` |
 | Parser / Lexer / AST | `dev` |
 | Oxc Arena | `dev` |
@@ -1146,7 +1146,7 @@ packages/filters/
 但如果必須修改：
 
 ```text
-rust/compiler/
+ismd/
 ```
 
 則 Core 部分應拆至：
@@ -1251,7 +1251,7 @@ raw/compiler/
 
 .ai-handoff/
 
-rust/compiler/target/
+ismd/target/
 
 node_modules/
 

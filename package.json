@@ -1,25 +1,25 @@
 {
-  "name": "pug-rust",
+  "name": "ismd-workspace",
   "version": "0.1.0",
-  "description": "High-performance Pug template compiler in Rust with Vite and Webpack adapters",
+  "description": "High-performance ISMD template compiler in Rust with Vite and Webpack adapters",
   "private": true,
   "type": "module",
   "workspaces": [
-    "compiler",
-    "cli",
-    "vite",
-    "webpack",
-    "filters",
-    "lint",
+    "ismd",
+    "ismd-cli",
+    "vite-plugin-ismd",
+    "ismd-webpack-plugin",
+    "ismd-filters",
+    "ismd-lint",
     "benchmarks"
   ],
   "scripts": {
     "test": "npm test --workspaces --if-present",
-    "test:compiler": "npm test --workspace=pug-rust-compiler",
-    "test:cli": "npm test --workspace=@pug-rust/cli",
-    "test:vite": "npm test --workspace=@pug-rust/vite",
-    "test:webpack": "npm test --workspace=@pug-rust/webpack",
-    "test:filters": "npm test --workspace=@pug-rust/filters",
-    "test:benchmarks": "node benchmarks/diagnostics/run-bundler-benchmark.js"
+    "test:ismd": "npm test --workspace=ismd",
+    "test:cli": "npm test --workspace=ismd-cli",
+    "test:vite": "npm test --workspace=vite-plugin-ismd",
+    "test:webpack": "npm test --workspace=ismd-webpack-plugin",
+    "test:filters": "npm test --workspace=ismd-filters",
+    "test:benchmarks": "node benchmarks/bundler.mjs"
   }
 }

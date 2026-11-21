@@ -20,6 +20,9 @@
     "test:vite": "npm test --workspace=vite-plugin-ismd",
     "test:webpack": "npm test --workspace=ismd-webpack-plugin",
     "test:filters": "npm test --workspace=ismd-filters",
-    "test:benchmarks": "node benchmarks/bundler.mjs"
+    "test:benchmarks": "node benchmarks/bundler.mjs",
+    "push:dev": "git push origin dev",
+    "push:pkgs": "git push -u origin pkg-cli pkg-ismd pkg-vite pkg-webpack",
+    "push:all": "git push origin dev && git push -u origin pkg-cli pkg-ismd pkg-vite pkg-webpack"
   }
 }

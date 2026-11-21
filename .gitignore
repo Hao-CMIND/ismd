@@ -1,0 +1,15 @@
+/target/
+/target-profile/
+/node_modules/
+*.node
+*.dll
+*.pdb
+*.exp
+*.lib
+
+# Release binary addon for Windows x64
+!ismd-napi.win32-x64-msvc.node
+
+/benchmarks/results/
+/benchmarks/dist/
+

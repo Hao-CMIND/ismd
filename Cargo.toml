@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ismd_ast",
+  "crates/ismd_error",
+  "crates/ismd_js",
+  "crates/ismd_lexer",
+  "crates/ismd_strip_comments",
+  "crates/ismd_parser",
+  "crates/ismd_walk",
+  "crates/ismd_load",
+  "crates/ismd_linker",
+  "crates/ismd_attrs",
+  "crates/ismd_code_gen",
+  "crates/ismd_runtime",
+  "crates/ismd_compiler",
+  "crates/ismd_plugin_abi",
+  "crates/ismd_napi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rayon = "1.10"
+libloading = "0.9.0"
+oxc = { version = "=0.157.0", features = ["semantic", "ast_visit", "codegen", "regular_expression"] }
+napi = { version = "=3.16.1", features = ["napi8", "serde-json", "compat-mode"] }
+napi-derive = { version = "=3.7.0", features = ["compat-mode"] }
+napi-build = "=2.6.0"
+
+ismd_plugin_abi = { path = "crates/ismd_plugin_abi" }
+ismd_ast = { path = "crates/ismd_ast" }
+ismd_error = { path = "crates/ismd_error" }
+ismd_js = { path = "crates/ismd_js" }
+ismd_lexer = { path = "crates/ismd_lexer" }
+ismd_strip_comments = { path = "crates/ismd_strip_comments" }
+ismd_parser = { path = "crates/ismd_parser" }
+ismd_walk = { path = "crates/ismd_walk" }
+ismd_load = { path = "crates/ismd_load" }
+ismd_linker = { path = "crates/ismd_linker" }
+ismd_attrs = { path = "crates/ismd_attrs" }
+ismd_code_gen = { path = "crates/ismd_code_gen" }
+ismd_runtime = { path = "crates/ismd_runtime" }
+ismd_compiler = { path = "crates/ismd_compiler" }

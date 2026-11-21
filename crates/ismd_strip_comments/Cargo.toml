@@ -1,0 +1,12 @@
+[package]
+name = "ismd_strip_comments"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ismd_ast.workspace = true
+ismd_error.workspace = true
+serde.workspace = true
+serde_json.workspace = true

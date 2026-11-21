@@ -1,0 +1,23 @@
+{
+  "name": "ismd-cli",
+  "version": "0.1.0",
+  "description": "CLI for ismd template compiler using persistent CompilerSession",
+  "type": "module",
+  "main": "./index.mjs",
+  "bin": {
+    "ismd": "./index.mjs"
+  },
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "dependencies": {
+    "ismd": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/cli.test.mjs"
+  }
+}

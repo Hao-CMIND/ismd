@@ -1,0 +1,25 @@
+[package]
+name = "ismd_compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ismd_plugin_abi.workspace = true
+libloading.workspace = true
+ismd_ast.workspace = true
+ismd_attrs.workspace = true
+ismd_code_gen.workspace = true
+ismd_error.workspace = true
+ismd_js.workspace = true
+ismd_lexer.workspace = true
+ismd_linker.workspace = true
+ismd_load.workspace = true
+ismd_parser.workspace = true
+ismd_runtime.workspace = true
+ismd_strip_comments.workspace = true
+ismd_walk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true

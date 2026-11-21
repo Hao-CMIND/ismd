@@ -1,0 +1,11 @@
+[package]
+name = "ismd_linker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ismd_ast.workspace = true
+ismd_error.workspace = true
+ismd_walk.workspace = true

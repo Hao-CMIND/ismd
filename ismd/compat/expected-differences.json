@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "description": "Approved baseline and platform/runtime differences for Ismd Rust Compiler differential testing",
+  "environmentDifferences": [
+    {
+      "id": "NODE16_V8_TYPEERROR_NULL_UNDEFINED_PROPERTY",
+      "category": "runtime-error-message",
+      "status": "APPROVED_DIFF",
+      "affectedSuites": [
+        "packages/ismd/test/error.reporting.test.js"
+      ],
+      "affectedTests": [
+        "error reporting > runtime errors > in a mixin > includes detail of where the error was thrown including the filename",
+        "error reporting > runtime errors > in a layout > includes detail of where the error was thrown including the filename"
+      ],
+      "legacyNodePattern": "Cannot read property '([^']+)' of (null|undefined)",
+      "modernNodePattern": "Cannot read properties of (null|undefined) \\(reading '([^']+)'\\)",
+      "rationale": "V8 9.3+ (Node.js 16.9+ / Node 22) changed the wording of TypeError when reading a property on null or undefined. Differential tests running both raw/compiler and ismd on the same Node.js runtime produce identical error messages; static regexes from Node 10/12 tests accept either form."
+    }
+  ],
+  "normalizationRules": [
+    {
+      "id": "FILENAME_BASEDIR_NORMALIZATION",
+      "category": "path",
+      "equivalentTo": "raw/compiler/scripts/filename-serializer.js",
+      "description": "Replaces the compiler basedir prefix with '<basedir>' and converts Windows backslashes ('\\\\') to forward slashes ('/') in .filename and .message fields."
+    },
+    {
+      "id": "PRETTIER_BABEL_JS_SERIALIZATION",
+      "category": "codegen",
+      "equivalentTo": "raw/compiler/scripts/prettier-javascript-serializer.js",
+      "description": "Formats generated JavaScript strings containing 'function ' with prettier@1.19.1 ({ parser: 'babel' }) for snapshot comparison, while retaining a separate raw-string comparison layer."
+    },
+    {
+      "id": "BUFFER_MD5_SERIALIZATION",
+      "category": "buffer",
+      "equivalentTo": "raw/compiler/scripts/buffer-serializer.js",
+      "description": "Serializes Node Buffer objects into { type: 'Buffer', size: buf.length, hash: md5(buf) }."
+    },
+    {
+      "id": "ERROR_STACK_PLATFORM_FRAMES",
+      "category": "error-stack",
+      "description": "Compares IsmdError structured fields (code, msg, line, column, filename, src, message, toJSON()) strictly; V8 internal stack frames below the Ismd template frame are excluded from cross-engine comparison."
+    }
+  ]
+}

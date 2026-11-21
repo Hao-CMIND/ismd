@@ -1,0 +1,34 @@
+[package]
+name = "ismd_napi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+profile = ["ismd_ast/profile"]
+
+[dependencies]
+napi.workspace = true
+napi-derive.workspace = true
+ismd_ast.workspace = true
+ismd_attrs.workspace = true
+ismd_code_gen.workspace = true
+ismd_compiler.workspace = true
+ismd_error.workspace = true
+ismd_js.workspace = true
+ismd_lexer.workspace = true
+ismd_linker.workspace = true
+ismd_load.workspace = true
+ismd_parser.workspace = true
+ismd_runtime.workspace = true
+ismd_strip_comments.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+napi-build.workspace = true

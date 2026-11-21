@@ -1,0 +1,23 @@
+{
+  "name": "ismd-webpack-plugin",
+  "version": "0.1.0",
+  "description": "Webpack plugin and loader adapter for ismd template compiler using shared CompilerSession",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./plugin": "./plugin.mjs",
+    "./loader": "./loader.mjs"
+  },
+  "peerDependencies": {
+    "ismd": "^0.1.0",
+    "webpack": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/webpack-adapter.test.mjs"
+  }
+}
